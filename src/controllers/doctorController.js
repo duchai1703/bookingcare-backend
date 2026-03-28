@@ -3,8 +3,11 @@ const doctorService = require('../services/doctorService');
 
 const getTopDoctorHome = async (req, res) => {
   try {
-    const limit = req.query.limit || 10;
-    const result = await doctorService.getTopDoctorHome(+limit);
+    // FIX BE-07: parseInt an toàn, clamp 1–50
+    let limit = parseInt(req.query.limit, 10) || 10;
+    if (limit < 1) limit = 1;
+    if (limit > 50) limit = 50;
+    const result = await doctorService.getTopDoctorHome(limit);
     const httpStatus = result.errCode === 0 ? 200 : 500;
     return res.status(httpStatus).json(result);
   } catch (err) {
@@ -64,6 +67,32 @@ const bulkCreateSchedule = async (req, res) => {
   }
 };
 
+// FIX FE-02: REQ-AM-021 — Sửa lịch khám (maxNumber)
+const editSchedule = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { maxNumber } = req.body;
+    if (!id) return res.status(400).json({ errCode: 1, message: 'Thiếu id!' });
+    const db = require('../models');
+    const schedule = await db.Schedule.findByPk(id, { raw: false });
+    if (!schedule) return res.status(404).json({ errCode: 3, message: 'Không tìm thấy lịch khám!' });
+    if (maxNumber !== undefined) {
+      if (maxNumber < schedule.currentNumber) {
+        return res.status(400).json({
+          errCode: 2,
+          message: `maxNumber không được nhỏ hơn currentNumber (${schedule.currentNumber})!`,
+        });
+      }
+      schedule.maxNumber = maxNumber;
+      await schedule.save();
+    }
+    return res.status(200).json({ errCode: 0, message: 'Cập nhật lịch khám thành công!', data: schedule });
+  } catch (err) {
+    console.error('>>> editSchedule error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 // REQ-AM-021 – Xóa lịch khám
 const deleteSchedule = async (req, res) => {
   try {
@@ -97,10 +126,11 @@ const getScheduleByDate = async (req, res) => {
 // REQ-DR-003 – Lấy danh sách bệnh nhân, lọc theo statusId
 const getListPatientForDoctor = async (req, res) => {
   try {
-    const doctorId = req.params.doctorId || req.query.doctorId;
+    // FIX DS-06: lấy doctorId từ JWT — không tin URL để chặn IDOR
+    const doctorId = req.user.id;
     const { date, statusId } = req.query;
-    if (!doctorId || !date) {
-      return res.status(400).json({ errCode: 1, message: 'Thiếu tham số!' });
+    if (!date) {
+      return res.status(400).json({ errCode: 1, message: 'Thiếu tham số date!' });
     }
     const result = await doctorService.getListPatientForDoctor(doctorId, date, statusId);
     const httpStatus = result.errCode === 0 ? 200 : 500;
@@ -113,7 +143,9 @@ const getListPatientForDoctor = async (req, res) => {
 
 const sendRemedy = async (req, res) => {
   try {
-    const result = await doctorService.sendRemedy(req.body);
+    // FIX DS-04: merge bookingId từ URL
+    const data = { ...req.body, bookingId: req.params.bookingId };
+    const result = await doctorService.sendRemedy(data);
     const httpStatus = result.errCode === 0 ? 200 : 400;
     return res.status(httpStatus).json(result);
   } catch (err) {
@@ -125,7 +157,9 @@ const sendRemedy = async (req, res) => {
 // REQ-DR-004 – Hủy lịch hẹn S2 → S4
 const cancelBooking = async (req, res) => {
   try {
-    const result = await doctorService.cancelBooking(req.body);
+    // FIX DS-04: merge bookingId từ URL
+    const data = { ...req.body, bookingId: req.params.bookingId };
+    const result = await doctorService.cancelBooking(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
     return res.status(httpStatus).json(result);
@@ -157,6 +191,7 @@ module.exports = {
   saveInfoDoctor,
   deleteDoctorInfo,
   bulkCreateSchedule,
+  editSchedule,    // FIX FE-02
   deleteSchedule,
   getScheduleByDate,
   getListPatientForDoctor,

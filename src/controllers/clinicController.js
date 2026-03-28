@@ -38,7 +38,8 @@ const getDetailClinicById = async (req, res) => {
 // REQ-AM-012
 const editClinic = async (req, res) => {
   try {
-    const result = await clinicService.editClinic(req.body);
+    const data = { ...req.body, id: req.params.id }; // FIX BE-09
+    const result = await clinicService.editClinic(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
     return res.status(httpStatus).json(result);

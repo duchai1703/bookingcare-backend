@@ -14,9 +14,17 @@ app.use(cors({
   credentials: true,
 }));
 
-// Body parser (SRS Section 5.2: JSON format, Constraint #7: 5MB image)
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+// DS-01 FIX: limit 100kb mặc định, riêng routes nhận ảnh dùng 6mb
+const jsonSmall = bodyParser.json({ limit: '100kb' });
+const jsonLarge = bodyParser.json({ limit: '6mb' }); // 5MB ảnh + buffer
+const urlencodedSmall = bodyParser.urlencoded({ limit: '100kb', extended: true });
+
+// Áp dụng limit nhỏ cho toàn bộ app — routes nhận ảnh sẽ override bằng jsonLarge
+app.use(jsonSmall);
+app.use(urlencodedSmall);
+
+// Export jsonLarge để web.js dùng cho image-upload routes
+app.locals.jsonLarge = jsonLarge;
 
 // Routes
 routes(app);

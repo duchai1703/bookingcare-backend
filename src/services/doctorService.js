@@ -140,7 +140,7 @@ const bulkCreateSchedule = async (data) => {
       attributes: ['timeType', 'doctorId', 'date'],
       raw: true,
     });
-    const toCreate = schedules.filter(s => !existing.find(e => e.timeType === s.timeType));
+    const toCreate = schedules.filter(s => !existing.find(e => e.timeType === s.timeType && +e.date === +s.date));
     if (toCreate.length > 0) {
       await db.Schedule.bulkCreate(toCreate);
     }

@@ -2,7 +2,7 @@
 // Chạy: npm run seed (hoặc: node src/seeders/seedAllcode.js)
 
 require('dotenv').config();
-const db = require('../models');
+const db = require('../models');  
 const bcrypt = require('bcryptjs');
 
 const allcodeData = [

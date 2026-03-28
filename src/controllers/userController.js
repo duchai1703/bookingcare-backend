@@ -47,8 +47,8 @@ const handleCreateNewUser = async (req, res) => {
 
 const handleEditUser = async (req, res) => {
   try {
-    const result = await userService.editUser(req.body);
-    // errCode 0 = OK (200), 1 = thiếu id (400), 3 = không tìm thấy (404)
+    const data = { ...req.body, id: req.params.id }; // FIX BE-01: lấy id từ URL
+    const result = await userService.editUser(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
     return res.status(httpStatus).json(result);
@@ -60,13 +60,12 @@ const handleEditUser = async (req, res) => {
 
 const handleDeleteUser = async (req, res) => {
   try {
-    const { id } = req.body;
+    const id = req.params.id; // FIX BE-02: lấy từ URL (DELETE không có body)
     if (!id) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số id!' });
     }
-    const result = await userService.deleteUser(id);
-    // errCode 0 = OK (200), 3 = không tìm thấy (404)
-    const statusMap = { 0: 200, 3: 404 };
+    const result = await userService.deleteUser(id, req.user?.id); // BE-10: truyền requesterId
+    const statusMap = { 0: 200, 3: 404, 5: 400, 6: 409 };
     const httpStatus = statusMap[result.errCode] || 500;
     return res.status(httpStatus).json(result);
   } catch (err) {

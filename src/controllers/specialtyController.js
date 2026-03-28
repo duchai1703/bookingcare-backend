@@ -39,7 +39,8 @@ const getDetailSpecialtyById = async (req, res) => {
 // REQ-AM-016
 const editSpecialty = async (req, res) => {
   try {
-    const result = await specialtyService.editSpecialty(req.body);
+    const data = { ...req.body, id: req.params.id }; // FIX BE-08
+    const result = await specialtyService.editSpecialty(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
     return res.status(httpStatus).json(result);

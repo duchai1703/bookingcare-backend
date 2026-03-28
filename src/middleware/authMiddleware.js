@@ -20,9 +20,16 @@ const verifyToken = (req, res, next) => {
     req.user = decoded; // { id, email, roleId }
     next();
   } catch (err) {
+    // DS-02 FIX: phân biệt token hết hạn (401) vs token không hợp lệ (403)
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        errCode: -1,
+        message: 'Phiên đăng nhập đã hết hạn! Vui lòng đăng nhập lại.',
+      });
+    }
     return res.status(403).json({
       errCode: -1,
-      message: 'Token không hợp lệ hoặc đã hết hạn!',
+      message: 'Token không hợp lệ!',
     });
   }
 };

@@ -2,7 +2,7 @@
 const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const salt = bcrypt.genSaltSync(10);
+// FIX BE-05: đã xóa genSaltSync — dùng bcrypt.hash() async trực tiếp
 
 // ===== LOGIN + JWT TOKEN (SRS REQ-AU-001, 002, 007, 009) =====
 const handleUserLogin = async (email, password) => {
@@ -68,7 +68,7 @@ const createNewUser = async (data) => {
     if (exist) {
       return { errCode: 2, message: 'Email đã tồn tại!' };
     }
-    const hashedPassword = bcrypt.hashSync(data.password, salt);
+    const hashedPassword = await bcrypt.hash(data.password, 10); // FIX BE-05: async hash
     await db.User.create({
       email: data.email,
       password: hashedPassword,
@@ -117,11 +117,25 @@ const editUser = async (data) => {
 };
 
 // ===== DELETE USER (SRS REQ-AM-004) =====
-const deleteUser = async (id) => {
+const deleteUser = async (id, requesterId) => {
   try {
+    // FIX BE-10 Guard 1: Admin không tự xóa mình
+    if (requesterId && String(id) === String(requesterId)) {
+      return { errCode: 5, message: 'Không thể tự xóa tài khoản của chính mình!' };
+    }
     const user = await db.User.findOne({ where: { id } });
     if (!user) {
       return { errCode: 3, message: 'Không tìm thấy người dùng!' };
+    }
+    // FIX BE-10 Guard 2: Bác sĩ đang có booking chưa xử lý
+    if (user.roleId === 'R2') {
+      const { Op } = require('sequelize');
+      const activeBooking = await db.Booking.findOne({
+        where: { doctorId: id, statusId: { [Op.in]: ['S1', 'S2'] } },
+      });
+      if (activeBooking) {
+        return { errCode: 6, message: 'Bác sĩ đang có lịch hẹn chưa hoàn thành, không thể xóa!' };
+      }
     }
     await db.User.destroy({ where: { id } });
     return { errCode: 0, message: 'Xóa người dùng thành công!' };
@@ -152,12 +166,19 @@ const searchService = async (keyword) => {
     const likeQuery = { [Op.like]: `%${keyword}%` };
 
     // Tìm bác sĩ theo tên
+    // FIX BE-11: CONCAT để tìm tên đầy đủ ("Nguyen Van A" khớp cả firstName lẫn lastName)
     const doctors = await db.User.findAll({
       where: {
         roleId: 'R2',
         [Op.or]: [
-          { firstName: likeQuery },
-          { lastName: likeQuery },
+          db.Sequelize.where(
+            db.Sequelize.fn('CONCAT', db.Sequelize.col('lastName'), ' ', db.Sequelize.col('firstName')),
+            { [Op.like]: `%${keyword.trim()}%` }
+          ),
+          db.Sequelize.where(
+            db.Sequelize.fn('CONCAT', db.Sequelize.col('firstName'), ' ', db.Sequelize.col('lastName')),
+            { [Op.like]: `%${keyword.trim()}%` }
+          ),
         ],
       },
       attributes: ['id', 'firstName', 'lastName', 'image'],
