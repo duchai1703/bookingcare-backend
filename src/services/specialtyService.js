@@ -1,15 +1,26 @@
 // src/services/specialtyService.js
+// ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
 const db = require('../models');
+const { sanitizeContent } = require('../utils/sanitizeHtml');
+const { validateBase64Image } = require('../utils/validateBase64Image');
 
 const createSpecialty = async (data) => {
   try {
     if (!data.name) {
       return { errCode: 1, message: 'Thiếu tên chuyên khoa!' };
     }
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
+    if (data.imageBase64) {
+      const imgResult = validateBase64Image(data.imageBase64);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
+    }
     await db.Specialty.create({
       name: data.name,
       image: data.imageBase64 || '',
-      descriptionHTML: data.descriptionHTML || '',
+      // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
+      descriptionHTML: sanitizeContent(data.descriptionHTML),
       descriptionMarkdown: data.descriptionMarkdown || '',
     });
     return { errCode: 0, message: 'Tạo chuyên khoa thành công!' };
@@ -67,10 +78,16 @@ const editSpecialty = async (data) => {
       return { errCode: 3, message: 'Không tìm thấy chuyên khoa!' };
     }
     specialty.name = data.name || specialty.name;
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
     if (data.imageBase64) {
+      const imgResult = validateBase64Image(data.imageBase64);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
       specialty.image = data.imageBase64;
     }
-    specialty.descriptionHTML = data.descriptionHTML || specialty.descriptionHTML;
+    // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
+    specialty.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : specialty.descriptionHTML;
     specialty.descriptionMarkdown = data.descriptionMarkdown || specialty.descriptionMarkdown;
     await specialty.save();
     return { errCode: 0, message: 'Cập nhật chuyên khoa thành công!' };

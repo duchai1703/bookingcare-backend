@@ -1,6 +1,9 @@
 // src/services/doctorService.js
+// ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
 const db = require('../models');
 const emailService = require('./emailService');
+const { sanitizeContent } = require('../utils/sanitizeHtml');
+const { validateBase64Image } = require('../utils/validateBase64Image');
 
 // ===== GET TOP DOCTOR (SRS REQ-PT-003) =====
 const getTopDoctorHome = async (limit) => {
@@ -75,7 +78,8 @@ const saveInfoDoctor = async (data) => {
       raw: false,
     });
     if (doctorInfo) {
-      doctorInfo.contentHTML = data.contentHTML;
+      // ✅ [SECURITY-FIX] Sanitize contentHTML trước khi lưu (chặn Stored XSS)
+      doctorInfo.contentHTML = sanitizeContent(data.contentHTML);
       doctorInfo.contentMarkdown = data.contentMarkdown;
       doctorInfo.description = data.description || '';
       doctorInfo.specialtyId = data.specialtyId;
@@ -88,7 +92,8 @@ const saveInfoDoctor = async (data) => {
     } else {
       await db.Doctor_Info.create({
         doctorId: data.doctorId,
-        contentHTML: data.contentHTML,
+        // ✅ [SECURITY-FIX] Sanitize contentHTML trước khi lưu (chặn Stored XSS)
+        contentHTML: sanitizeContent(data.contentHTML),
         contentMarkdown: data.contentMarkdown,
         description: data.description || '',
         specialtyId: data.specialtyId,
@@ -237,18 +242,28 @@ const sendRemedy = async (data) => {
     if (!data.email || !data.doctorId || !data.patientId || !data.imageBase64) {
       return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
     }
+
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image trước khi xử lý
+    const imageValidation = validateBase64Image(data.imageBase64);
+    if (!imageValidation.isValid) {
+      return { errCode: 4, message: imageValidation.error };
+    }
+
+    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Đảm bảo bác sĩ chỉ sửa booking của mình
     const booking = await db.Booking.findOne({
       where: {
-        doctorId: data.doctorId,
+        doctorId: data.doctorId,  // doctorId lấy từ JWT (controller đã gán)
         patientId: data.patientId,
         statusId: 'S2',
       },
       raw: false,
     });
-    if (booking) {
-      booking.statusId = 'S3'; // State Machine: S2 → S3
-      await booking.save();
+    if (!booking) {
+      return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền thao tác!' };
     }
+    booking.statusId = 'S3'; // State Machine: S2 → S3
+    await booking.save();
+
     await emailService.sendEmailRemedy({
       email: data.email,
       imageBase64: data.imageBase64,
@@ -265,15 +280,16 @@ const sendRemedy = async (data) => {
 // ===== MỚI: CANCEL BOOKING (SRS REQ-DR-004) – S2 → S4 =====
 const cancelBooking = async (data) => {
   try {
-    if (!data.bookingId) {
-      return { errCode: 1, message: 'Thiếu tham số bookingId!' };
+    if (!data.bookingId || !data.doctorId) {
+      return { errCode: 1, message: 'Thiếu tham số bookingId hoặc doctorId!' };
     }
+    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Đảm bảo bác sĩ chỉ hủy booking của mình
     const booking = await db.Booking.findOne({
-      where: { id: data.bookingId, statusId: 'S2' },
+      where: { id: data.bookingId, doctorId: data.doctorId, statusId: 'S2' },
       raw: false,
     });
     if (!booking) {
-      return { errCode: 3, message: 'Không tìm thấy lịch hẹn đã xác nhận!' };
+      return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền hủy!' };
     }
     // State Machine: S2 → S4 (Đã hủy)
     booking.statusId = 'S4';
@@ -293,10 +309,16 @@ const cancelBooking = async (data) => {
 };
 
 // ===== MỚI: PATIENT BOOKING HISTORY (SRS REQ-DR-007) =====
-const getPatientBookingHistory = async (patientId) => {
+// ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Thêm doctorId để scope query
+const getPatientBookingHistory = async (patientId, doctorId) => {
   try {
+    // Chỉ trả về lịch sử booking của bệnh nhân VỚI bác sĩ đang đăng nhập
+    const whereClause = { patientId };
+    if (doctorId) {
+      whereClause.doctorId = doctorId;
+    }
     const bookings = await db.Booking.findAll({
-      where: { patientId },
+      where: whereClause,
       include: [
         {
           model: db.User, as: 'doctorBookingData',

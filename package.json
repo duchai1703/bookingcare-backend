@@ -24,6 +24,7 @@
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.19.1",
     "nodemailer": "^8.0.1",
+    "sanitize-html": "^2.17.2",
     "sequelize": "^6.37.7",
     "uuid": "^13.0.0"
   },

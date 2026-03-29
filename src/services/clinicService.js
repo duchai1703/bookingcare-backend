@@ -1,16 +1,27 @@
 // src/services/clinicService.js
+// ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
 const db = require('../models');
+const { sanitizeContent } = require('../utils/sanitizeHtml');
+const { validateBase64Image } = require('../utils/validateBase64Image');
 
 const createClinic = async (data) => {
   try {
     if (!data.name || !data.address) {
       return { errCode: 1, message: 'Thiếu tên hoặc địa chỉ phòng khám!' };
     }
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
+    if (data.imageBase64) {
+      const imgResult = validateBase64Image(data.imageBase64);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
+    }
     await db.Clinic.create({
       name: data.name,
       address: data.address,
       image: data.imageBase64 || '',
-      descriptionHTML: data.descriptionHTML || '',
+      // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
+      descriptionHTML: sanitizeContent(data.descriptionHTML),
       descriptionMarkdown: data.descriptionMarkdown || '',
     });
     return { errCode: 0, message: 'Tạo phòng khám thành công!' };
@@ -65,10 +76,16 @@ const editClinic = async (data) => {
     }
     clinic.name = data.name || clinic.name;
     clinic.address = data.address || clinic.address;
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
     if (data.imageBase64) {
+      const imgResult = validateBase64Image(data.imageBase64);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
       clinic.image = data.imageBase64;
     }
-    clinic.descriptionHTML = data.descriptionHTML || clinic.descriptionHTML;
+    // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
+    clinic.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : clinic.descriptionHTML;
     clinic.descriptionMarkdown = data.descriptionMarkdown || clinic.descriptionMarkdown;
     await clinic.save();
     return { errCode: 0, message: 'Cập nhật phòng khám thành công!' };

@@ -144,7 +144,12 @@ const getListPatientForDoctor = async (req, res) => {
 const sendRemedy = async (req, res) => {
   try {
     // FIX DS-04: merge bookingId từ URL
-    const data = { ...req.body, bookingId: req.params.bookingId };
+    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Lấy doctorId từ JWT token, KHÔNG tin req.body
+    const data = {
+      ...req.body,
+      bookingId: req.params.bookingId,
+      doctorId: req.user.id,  // BẮT BUỘC từ token
+    };
     const result = await doctorService.sendRemedy(data);
     const httpStatus = result.errCode === 0 ? 200 : 400;
     return res.status(httpStatus).json(result);
@@ -158,7 +163,12 @@ const sendRemedy = async (req, res) => {
 const cancelBooking = async (req, res) => {
   try {
     // FIX DS-04: merge bookingId từ URL
-    const data = { ...req.body, bookingId: req.params.bookingId };
+    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Lấy doctorId từ JWT token, KHÔNG tin req.body
+    const data = {
+      ...req.body,
+      bookingId: req.params.bookingId,
+      doctorId: req.user.id,  // BẮT BUỘC từ token
+    };
     const result = await doctorService.cancelBooking(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
@@ -172,11 +182,13 @@ const cancelBooking = async (req, res) => {
 // REQ-DR-007 – Lịch sử booking của bệnh nhân
 const getPatientBookingHistory = async (req, res) => {
   try {
+    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Lấy doctorId từ JWT token
+    const doctorId = req.user.id;
     const patientId = req.params.patientId || req.query.patientId;
     if (!patientId) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số patientId!' });
     }
-    const result = await doctorService.getPatientBookingHistory(patientId);
+    const result = await doctorService.getPatientBookingHistory(patientId, doctorId);
     const httpStatus = result.errCode === 0 ? 200 : 500;
     return res.status(httpStatus).json(result);
   } catch (err) {

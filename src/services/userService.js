@@ -17,11 +17,11 @@ const handleUserLogin = async (email, password) => {
       return { errCode: 3, message: 'Sai mật khẩu!' };
     }
 
-    // Tạo JWT token (hết hạn sau 24 giờ)
+    // ✅ [SECURITY-FIX Phase 5] JWT Hardening: Giảm thời gian sống từ 24h → 2h
     const token = jwt.sign(
       { id: user.id, email: user.email, roleId: user.roleId },
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: '2h' }
     );
 
     return {
