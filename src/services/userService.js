@@ -2,6 +2,7 @@
 const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { validateBase64Image } = require('../utils/validateBase64Image');
 // FIX BE-05: đã xóa genSaltSync — dùng bcrypt.hash() async trực tiếp
 
 // ===== LOGIN + JWT TOKEN (SRS REQ-AU-001, 002, 007, 009) =====
@@ -68,6 +69,13 @@ const createNewUser = async (data) => {
     if (exist) {
       return { errCode: 2, message: 'Email đã tồn tại!' };
     }
+    // ✅ [SECURITY-FIX] Validate Base64 image trước khi lưu
+    if (data.image) {
+      const imgResult = validateBase64Image(data.image);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
+    }
     const hashedPassword = await bcrypt.hash(data.password, 10); // FIX BE-05: async hash
     await db.User.create({
       email: data.email,
@@ -106,6 +114,11 @@ const editUser = async (data) => {
     user.roleId = data.roleId || user.roleId;
     user.positionId = data.positionId || user.positionId;
     if (data.image) {
+      // ✅ [SECURITY-FIX] Validate Base64 image trước khi lưu
+      const imgResult = validateBase64Image(data.image);
+      if (!imgResult.isValid) {
+        return { errCode: 4, message: imgResult.error };
+      }
       user.image = data.image;
     }
     await user.save();

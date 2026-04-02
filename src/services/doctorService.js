@@ -157,14 +157,24 @@ const bulkCreateSchedule = async (data) => {
 };
 
 // ===== MỚI: DELETE SCHEDULE (SRS REQ-AM-021) =====
+// ✅ [FIX] Hỗ trợ xóa bằng ID (primary key) hoặc bộ 3 {doctorId, date, timeType}
 const deleteSchedule = async (data) => {
   try {
-    if (!data.doctorId || !data.date || !data.timeType) {
-      return { errCode: 1, message: 'Thiếu tham số (doctorId, date, timeType)!' };
+    let schedule;
+
+    // Ưu tiên 1: Xóa bằng ID (primary key) — Frontend gửi schedule.id
+    if (data.id) {
+      schedule = await db.Schedule.findByPk(data.id);
     }
-    const schedule = await db.Schedule.findOne({
-      where: { doctorId: data.doctorId, date: data.date, timeType: data.timeType },
-    });
+    // Ưu tiên 2: Xóa bằng bộ 3 tham số {doctorId, date, timeType} — UTC timestamp
+    else if (data.doctorId && data.date && data.timeType) {
+      schedule = await db.Schedule.findOne({
+        where: { doctorId: data.doctorId, date: String(data.date), timeType: data.timeType },
+      });
+    } else {
+      return { errCode: 1, message: 'Thiếu tham số (id hoặc doctorId + date + timeType)!' };
+    }
+
     if (!schedule) {
       return { errCode: 3, message: 'Không tìm thấy lịch khám!' };
     }
@@ -172,9 +182,7 @@ const deleteSchedule = async (data) => {
     if (schedule.currentNumber > 0) {
       return { errCode: 2, message: `Lịch khám đã có ${schedule.currentNumber} bệnh nhân đặt, không thể xóa!` };
     }
-    await db.Schedule.destroy({
-      where: { doctorId: data.doctorId, date: data.date, timeType: data.timeType },
-    });
+    await schedule.destroy();
     return { errCode: 0, message: 'Xóa lịch khám thành công!' };
   } catch (err) {
     console.error('>>> deleteSchedule error:', err);

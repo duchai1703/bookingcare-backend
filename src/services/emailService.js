@@ -50,6 +50,13 @@ const sendEmailRemedy = async (data) => {
        <p>You have received medical results from Dr. <b>${data.doctorName}</b>.</p>
        <p>Please find the results in the attached file.</p>
        <p>Thank you!</p>`;
+  // ✅ [FIX] Tách raw base64 data robustly từ full data URI
+  const base64Raw = data.imageBase64.includes('base64,')
+    ? data.imageBase64.split('base64,')[1]
+    : data.imageBase64;
+  // Detect MIME type cho đúng extension
+  const mimeMatch = data.imageBase64.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+  const ext = mimeMatch ? mimeMatch[1].split('/')[1].replace('jpeg', 'jpg') : 'png';
 
   await transporter.sendMail({
     from: '"BookingCare" <noreply@bookingcare.vn>',
@@ -58,8 +65,8 @@ const sendEmailRemedy = async (data) => {
     html: htmlContent,
     attachments: [
       {
-        filename: `ket-qua-kham-${Date.now()}.png`,
-        content: data.imageBase64.split('base64,')[1],
+        filename: `ket-qua-kham-${Date.now()}.${ext}`,
+        content: base64Raw,
         encoding: 'base64',
       },
     ],
