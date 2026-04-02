@@ -53,7 +53,8 @@ const getDetailDoctorById = async (id) => {
       return { errCode: 3, message: 'Không tìm thấy bác sĩ!' };
     }
     if (doctor.image) {
-      const imageBase64 = Buffer.from(doctor.image, 'base64').toString('binary');
+      // FIX BUG-03: Image is BLOB in MySQL — convert buffer to base64 string for frontend
+      const imageBase64 = Buffer.from(doctor.image).toString('base64');
       doctor.setDataValue('image', imageBase64);
     }
     return { errCode: 0, data: doctor };
@@ -103,6 +104,13 @@ const saveInfoDoctor = async (data) => {
         paymentId: data.paymentId,
         note: data.note || '',
       });
+    }
+    // FIX BUG-05: Update User avatar if image provided
+    if (data.image) {
+      const imgResult = validateBase64Image(data.image);
+      if (imgResult.isValid) {
+        await db.User.update({ image: data.image }, { where: { id: data.doctorId } });
+      }
     }
     return { errCode: 0, message: 'Lưu thông tin bác sĩ thành công!' };
   } catch (err) {
@@ -191,7 +199,7 @@ const deleteSchedule = async (data) => {
 };
 
 // ===== GET SCHEDULE BY DATE (SRS 3.8 REQ-PT-009) =====
-const getScheduleByDate = async (doctorId, date) => {
+const getScheduleByDate = async (doctorId, date, includeAll = false) => {
   try {
     const schedules = await db.Schedule.findAll({
       where: { doctorId, date },
@@ -201,8 +209,9 @@ const getScheduleByDate = async (doctorId, date) => {
       raw: false,
       nest: true,
     });
-    const available = schedules.filter(s => s.currentNumber < s.maxNumber);
-    return { errCode: 0, data: available };
+    // FIX BUG-06: Admin sees ALL schedules; Patient sees only available
+    const result = includeAll ? schedules : schedules.filter(s => s.currentNumber < s.maxNumber);
+    return { errCode: 0, data: result };
   } catch (err) {
     console.error('>>> getScheduleByDate error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
@@ -244,73 +253,148 @@ const getListPatientForDoctor = async (doctorId, date, statusId) => {
   }
 };
 
-// ===== SEND REMEDY (SRS 3.13 REQ-DR-008, 009, 010) =====
+// ===== ⭐ [v3.0] SEND REMEDY — TRANSACTION + PESSIMISTIC LOCK (SRS 3.13 REQ-DR-008, 009, 010) =====
+//
+// v2.0 → v3.0 THAY ĐỔI:
+//   1. Thêm `lock: t.LOCK.UPDATE` vào findOne → ngăn chặn double-remedy
+//   2. WHERE dùng `id: data.bookingId` thay vì `patientId` → exact match
+//   3. Email lấy từ DB (booking.patientData.email) → KHÔNG tin client
+//   4. `delete data.email` ở controller → defense-in-depth
 const sendRemedy = async (data) => {
+  const t = await db.sequelize.transaction();
+
   try {
-    if (!data.email || !data.doctorId || !data.patientId || !data.imageBase64) {
+    // ===== 1. VALIDATE INPUT =====
+    if (!data.bookingId || !data.doctorId || !data.imageBase64) {
+      await t.rollback();
       return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
     }
 
+    // ===== 2. VALIDATE BASE64 IMAGE =====
     // ✅ [SECURITY-FIX Phase 6] Validate Base64 image trước khi xử lý
     const imageValidation = validateBase64Image(data.imageBase64);
     if (!imageValidation.isValid) {
+      await t.rollback();
       return { errCode: 4, message: imageValidation.error };
     }
 
-    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Đảm bảo bác sĩ chỉ sửa booking của mình
+    // ===== 3. ⭐ [v3.0] FIND BOOKING VỚI PESSIMISTIC LOCK =====
+    //
+    // lock: t.LOCK.UPDATE
+    //   → Sequelize sinh ra: SELECT ... FROM Bookings WHERE ... FOR UPDATE
+    //   → Database KHÓA dòng này cho transaction hiện tại
+    //   → Các transaction khác phải ĐỢI cho đến khi t.commit() hoặc t.rollback()
+    //   → NGĂN CHẶN double-read → double-update (double-remedy)
     const booking = await db.Booking.findOne({
       where: {
-        doctorId: data.doctorId,  // doctorId lấy từ JWT (controller đã gán)
-        patientId: data.patientId,
-        statusId: 'S2',
+        id: data.bookingId,          // ✅ Exact match bằng bookingId
+        doctorId: data.doctorId,     // ✅ IDOR prevention — doctorId từ JWT
+        statusId: 'S2',             // ✅ State Machine gate — chỉ S2 mới được chuyển
       },
+      include: [
+        {
+          model: db.User,
+          as: 'patientData',
+          attributes: ['email', 'firstName', 'lastName'],
+        },
+      ],
       raw: false,
+      nest: true,
+      transaction: t,
+      lock: t.LOCK.UPDATE,           // ✅ [v3.0] PESSIMISTIC LOCK
     });
+
     if (!booking) {
+      await t.rollback();
       return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền thao tác!' };
     }
-    booking.statusId = 'S3'; // State Machine: S2 → S3
-    await booking.save();
 
+    // ===== 4. ✅ [v3.0] LẤY EMAIL TỪ DATABASE — KHÔNG TIN CLIENT =====
+    const patientEmail = booking.patientData?.email;
+    if (!patientEmail) {
+      await t.rollback();
+      return { errCode: 5, message: 'Không tìm thấy email bệnh nhân trong hệ thống!' };
+    }
+
+    // ===== 5. UPDATE STATUS S2 → S3 =====
+    booking.statusId = 'S3'; // State Machine: S2 → S3 (Đã khám xong)
+    await booking.save({ transaction: t });
+
+    // ===== 6. COMMIT — Mở khóa dòng booking =====
+    await t.commit();
+    // → 🔓 Dòng booking được MỞ KHÓA tại đây
+    // → Transaction khác (nếu đang chờ) sẽ tiếp tục
+    // → Nhưng findOne sẽ trả NULL vì statusId đã = S3, không match S2
+
+    // ===== 7. GỬI EMAIL SAU COMMIT — dùng email từ DB =====
     await emailService.sendEmailRemedy({
-      email: data.email,
+      email: patientEmail,           // ✅ Email từ DB, KHÔNG từ client
       imageBase64: data.imageBase64,
       doctorName: data.doctorName || 'Bác sĩ',
       language: data.language || 'vi',
     });
+
     return { errCode: 0, message: 'Gửi kết quả khám thành công!' };
   } catch (err) {
+    await t.rollback();
     console.error('>>> sendRemedy error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
 
-// ===== MỚI: CANCEL BOOKING (SRS REQ-DR-004) – S2 → S4 =====
+// ===== ⭐ [v3.0] CANCEL BOOKING — TRANSACTION + PESSIMISTIC LOCK (SRS REQ-DR-004) =====
+//
+// KỊCH BẢN NGĂN CHẶN (Double-Cancel):
+//   Request 1: cancelBooking(id=42) → khóa dòng → S2→S4 → decrement → commit
+//   Request 2: cancelBooking(id=42) → findOne bị block → sau commit → NULL (S4≠S2)
+//   → Schedule.currentNumber chỉ giảm 1 LẦN → DATA INTEGRITY ĐẢM BẢO
 const cancelBooking = async (data) => {
+  const t = await db.sequelize.transaction();
+
   try {
     if (!data.bookingId || !data.doctorId) {
+      await t.rollback();
       return { errCode: 1, message: 'Thiếu tham số bookingId hoặc doctorId!' };
     }
-    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Đảm bảo bác sĩ chỉ hủy booking của mình
+
+    // ===== ⭐ [v3.0] FIND + LOCK DÒNG =====
     const booking = await db.Booking.findOne({
-      where: { id: data.bookingId, doctorId: data.doctorId, statusId: 'S2' },
+      where: {
+        id: data.bookingId,          // ✅ Exact match
+        doctorId: data.doctorId,     // ✅ IDOR prevention — doctorId từ JWT
+        statusId: 'S2',             // ✅ State Machine gate
+      },
       raw: false,
+      transaction: t,
+      lock: t.LOCK.UPDATE,           // ✅ [v3.0] PESSIMISTIC LOCK
     });
+
     if (!booking) {
+      await t.rollback();
       return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền hủy!' };
     }
-    // State Machine: S2 → S4 (Đã hủy)
-    booking.statusId = 'S4';
-    await booking.save();
 
-    // Giảm currentNumber của Schedule tương ứng
+    // ===== THAO TÁC 1: S2 → S4 (trong transaction t) =====
+    booking.statusId = 'S4';
+    await booking.save({ transaction: t });
+
+    // ===== THAO TÁC 2: GIẢM currentNumber (trong transaction t) =====
     await db.Schedule.decrement('currentNumber', {
       by: 1,
-      where: { doctorId: booking.doctorId, date: booking.date, timeType: booking.timeType },
+      where: {
+        doctorId: booking.doctorId,
+        date: booking.date,
+        timeType: booking.timeType,
+      },
+      transaction: t,
     });
+
+    // ===== COMMIT — Cả 2 thành công → mở khóa =====
+    await t.commit();
 
     return { errCode: 0, message: 'Hủy lịch hẹn thành công!' };
   } catch (err) {
+    await t.rollback();
     console.error('>>> cancelBooking error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }

@@ -32,7 +32,13 @@ const createSpecialty = async (data) => {
 
 const getAllSpecialty = async () => {
   try {
-    const specialties = await db.Specialty.findAll();
+    const specialties = await db.Specialty.findAll({ raw: false });
+    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    specialties.forEach((spec) => {
+      if (spec.image) {
+        spec.setDataValue('image', Buffer.from(spec.image).toString('base64'));
+      }
+    });
     return { errCode: 0, data: specialties };
   } catch (err) {
     console.error('>>> getAllSpecialty error:', err);
@@ -45,9 +51,13 @@ const getDetailSpecialtyById = async (id, location) => {
     if (!id) {
       return { errCode: 1, message: 'Thiếu tham số id!' };
     }
-    const specialty = await db.Specialty.findOne({ where: { id } });
+    const specialty = await db.Specialty.findOne({ where: { id }, raw: false });
     if (!specialty) {
       return { errCode: 3, message: 'Không tìm thấy chuyên khoa!' };
+    }
+    // FIX: Convert image BLOB → base64 string
+    if (specialty.image) {
+      specialty.setDataValue('image', Buffer.from(specialty.image).toString('base64'));
     }
     let whereClause = { specialtyId: id };
     if (location && location !== 'ALL') {

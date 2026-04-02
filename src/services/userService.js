@@ -48,9 +48,29 @@ const getAllUsers = async (id) => {
   try {
     let users;
     if (id === 'ALL') {
-      users = await db.User.findAll({ attributes: { exclude: ['password'] } });
+      users = await db.User.findAll({
+        attributes: { exclude: ['password'] },
+        raw: false,
+      });
     } else {
-      users = await db.User.findOne({ where: { id }, attributes: { exclude: ['password'] } });
+      users = await db.User.findOne({
+        where: { id },
+        attributes: { exclude: ['password'] },
+        raw: false,
+      });
+    }
+    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    const convertImage = (user) => {
+      if (user && user.image) {
+        const imgBase64 = Buffer.from(user.image).toString('base64');
+        user.setDataValue('image', imgBase64);
+      }
+      return user;
+    };
+    if (Array.isArray(users)) {
+      users.forEach(convertImage);
+    } else if (users) {
+      convertImage(users);
     }
     return { errCode: 0, message: 'OK', data: users };
   } catch (err) {

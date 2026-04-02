@@ -32,7 +32,8 @@ const allcodeData = [
   { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám xong', valueEn: 'Done' },
   { type: 'STATUS', keyMap: 'S4', valueVi: 'Đã hủy', valueEn: 'Cancelled' },
 
-  // POSITION (SRS: P1-P5)
+  // POSITION (SRS: P0-P5)
+  { type: 'POSITION', keyMap: 'P0', valueVi: 'Không chọn', valueEn: 'None' },
   { type: 'POSITION', keyMap: 'P1', valueVi: 'Bác sĩ', valueEn: 'Doctor' },
   { type: 'POSITION', keyMap: 'P2', valueVi: 'Thạc sĩ', valueEn: 'Master' },
   { type: 'POSITION', keyMap: 'P3', valueVi: 'Tiến sĩ', valueEn: 'PhD' },

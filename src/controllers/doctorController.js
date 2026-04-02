@@ -111,10 +111,11 @@ const getScheduleByDate = async (req, res) => {
   try {
     const doctorId = req.params.doctorId || req.query.doctorId;
     const date = req.query.date;
+    const includeAll = req.query.includeAll === 'true'; // FIX BUG-06: Admin sees all slots
     if (!doctorId || !date) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số!' });
     }
-    const result = await doctorService.getScheduleByDate(doctorId, date);
+    const result = await doctorService.getScheduleByDate(doctorId, date, includeAll);
     const httpStatus = result.errCode === 0 ? 200 : 500;
     return res.status(httpStatus).json(result);
   } catch (err) {
@@ -143,13 +144,16 @@ const getListPatientForDoctor = async (req, res) => {
 
 const sendRemedy = async (req, res) => {
   try {
-    // FIX DS-04: merge bookingId từ URL
-    // ✅ [SECURITY-FIX Phase 4] IDOR/BOLA: Lấy doctorId từ JWT token, KHÔNG tin req.body
+    // ✅ [Phase 8 v3.0] IDOR/BOLA: Lấy doctorId từ JWT token, KHÔNG tin req.body
     const data = {
       ...req.body,
       bookingId: req.params.bookingId,
       doctorId: req.user.id,  // BẮT BUỘC từ token
     };
+    // ✅ [Phase 8 v3.0] Defense-in-depth: xóa email nếu client gửi lên
+    // Backend sẽ tự lấy email từ Database khi query booking + include patientData
+    delete data.email;
+
     const result = await doctorService.sendRemedy(data);
     const httpStatus = result.errCode === 0 ? 200 : 400;
     return res.status(httpStatus).json(result);

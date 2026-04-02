@@ -33,7 +33,13 @@ const createClinic = async (data) => {
 
 const getAllClinic = async () => {
   try {
-    const clinics = await db.Clinic.findAll();
+    const clinics = await db.Clinic.findAll({ raw: false });
+    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    clinics.forEach((clinic) => {
+      if (clinic.image) {
+        clinic.setDataValue('image', Buffer.from(clinic.image).toString('base64'));
+      }
+    });
     return { errCode: 0, data: clinics };
   } catch (err) {
     console.error('>>> getAllClinic error:', err);
@@ -46,9 +52,13 @@ const getDetailClinicById = async (id) => {
     if (!id) {
       return { errCode: 1, message: 'Thiếu tham số id!' };
     }
-    const clinic = await db.Clinic.findOne({ where: { id } });
+    const clinic = await db.Clinic.findOne({ where: { id }, raw: false });
     if (!clinic) {
       return { errCode: 3, message: 'Không tìm thấy phòng khám!' };
+    }
+    // FIX: Convert image BLOB → base64 string
+    if (clinic.image) {
+      clinic.setDataValue('image', Buffer.from(clinic.image).toString('base64'));
     }
     const doctorInfos = await db.Doctor_Info.findAll({
       where: { clinicId: id },

@@ -123,31 +123,67 @@ const postBookAppointment = async (data) => {
   }
 };
 
-// ===== VERIFY BOOKING (SRS 3.10, REQ-PT-019, 020) =====
+// ===== ⭐ [CRITICAL FIX] VERIFY BOOKING — TRANSACTION + PESSIMISTIC LOCK =====
+// (SRS 3.10, REQ-PT-019, 020)
+//
+// RACE CONDITION TRƯỚC ĐÂY:
+//   Bệnh nhân click link xác nhận 2 lần liên tiếp (hoặc mở 2 tab)
+//   → Request 1: findOne({statusId:'S1'}) → TÌM THẤY → S1→S2 → increment
+//   → Request 2: findOne({statusId:'S1'}) → VẪN TÌM THẤY (chưa commit) → S1→S2 → increment
+//   → currentNumber tăng 2 LẦN cho 1 booking → DATA SỆCH!
+//
+// FIX: Transaction + lock: t.LOCK.UPDATE
+//   → Request 1 khóa dòng → update → commit → mở khóa
+//   → Request 2 bị block → sau khi mở khóa → findOne trả NULL (statusId đã = S2, ≠ S1)
+//   → Trả errCode: 3 → Chỉ increment 1 LẦN DUY NHẤT
 const postVerifyBookAppointment = async (data) => {
+  // Validate trước khi mở transaction
+  if (!data.token || !data.doctorId) {
+    return { errCode: 1, message: 'Thiếu tham số!' };
+  }
+
+  const t = await db.sequelize.transaction();
+
   try {
-    if (!data.token || !data.doctorId) {
-      return { errCode: 1, message: 'Thiếu tham số!' };
-    }
+    // ===== 1. FIND BOOKING VỚI PESSIMISTIC LOCK =====
     const booking = await db.Booking.findOne({
-      where: { token: data.token, doctorId: data.doctorId, statusId: 'S1' },
+      where: {
+        token: data.token,
+        doctorId: data.doctorId,
+        statusId: 'S1',             // State Machine gate — chỉ S1 mới được verify
+      },
       raw: false,
+      transaction: t,
+      lock: t.LOCK.UPDATE,           // ✅ PESSIMISTIC LOCK — khóa dòng
     });
+
     if (!booking) {
+      await t.rollback();
       return { errCode: 3, message: 'Lịch hẹn không tồn tại hoặc đã được xác nhận!' };
     }
-    // State Machine: S1 → S2 (xác nhận bằng email)
-    booking.statusId = 'S2';
-    await booking.save();
 
+    // ===== 2. UPDATE STATUS S1 → S2 (trong transaction) =====
+    booking.statusId = 'S2';
+    await booking.save({ transaction: t });
+
+    // ===== 3. TĂNG SLOT SAU KHI XÁC NHẬN (trong transaction) =====
     // FIX BE-06: Chỉ tăng slot SAU KHI bệnh nhân xác nhận email (REQ-AM-023)
     await db.Schedule.increment('currentNumber', {
       by: 1,
-      where: { doctorId: booking.doctorId, date: booking.date, timeType: booking.timeType },
+      where: {
+        doctorId: booking.doctorId,
+        date: booking.date,
+        timeType: booking.timeType,
+      },
+      transaction: t,
     });
+
+    // ===== 4. COMMIT — Cả 2 thao tác thành công =====
+    await t.commit();
 
     return { errCode: 0, message: 'Xác nhận lịch hẹn thành công!' };
   } catch (err) {
+    await t.rollback();
     console.error('>>> postVerifyBookAppointment error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
