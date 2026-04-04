@@ -14,17 +14,14 @@ app.use(cors({
   credentials: true,
 }));
 
-// DS-01 FIX: limit 100kb mặc định, riêng routes nhận ảnh dùng 6mb
-const jsonSmall = bodyParser.json({ limit: '100kb' });
-const jsonLarge = bodyParser.json({ limit: '6mb' }); // 5MB ảnh + buffer
-const urlencodedSmall = bodyParser.urlencoded({ limit: '100kb', extended: true });
+// ✅ [FIX-IMAGE] DS-01 FIX v2: Tăng limit global lên 8mb
+// TRƯỚC ĐÂY: 100kb global → jsonLarge (6mb) ở route KHÔNG có tác dụng
+//   vì Express parse body ở middleware ĐẦU TIÊN (jsonSmall 100kb)
+//   → body bị reject trước khi đến route-level jsonLarge
+// SAU KHI FIX: 8mb global — đủ cho ảnh base64 (5MB ảnh ≈ 6.67MB base64)
+app.use(bodyParser.json({ limit: '8mb' }));
+app.use(bodyParser.urlencoded({ limit: '8mb', extended: true }));
 
-// Áp dụng limit nhỏ cho toàn bộ app — routes nhận ảnh sẽ override bằng jsonLarge
-app.use(jsonSmall);
-app.use(urlencodedSmall);
-
-// Export jsonLarge để web.js dùng cho image-upload routes
-app.locals.jsonLarge = jsonLarge;
 
 // Routes
 routes(app);

@@ -1,9 +1,12 @@
 // src/services/doctorService.js
 // ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
+// ✅ [FIX-IMAGE] Strip prefix trước khi lưu, convert BLOB khi đọc
 const db = require('../models');
 const emailService = require('./emailService');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
 const { validateBase64Image } = require('../utils/validateBase64Image');
+const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 // ===== GET TOP DOCTOR (SRS REQ-PT-003) =====
 const getTopDoctorHome = async (limit) => {
@@ -17,8 +20,14 @@ const getTopDoctorHome = async (limit) => {
         { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'genderData', attributes: ['valueVi', 'valueEn'] },
       ],
-      raw: true,
+      raw: false,
       nest: true,
+    });
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64 cho tất cả doctors
+    doctors.forEach((doc) => {
+      if (doc.image) {
+        doc.setDataValue('image', convertBlobToBase64(doc.image));
+      }
     });
     return { errCode: 0, data: doctors };
   } catch (err) {
@@ -53,9 +62,8 @@ const getDetailDoctorById = async (id) => {
       return { errCode: 3, message: 'Không tìm thấy bác sĩ!' };
     }
     if (doctor.image) {
-      // FIX BUG-03: Image is BLOB in MySQL — convert buffer to base64 string for frontend
-      const imageBase64 = Buffer.from(doctor.image).toString('base64');
-      doctor.setDataValue('image', imageBase64);
+      // ✅ [FIX-IMAGE] Convert BLOB → pure base64 (tương thích data cũ & mới)
+      doctor.setDataValue('image', convertBlobToBase64(doctor.image));
     }
     return { errCode: 0, data: doctor };
   } catch (err) {
@@ -109,7 +117,10 @@ const saveInfoDoctor = async (data) => {
     if (data.image) {
       const imgResult = validateBase64Image(data.image);
       if (imgResult.isValid) {
-        await db.User.update({ image: data.image }, { where: { id: data.doctorId } });
+        await db.User.update(
+          { image: stripBase64Prefix(data.image) },
+          { where: { id: data.doctorId } }
+        );
       }
     }
     return { errCode: 0, message: 'Lưu thông tin bác sĩ thành công!' };

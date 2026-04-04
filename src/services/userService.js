@@ -3,6 +3,8 @@ const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { validateBase64Image } = require('../utils/validateBase64Image');
+const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 // FIX BE-05: đã xóa genSaltSync — dùng bcrypt.hash() async trực tiếp
 
 // ===== LOGIN + JWT TOKEN (SRS REQ-AU-001, 002, 007, 009) =====
@@ -59,11 +61,10 @@ const getAllUsers = async (id) => {
         raw: false,
       });
     }
-    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64 (tương thích cả data cũ & mới)
     const convertImage = (user) => {
       if (user && user.image) {
-        const imgBase64 = Buffer.from(user.image).toString('base64');
-        user.setDataValue('image', imgBase64);
+        user.setDataValue('image', convertBlobToBase64(user.image));
       }
       return user;
     };
@@ -106,7 +107,8 @@ const createNewUser = async (data) => {
       phoneNumber: data.phoneNumber || '',
       gender: data.gender || '',
       roleId: data.roleId,
-      image: data.image || '',
+      // ✅ [FIX-IMAGE] Strip prefix trước khi lưu vào BLOB
+      image: data.image ? stripBase64Prefix(data.image) : '',
       positionId: data.positionId || '',
     });
     return { errCode: 0, message: 'Tạo người dùng thành công!' };
@@ -139,7 +141,8 @@ const editUser = async (data) => {
       if (!imgResult.isValid) {
         return { errCode: 4, message: imgResult.error };
       }
-      user.image = data.image;
+      // ✅ [FIX-IMAGE] Strip prefix trước khi lưu
+      user.image = stripBase64Prefix(data.image);
     }
     await user.save();
     return { errCode: 0, message: 'Cập nhật thành công!' };
@@ -218,14 +221,27 @@ const searchService = async (keyword) => {
       include: [
         { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
       ],
-      raw: true,
+      raw: false,
       nest: true,
+    });
+    // ✅ [FIX-IMAGE] Convert BLOB → base64 cho kết quả tìm kiếm
+    doctors.forEach((doc) => {
+      if (doc.image) {
+        doc.setDataValue('image', convertBlobToBase64(doc.image));
+      }
     });
 
     // Tìm chuyên khoa theo tên
     const specialties = await db.Specialty.findAll({
       where: { name: likeQuery },
       attributes: ['id', 'name', 'image'],
+      raw: false,
+    });
+    // ✅ [FIX-IMAGE] Convert BLOB → base64 cho kết quả tìm kiếm
+    specialties.forEach((spec) => {
+      if (spec.image) {
+        spec.setDataValue('image', convertBlobToBase64(spec.image));
+      }
     });
 
     // Tìm phòng khám theo tên
@@ -237,6 +253,13 @@ const searchService = async (keyword) => {
         ],
       },
       attributes: ['id', 'name', 'address', 'image'],
+      raw: false,
+    });
+    // ✅ [FIX-IMAGE] Convert BLOB → base64 cho kết quả tìm kiếm
+    clinics.forEach((clinic) => {
+      if (clinic.image) {
+        clinic.setDataValue('image', convertBlobToBase64(clinic.image));
+      }
     });
 
     return {

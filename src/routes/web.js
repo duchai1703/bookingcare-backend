@@ -7,8 +7,7 @@ const clinicController = require('../controllers/clinicController');
 const { verifyToken, checkAdminRole, checkDoctorRole } = require('../middleware/authMiddleware');
 
 const routes = (app) => {
-  // DS-01 FIX: lấy jsonLarge middleware từ app.locals (set trong server.js)
-  const jsonLarge = app.locals.jsonLarge;
+  // ✅ [FIX-IMAGE] DS-01 v2: jsonLarge không cần nữa — global limit đã 8mb trong server.js
 
   // ===== HEALTH CHECK =====
   app.get('/api/health', (req, res) => res.json({ errCode: 0, message: 'BookingCare Backend is running!' }));
@@ -41,14 +40,14 @@ const routes = (app) => {
 
   // ===== ADMIN ROUTES – Yêu cầu role R1 (SRS REQ-AU-004, 008) =====
 
-  // User CRUD (SRS 3.2) — POST/PUT nhận ảnh base64 dùng jsonLarge (DS-01)
+  // User CRUD (SRS 3.2)
   app.get('/api/v1/users', verifyToken, checkAdminRole, userController.handleGetAllUsers);
-  app.post('/api/v1/users', verifyToken, checkAdminRole, jsonLarge, userController.handleCreateNewUser);
-  app.put('/api/v1/users/:id', verifyToken, checkAdminRole, jsonLarge, userController.handleEditUser);
+  app.post('/api/v1/users', verifyToken, checkAdminRole, userController.handleCreateNewUser);
+  app.put('/api/v1/users/:id', verifyToken, checkAdminRole, userController.handleEditUser);
   app.delete('/api/v1/users/:id', verifyToken, checkAdminRole, userController.handleDeleteUser);
 
-  // Doctor Management (SRS 3.3) — POST nhận ảnh base64 dùng jsonLarge (DS-01)
-  app.post('/api/v1/doctors', verifyToken, checkAdminRole, jsonLarge, doctorController.saveInfoDoctor);
+  // Doctor Management (SRS 3.3)
+  app.post('/api/v1/doctors', verifyToken, checkAdminRole, doctorController.saveInfoDoctor);
   app.delete('/api/v1/doctors/:doctorId', verifyToken, checkAdminRole, doctorController.deleteDoctorInfo);
 
   // Schedule Management (SRS 3.6)
@@ -56,14 +55,14 @@ const routes = (app) => {
   app.put('/api/v1/schedules/:id', verifyToken, checkAdminRole, doctorController.editSchedule);            // FIX FE-02: REQ-AM-021
   app.delete('/api/v1/schedules/:id', verifyToken, checkAdminRole, doctorController.deleteSchedule);
 
-  // Specialty Management (SRS 3.5) — POST/PUT nhận ảnh base64 dùng jsonLarge (DS-01)
-  app.post('/api/v1/specialties', verifyToken, checkAdminRole, jsonLarge, specialtyController.createSpecialty);
-  app.put('/api/v1/specialties/:id', verifyToken, checkAdminRole, jsonLarge, specialtyController.editSpecialty);
+  // Specialty Management (SRS 3.5)
+  app.post('/api/v1/specialties', verifyToken, checkAdminRole, specialtyController.createSpecialty);
+  app.put('/api/v1/specialties/:id', verifyToken, checkAdminRole, specialtyController.editSpecialty);
   app.delete('/api/v1/specialties/:id', verifyToken, checkAdminRole, specialtyController.deleteSpecialty);
 
-  // Clinic Management (SRS 3.4) — POST/PUT nhận ảnh base64 dùng jsonLarge (DS-01)
-  app.post('/api/v1/clinics', verifyToken, checkAdminRole, jsonLarge, clinicController.createClinic);
-  app.put('/api/v1/clinics/:id', verifyToken, checkAdminRole, jsonLarge, clinicController.editClinic);
+  // Clinic Management (SRS 3.4)
+  app.post('/api/v1/clinics', verifyToken, checkAdminRole, clinicController.createClinic);
+  app.put('/api/v1/clinics/:id', verifyToken, checkAdminRole, clinicController.editClinic);
   app.delete('/api/v1/clinics/:id', verifyToken, checkAdminRole, clinicController.deleteClinic);
 
   // ===== DOCTOR ROUTES – Yêu cầu role R2 (SRS 3.11, 3.12, 3.13) =====

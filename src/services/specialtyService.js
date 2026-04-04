@@ -1,15 +1,18 @@
 // src/services/specialtyService.js
 // ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
+// ✅ [FIX-IMAGE] Strip prefix trước khi lưu, convert BLOB khi đọc
 const db = require('../models');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
 const { validateBase64Image } = require('../utils/validateBase64Image');
+const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 const createSpecialty = async (data) => {
   try {
     if (!data.name) {
       return { errCode: 1, message: 'Thiếu tên chuyên khoa!' };
     }
-    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
+    // ✅ [SECURITY-FIX Phase 6] Validate Base64 image (yêu cầu prefix)
     if (data.imageBase64) {
       const imgResult = validateBase64Image(data.imageBase64);
       if (!imgResult.isValid) {
@@ -18,7 +21,9 @@ const createSpecialty = async (data) => {
     }
     await db.Specialty.create({
       name: data.name,
-      image: data.imageBase64 || '',
+      // ✅ [FIX-IMAGE] Strip prefix TRƯỚC khi lưu vào BLOB
+      // Thứ tự: validate (cần prefix) → strip (bỏ prefix) → save (pure base64)
+      image: data.imageBase64 ? stripBase64Prefix(data.imageBase64) : '',
       // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
       descriptionHTML: sanitizeContent(data.descriptionHTML),
       descriptionMarkdown: data.descriptionMarkdown || '',
@@ -33,10 +38,10 @@ const createSpecialty = async (data) => {
 const getAllSpecialty = async () => {
   try {
     const specialties = await db.Specialty.findAll({ raw: false });
-    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64 (tương thích cả data cũ & mới)
     specialties.forEach((spec) => {
       if (spec.image) {
-        spec.setDataValue('image', Buffer.from(spec.image).toString('base64'));
+        spec.setDataValue('image', convertBlobToBase64(spec.image));
       }
     });
     return { errCode: 0, data: specialties };
@@ -55,9 +60,9 @@ const getDetailSpecialtyById = async (id, location) => {
     if (!specialty) {
       return { errCode: 3, message: 'Không tìm thấy chuyên khoa!' };
     }
-    // FIX: Convert image BLOB → base64 string
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64
     if (specialty.image) {
-      specialty.setDataValue('image', Buffer.from(specialty.image).toString('base64'));
+      specialty.setDataValue('image', convertBlobToBase64(specialty.image));
     }
     let whereClause = { specialtyId: id };
     if (location && location !== 'ALL') {
@@ -94,7 +99,8 @@ const editSpecialty = async (data) => {
       if (!imgResult.isValid) {
         return { errCode: 4, message: imgResult.error };
       }
-      specialty.image = data.imageBase64;
+      // ✅ [FIX-IMAGE] Strip prefix trước khi lưu
+      specialty.image = stripBase64Prefix(data.imageBase64);
     }
     // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
     specialty.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : specialty.descriptionHTML;

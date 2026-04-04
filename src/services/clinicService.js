@@ -1,8 +1,11 @@
 // src/services/clinicService.js
 // ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
+// ✅ [FIX-IMAGE] Strip prefix trước khi lưu, convert BLOB khi đọc
 const db = require('../models');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
 const { validateBase64Image } = require('../utils/validateBase64Image');
+const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 const createClinic = async (data) => {
   try {
@@ -19,7 +22,8 @@ const createClinic = async (data) => {
     await db.Clinic.create({
       name: data.name,
       address: data.address,
-      image: data.imageBase64 || '',
+      // ✅ [FIX-IMAGE] Strip prefix TRƯỚC khi lưu vào BLOB
+      image: data.imageBase64 ? stripBase64Prefix(data.imageBase64) : '',
       // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
       descriptionHTML: sanitizeContent(data.descriptionHTML),
       descriptionMarkdown: data.descriptionMarkdown || '',
@@ -34,10 +38,10 @@ const createClinic = async (data) => {
 const getAllClinic = async () => {
   try {
     const clinics = await db.Clinic.findAll({ raw: false });
-    // FIX WHITE SCREEN: Convert image BLOB → base64 string for frontend
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64 (tương thích cả data cũ & mới)
     clinics.forEach((clinic) => {
       if (clinic.image) {
-        clinic.setDataValue('image', Buffer.from(clinic.image).toString('base64'));
+        clinic.setDataValue('image', convertBlobToBase64(clinic.image));
       }
     });
     return { errCode: 0, data: clinics };
@@ -56,9 +60,9 @@ const getDetailClinicById = async (id) => {
     if (!clinic) {
       return { errCode: 3, message: 'Không tìm thấy phòng khám!' };
     }
-    // FIX: Convert image BLOB → base64 string
+    // ✅ [FIX-IMAGE] Convert BLOB → pure base64
     if (clinic.image) {
-      clinic.setDataValue('image', Buffer.from(clinic.image).toString('base64'));
+      clinic.setDataValue('image', convertBlobToBase64(clinic.image));
     }
     const doctorInfos = await db.Doctor_Info.findAll({
       where: { clinicId: id },
@@ -92,7 +96,8 @@ const editClinic = async (data) => {
       if (!imgResult.isValid) {
         return { errCode: 4, message: imgResult.error };
       }
-      clinic.image = data.imageBase64;
+      // ✅ [FIX-IMAGE] Strip prefix trước khi lưu
+      clinic.image = stripBase64Prefix(data.imageBase64);
     }
     // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
     clinic.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : clinic.descriptionHTML;
