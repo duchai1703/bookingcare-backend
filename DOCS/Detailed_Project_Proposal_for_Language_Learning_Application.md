@@ -4,7 +4,7 @@
 #
 ## **ĐỀ CƯƠNG CHI TIẾT**
 
-|<p>**TÊN TIẾNG VIỆT:**  Xây dựng ứng dụng đặt lịch khám bệnh trực tuyến tích hợp quản lý phòng khám và chuyên khoa..</p><p>**TÊN TIẾNG ANH:**  Developing an Online Medical Appointment Booking Application with Clinic and Specialty Management.</p>|||
+|<p>**TÊN TIẾNG VIỆT:**  Xây dựng ứng dụng đặt lịch khám bệnh trực tuyến tích hợp quản lý phòbng khám và chuyên khoa..</p><p>**TÊN TIẾNG ANH:**  Developing an Online Medical Appointment Booking Application with Clinic and Specialty Management.</p>|||
 | - | :- | :- |
 |**Cán bộ hướng dẫn:** ThS. Trần Anh Dũng|||
 |**Thời gian thực hiện:** Từ tháng 02/2026 đến tháng 06/2026|||

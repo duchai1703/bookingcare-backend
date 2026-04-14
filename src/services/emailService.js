@@ -73,4 +73,29 @@ const sendEmailRemedy = async (data) => {
   });
 };
 
-module.exports = { sendEmailBooking, sendEmailRemedy };
+// [Phase 9] Gửi email đặt lại mật khẩu (Password Recovery)
+// Được gọi từ authService.forgotPassword
+const sendEmailResetPassword = async (data) => {
+  const htmlContent = data.language === 'vi'
+    ? `<h3>Xin chào ${data.lastName} ${data.firstName},</h3>
+       <p>Bạn đã yêu cầu đặt lại mật khẩu cho tài khoản BookingCare.</p>
+       <p>Vui lòng click vào link bên dưới để đặt lại mật khẩu (link có hiệu lực trong 15 phút):</p>
+       <div><a href="${data.resetLink}" target="_blank">Đặt lại mật khẩu</a></div>
+       <p>Nếu bạn không yêu cầu đặt lại mật khẩu, vui lòng bỏ qua email này.</p>
+       <p>Xin chân thành cảm ơn!</p>`
+    : `<h3>Dear ${data.lastName} ${data.firstName},</h3>
+       <p>You have requested to reset your BookingCare account password.</p>
+       <p>Please click the link below to reset your password (valid for 15 minutes):</p>
+       <div><a href="${data.resetLink}" target="_blank">Reset Password</a></div>
+       <p>If you did not request a password reset, please ignore this email.</p>
+       <p>Thank you!</p>`;
+
+  await transporter.sendMail({
+    from: '"BookingCare" <noreply@bookingcare.vn>',
+    to: data.email,
+    subject: data.language === 'vi' ? 'Đặt lại mật khẩu BookingCare' : 'BookingCare Password Reset',
+    html: htmlContent,
+  });
+};
+
+module.exports = { sendEmailBooking, sendEmailRemedy, sendEmailResetPassword };

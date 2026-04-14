@@ -14,6 +14,14 @@ module.exports = (sequelize, DataTypes) => {
     patientAddress:     { type: DataTypes.STRING(255), allowNull: true },
     patientGender:      { type: DataTypes.STRING(10), allowNull: true },
     patientBirthday:    { type: DataTypes.STRING(20), allowNull: true },
+  }, {
+    // [v3.0] Đánh index cho các cột truy vấn thường xuyên
+    indexes: [
+      { fields: ['patientId'], name: 'idx_bookings_patientId' },           // GET /patient/bookings
+      { fields: ['statusId'], name: 'idx_bookings_statusId' },             // Filter theo tab (S1-S4)
+      { fields: ['patientId', 'statusId'], name: 'idx_bookings_patient_status' }, // Composite index
+      { fields: ['doctorId', 'date'], name: 'idx_bookings_doctor_date' },  // getListPatientForDoctor
+    ],
   });
   return Booking;
 };

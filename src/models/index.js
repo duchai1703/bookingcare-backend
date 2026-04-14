@@ -144,6 +144,33 @@ db.Booking.belongsTo(db.Allcode, { foreignKey: 'statusId',      targetKey: 'keyM
 db.Booking.belongsTo(db.Allcode, { foreignKey: 'timeType',      targetKey: 'keyMap', as: 'timeTypeBooking' });
 db.Booking.belongsTo(db.Allcode, { foreignKey: 'patientGender', targetKey: 'keyMap', as: 'genderBookingData' });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 9] User (Doctor) ↔ Review (1:N)
+// Một bác sĩ có nhiều đánh giá
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.Review, { foreignKey: 'doctorId', as: 'doctorReviews' });
+db.Review.belongsTo(db.User, { foreignKey: 'doctorId', as: 'reviewDoctorData' });
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 9] User (Patient) ↔ Review (1:N)
+// Một bệnh nhân có nhiều đánh giá
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.Review, { foreignKey: 'patientId', as: 'patientReviews' });
+db.Review.belongsTo(db.User, { foreignKey: 'patientId', as: 'reviewPatientData' });
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 9] Booking ↔ Review (1:1)
+// Mỗi booking chỉ được review 1 lần (UNIQUE bookingId)
+// ─────────────────────────────────────────────────────
+db.Booking.hasOne(db.Review, { foreignKey: 'bookingId', as: 'reviewData' });
+db.Review.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'bookingData' });
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 9] User ↔ Token (1:N) — One-time token store
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.Token, { foreignKey: 'userId', as: 'userTokens' });
+db.Token.belongsTo(db.User, { foreignKey: 'userId', as: 'tokenUserData' });
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const rateLimit = require('express-rate-limit');
 const db = require('./models');
 const routes = require('./routes/web');
 
@@ -22,6 +23,22 @@ app.use(cors({
 app.use(bodyParser.json({ limit: '8mb' }));
 app.use(bodyParser.urlencoded({ limit: '8mb', extended: true }));
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 9.7] Rate Limiting — Chống Spam Request
+// apiLimiter: 100 requests / 15 phút cho mỗi IP — áp dụng toàn bộ /api/
+// ═══════════════════════════════════════════════════════════════════════
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 phút
+  max: 100,                 // Tối đa 100 requests mỗi IP
+  standardHeaders: true,    // Trả về rate limit info trong headers `RateLimit-*`
+  legacyHeaders: false,     // Tắt headers `X-RateLimit-*` cũ
+  message: {
+    errCode: 429,
+    message: 'Too many requests. Please try again after 15 minutes.',
+  },
+});
+app.use('/api/', apiLimiter);
 
 // Routes
 routes(app);

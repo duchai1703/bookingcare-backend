@@ -2,9 +2,26 @@
 const userController = require('../controllers/userController');
 const doctorController = require('../controllers/doctorController');
 const patientController = require('../controllers/patientController');
+const reviewController = require('../controllers/reviewController');
 const specialtyController = require('../controllers/specialtyController');
 const clinicController = require('../controllers/clinicController');
-const { verifyToken, checkAdminRole, checkDoctorRole } = require('../middleware/authMiddleware');
+const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole } = require('../middleware/authMiddleware');
+const rateLimit = require('express-rate-limit');
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 9.7] authLimiter — Chống brute-force cho Auth endpoints
+// 5 requests / 15 phút cho mỗi IP — gắt gao hơn apiLimiter
+// ═══════════════════════════════════════════════════════════════════════
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 phút
+  max: 5,                   // Tối đa 5 requests mỗi IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    errCode: 429,
+    message: 'Too many login attempts. Please try again after 15 minutes.',
+  },
+});
 
 const routes = (app) => {
   // ✅ [FIX-IMAGE] DS-01 v2: jsonLarge không cần nữa — global limit đã 8mb trong server.js
@@ -15,15 +32,32 @@ const routes = (app) => {
   // ===== PUBLIC ROUTES (không cần đăng nhập) =====
 
   // Authentication (SRS 3.1)
-  app.post('/api/v1/auth/login', userController.handleLogin);
+  // [Phase 9.7] authLimiter — 5 req/15min chống brute-force
+  app.post('/api/v1/auth/login', authLimiter, userController.handleLogin);
+
+  // ─────────────────────────────────────────────────────
+  // [Phase 9] Auth Public Endpoints — Nhóm 2 (Design Document v3.0, Mục 4.2)
+  // Các endpoint này KHÔNG đi qua JWT middleware
+  // ─────────────────────────────────────────────────────
+  app.post('/api/v1/auth/register',         userController.handleRegisterPatient);    // Đăng ký bệnh nhân (R3)
+  app.post('/api/v1/auth/forgot-password',  authLimiter, userController.handleForgotPassword);     // [Phase 9.7] authLimiter
+  app.post('/api/v1/auth/reset-password',   userController.handleResetPassword);      // Đặt mật khẩu mới
 
   // Doctors – Public (SRS 3.7, 3.8, 3.9)
   app.get('/api/v1/doctors/top', doctorController.getTopDoctorHome);
   app.get('/api/v1/doctors/:id', doctorController.getDetailDoctorById);
   app.get('/api/v1/doctors/:doctorId/schedules', doctorController.getScheduleByDate);
 
-  // Bookings – Public (SRS 3.10)
-  app.post('/api/v1/bookings', patientController.postBookAppointment);
+  // ─────────────────────────────────────────────────────
+  // [Phase 9.2] Doctor Reviews — PUBLIC (không cần auth)
+  // GET /api/v1/doctors/:doctorId/reviews?page=1&limit=10
+  // Ai cũng xem được đánh giá bác sĩ
+  // ─────────────────────────────────────────────────────
+  app.get('/api/v1/doctors/:doctorId/reviews', reviewController.getDoctorReviews);
+
+  // FINAL FIX 9.7 — Endpoint chuẩn cho Verify Booking (link email không có JWT)
+  app.post('/api/v1/verify-book-appointment', patientController.postVerifyBookAppointment); // FINAL FIX 9.7
+  // Alias giữ tương thích ngược — các email cũ vẫn hoạt động
   app.post('/api/v1/bookings/verify', patientController.postVerifyBookAppointment);
 
   // Specialties – Public
@@ -71,6 +105,28 @@ const routes = (app) => {
   app.post('/api/v1/bookings/:bookingId/remedy', verifyToken, checkDoctorRole, doctorController.sendRemedy);
   app.patch('/api/v1/bookings/:bookingId/cancel', verifyToken, checkDoctorRole, doctorController.cancelBooking);        // REQ-DR-004
   app.get('/api/v1/patients/:patientId/bookings', verifyToken, checkDoctorRole, doctorController.getPatientBookingHistory); // REQ-DR-007
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 9.2] PATIENT ROUTES – Yêu cầu role R3 (verifyToken + checkPatientRole)
+  // ═══════════════════════════════════════════════════════════════════════
+  // Security: TẤT CẢ route dưới đây đi qua verifyToken (JWT) + checkPatientRole (R3)
+  // IDOR Prevention: Controller lấy patientId = req.user.id, KHÔNG từ params/body
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Profile APIs (Design Doc v3.0, Mục 4.1.1)
+  app.get('/api/v1/patient/profile',          verifyToken, checkPatientRole, patientController.getPatientProfile);
+  app.put('/api/v1/patient/profile',          verifyToken, checkPatientRole, patientController.editPatientProfile);
+  app.put('/api/v1/patient/change-password',  verifyToken, checkPatientRole, patientController.handleChangePassword);
+
+  // Booking APIs (Design Doc v3.0, Mục 4.1.2)
+  // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch
+  app.post('/api/v1/bookings',                    verifyToken, checkPatientRole, patientController.postBookAppointment);
+  app.get('/api/v1/patient/bookings',             verifyToken, checkPatientRole, patientController.getPatientBookings);
+  app.put('/api/v1/patient/bookings/:id/cancel',  verifyToken, checkPatientRole, patientController.handleCancelBooking);
+
+  // Review API (Design Doc v3.0, Mục 4.1.3) — Protected, R3 only
+  app.post('/api/v1/reviews', verifyToken, checkPatientRole, reviewController.submitReview);
 };
 
 module.exports = routes;
+

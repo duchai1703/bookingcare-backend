@@ -8,11 +8,22 @@ const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 // FIX BE-05: đã xóa genSaltSync — dùng bcrypt.hash() async trực tiếp
 
 // ===== LOGIN + JWT TOKEN (SRS REQ-AU-001, 002, 007, 009) =====
+// [Phase 9] Bổ sung response: phoneNumber, address, gender, image
+// [v3.0] JWT payload chứa tokenVersion để hỗ trợ strict session revocation
 const handleUserLogin = async (email, password) => {
   try {
-    const user = await db.User.findOne({ where: { email }, raw: true });
+    // Dùng raw: false để có thể xử lý BLOB image đúng cách
+    const user = await db.User.findOne({ where: { email }, raw: false });
     if (!user) {
       return { errCode: 1, message: 'Email không tồn tại trong hệ thống!' };
+    }
+
+    // Kiểm tra guest cũ (password = null) → không cho login trực tiếp
+    if (!user.password) {
+      return {
+        errCode: 7,
+        message: 'Tài khoản chưa có mật khẩu. Vui lòng sử dụng chức năng "Quên mật khẩu" để tạo mật khẩu.',
+      };
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -20,9 +31,14 @@ const handleUserLogin = async (email, password) => {
       return { errCode: 3, message: 'Sai mật khẩu!' };
     }
 
-    // ✅ [SECURITY-FIX Phase 5] JWT Hardening: Giảm thời gian sống từ 24h → 2h
+    // ✅ [v3.0] JWT payload BẮT BUỘC chứa tokenVersion để hỗ trợ strict revoke
     const token = jwt.sign(
-      { id: user.id, email: user.email, roleId: user.roleId },
+      {
+        id: user.id,
+        email: user.email,
+        roleId: user.roleId,
+        tokenVersion: user.tokenVersion || 0,  // [v3.0] Strict Session Revocation
+      },
       process.env.JWT_SECRET,
       { expiresIn: '2h' }
     );
@@ -36,6 +52,10 @@ const handleUserLogin = async (email, password) => {
         roleId: user.roleId,
         firstName: user.firstName,
         lastName: user.lastName,
+        phoneNumber: user.phoneNumber,                    // [Phase 9 - MỚI]
+        address: user.address,                            // [Phase 9 - MỚI]
+        gender: user.gender,                              // [Phase 9 - MỚI]
+        image: convertBlobToBase64(user.image),            // [Phase 9 - MỚI] BẮT BUỘC dùng convertBlobToBase64
       },
       accessToken: token, // Frontend lưu vào Redux store
     };

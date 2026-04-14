@@ -1,5 +1,6 @@
 // src/controllers/userController.js
 const userService = require('../services/userService');
+const authService = require('../services/authService');
 
 const handleLogin = async (req, res) => {
   try {
@@ -102,6 +103,53 @@ const handleSearch = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 9] Auth Handlers — Register, Forgot Password, Reset Password
+// ═══════════════════════════════════════════════════════════════════════
+
+// POST /api/v1/auth/register — Đăng ký bệnh nhân (R3)
+const handleRegisterPatient = async (req, res) => {
+  try {
+    const result = await authService.registerPatient(req.body);
+    // errCode: 0 = thành công (201), 1 = thiếu params (400),
+    //          2 = email trùng (409), 10 = guest hijack (409)
+    const statusMap = { 0: 201, 1: 400, 2: 409, 10: 409 };
+    const httpStatus = statusMap[result.errCode] || 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleRegisterPatient error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// POST /api/v1/auth/forgot-password — Gửi email link reset
+const handleForgotPassword = async (req, res) => {
+  try {
+    const result = await authService.forgotPassword(req.body);
+    // Luôn trả 200 OK để chống email enumeration
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('>>> handleForgotPassword error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// POST /api/v1/auth/reset-password — Đặt mật khẩu mới
+const handleResetPassword = async (req, res) => {
+  try {
+    const result = await authService.resetPassword(req.body);
+    // errCode: 0 = thành công (200), 1 = thiếu params (400),
+    //          2 = token hết hạn (400), 3 = user không tồn tại (404),
+    //          4 = token đã dùng/không hợp lệ (400)
+    const statusMap = { 0: 200, 1: 400, 2: 400, 3: 404, 4: 400 };
+    const httpStatus = statusMap[result.errCode] || 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleResetPassword error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 module.exports = {
   handleLogin,
   handleGetAllUsers,
@@ -110,4 +158,8 @@ module.exports = {
   handleDeleteUser,
   getAllCode,
   handleSearch,
+  handleRegisterPatient,
+  handleForgotPassword,
+  handleResetPassword,
 };
+
