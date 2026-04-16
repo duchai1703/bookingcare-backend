@@ -14,6 +14,33 @@ const sequelize = new Sequelize(
     port: process.env.DB_PORT,
     dialect: process.env.DB_DIALECT,
     logging: false,
+
+    // [Phase 10 — Zero Trust Timezone Lock] Khóa timezone tầng Sequelize
+    timezone: '+07:00',
+    dialectOptions: {
+      useUTC: false,      // CHỐNG tự động convert về UTC
+      dateStrings: true,  // Trả date dạng string, không auto-parse
+      typeCast: true,
+    },
+
+    // [🔒 TZ-POOL-001 v2.0] Khóa timezone cho TẤT CẢ kết nối bằng Manual Promise
+    // ⚠️ KHÔNG dùng `async/await connection.query()` vì driver mysql2
+    //   sử dụng cơ chế Callback — `await` có thể resolve TRƯỚC KHI query thực sự hoàn tất.
+    // ✅ Dùng hooks.afterConnect + new Promise() — đảm bảo connection CHỈ được trả về pool
+    //   SAU KHI MySQL xác nhận SET time_zone thành công (callback được gọi).
+    hooks: {
+      afterConnect: (connection) => {
+        return new Promise((resolve, reject) => {
+          connection.query("SET time_zone = '+07:00';", (err) => {
+            if (err) {
+              console.error('❌ [FATAL] Timezone Hook Failed:', err);
+              return reject(err); // Connection bị từ chối — không đưa vào pool
+            }
+            resolve(); // MySQL xác nhận thành công → connection sẵn sàng
+          });
+        });
+      },
+    },
   }
 );
 

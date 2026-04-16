@@ -58,6 +58,16 @@ const deleteDoctorInfo = async (req, res) => {
 
 const bulkCreateSchedule = async (req, res) => {
   try {
+    // [Security Guard] Doctor (R2) chỉ được tạo lịch cho chính mình
+    if (req.user && req.user.roleId === 'R2') {
+      const arr = req.body.arrSchedule;
+      if (Array.isArray(arr)) {
+        const hasOther = arr.some(s => String(s.doctorId) !== String(req.user.id));
+        if (hasOther) {
+          return res.status(403).json({ errCode: -1, message: 'Forbidden: Bác sĩ chỉ được tạo lịch cho chính mình!' });
+        }
+      }
+    }
     const result = await doctorService.bulkCreateSchedule(req.body);
     const httpStatus = result.errCode === 0 ? 200 : 400;
     return res.status(httpStatus).json(result);
@@ -76,6 +86,10 @@ const editSchedule = async (req, res) => {
     const db = require('../models');
     const schedule = await db.Schedule.findByPk(id, { raw: false });
     if (!schedule) return res.status(404).json({ errCode: 3, message: 'Không tìm thấy lịch khám!' });
+    // [Security Guard] Doctor (R2) chỉ được sửa lịch của chính mình
+    if (req.user && req.user.roleId === 'R2' && String(schedule.doctorId) !== String(req.user.id)) {
+      return res.status(403).json({ errCode: -1, message: 'Forbidden: Bác sĩ chỉ được sửa lịch của chính mình!' });
+    }
     if (maxNumber !== undefined) {
       if (maxNumber < schedule.currentNumber) {
         return res.status(400).json({
@@ -97,6 +111,14 @@ const editSchedule = async (req, res) => {
 const deleteSchedule = async (req, res) => {
   try {
     const data = { ...req.body, id: req.params.id || req.body.id };
+    // [Security Guard] Doctor (R2) chỉ được xóa lịch của chính mình
+    if (req.user && req.user.roleId === 'R2') {
+      const db = require('../models');
+      const schedule = data.id ? await db.Schedule.findByPk(data.id, { raw: true }) : null;
+      if (schedule && String(schedule.doctorId) !== String(req.user.id)) {
+        return res.status(403).json({ errCode: -1, message: 'Forbidden: Bác sĩ chỉ được xóa lịch của chính mình!' });
+      }
+    }
     const result = await doctorService.deleteSchedule(data);
     const statusMap = { 0: 200, 1: 400, 3: 404 };
     const httpStatus = statusMap[result.errCode] || 500;
@@ -111,7 +133,24 @@ const getScheduleByDate = async (req, res) => {
   try {
     const doctorId = req.params.doctorId || req.query.doctorId;
     const date = req.query.date;
-    const includeAll = req.query.includeAll === 'true'; // FIX BUG-06: Admin sees all slots
+    let includeAll = req.query.includeAll === 'true'; // FIX BUG-06: Admin sees all slots
+
+    // [Phase 10.5 Security Hotfix] Guard includeAll — chỉ R1 (Admin) hoặc R2 (Doctor, chỉ lịch của mình)
+    if (includeAll && req.user) {
+      if (req.user.roleId === 'R2' && String(doctorId) !== String(req.user.id)) {
+        return res.status(403).json({
+          errCode: -1,
+          message: 'Forbidden: Bác sĩ chỉ xem được lịch của chính mình!',
+        });
+      }
+      if (req.user.roleId !== 'R1' && req.user.roleId !== 'R2') {
+        return res.status(403).json({
+          errCode: -1,
+          message: 'Forbidden: Admin or Doctor access required for includeAll',
+        });
+      }
+    }
+
     if (!doctorId || !date) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số!' });
     }

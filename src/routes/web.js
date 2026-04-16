@@ -5,7 +5,8 @@ const patientController = require('../controllers/patientController');
 const reviewController = require('../controllers/reviewController');
 const specialtyController = require('../controllers/specialtyController');
 const clinicController = require('../controllers/clinicController');
-const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole } = require('../middleware/authMiddleware');
+const statisticController = require('../controllers/statisticController');
+const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -14,7 +15,7 @@ const rateLimit = require('express-rate-limit');
 // ═══════════════════════════════════════════════════════════════════════
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 phút
-  max: 5,                   // Tối đa 5 requests mỗi IP
+  max: 100,                 // Tăng lên 100 cho môi trường dev thay vì 5
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -84,10 +85,14 @@ const routes = (app) => {
   app.post('/api/v1/doctors', verifyToken, checkAdminRole, doctorController.saveInfoDoctor);
   app.delete('/api/v1/doctors/:doctorId', verifyToken, checkAdminRole, doctorController.deleteDoctorInfo);
 
-  // Schedule Management (SRS 3.6)
-  app.post('/api/v1/schedules/bulk', verifyToken, checkAdminRole, doctorController.bulkCreateSchedule);
-  app.put('/api/v1/schedules/:id', verifyToken, checkAdminRole, doctorController.editSchedule);            // FIX FE-02: REQ-AM-021
-  app.delete('/api/v1/schedules/:id', verifyToken, checkAdminRole, doctorController.deleteSchedule);
+  // Schedule Management (SRS 3.6) — Mở cho cả Admin (R1) và Doctor (R2)
+  // Security guard: Doctor chỉ được thao tác lịch của chính mình (enforced in controller)
+  app.post('/api/v1/schedules/bulk', verifyToken, checkAdminOrDoctorRole, doctorController.bulkCreateSchedule);
+  app.put('/api/v1/schedules/:id', verifyToken, checkAdminOrDoctorRole, doctorController.editSchedule);            // FIX FE-02: REQ-AM-021
+  app.delete('/api/v1/schedules/:id', verifyToken, checkAdminOrDoctorRole, doctorController.deleteSchedule);
+  // [Phase 10.5 VULN-001] Admin + Doctor schedule read (includeAll=true)
+  // Guard: Doctor chỉ xem được lịch của chính mình (enforced in controller)
+  app.get('/api/v1/admin/schedules', verifyToken, checkAdminOrDoctorRole, doctorController.getScheduleByDate);
 
   // Specialty Management (SRS 3.5)
   app.post('/api/v1/specialties', verifyToken, checkAdminRole, specialtyController.createSpecialty);
@@ -98,6 +103,13 @@ const routes = (app) => {
   app.post('/api/v1/clinics', verifyToken, checkAdminRole, clinicController.createClinic);
   app.put('/api/v1/clinics/:id', verifyToken, checkAdminRole, clinicController.editClinic);
   app.delete('/api/v1/clinics/:id', verifyToken, checkAdminRole, clinicController.deleteClinic);
+
+  // [Phase 10] STATISTICS — Admin only (roleId === 'R1')
+  app.get('/api/v1/statistics/overview',           verifyToken, checkAdminRole, statisticController.getOverviewStatistics);
+  app.get('/api/v1/statistics/bookings-by-day',    verifyToken, checkAdminRole, statisticController.getBookingsByDay);
+  app.get('/api/v1/statistics/bookings-by-status', verifyToken, checkAdminRole, statisticController.getBookingsByStatus);
+  app.get('/api/v1/statistics/top-specialties',    verifyToken, checkAdminRole, statisticController.getTopSpecialties);
+  app.get('/api/v1/statistics/top-doctors',        verifyToken, checkAdminRole, statisticController.getTopDoctors);
 
   // ===== DOCTOR ROUTES – Yêu cầu role R2 (SRS 3.11, 3.12, 3.13) =====
 

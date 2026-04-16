@@ -143,8 +143,8 @@ const clinicData = [
 
 // ===================== DOCTOR USER DATA =====================
 const doctorUsersData = [
-  { email: 'bs.nguyenvana@bookingcare.vn', firstName: 'Nguyễn Văn', lastName: 'An', gender: 'G1', address: '123 Lê Lợi, Quận 1, TP.HCM', phoneNumber: '0901234001', positionId: 'P5' },
-  { email: 'bs.tranvanbinh@bookingcare.vn', firstName: 'Trần Văn', lastName: 'Bình', gender: 'G1', address: '45 Trần Hưng Đạo, Hoàn Kiếm, Hà Nội', phoneNumber: '0901234002', positionId: 'P4' },
+  { email: 'bs.nguyenvana@bookingcare.vn', firstName: 'Nguyễn Văn', lastName: 'An', gender: 'G1', address: '123 Lê Lợi, Quận 1, TP.HCM', phoneNumber: '0901234001', positionId: 'P5', image: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==' },
+  { email: 'bs.tranvanbinh@bookingcare.vn', firstName: 'Trần Văn', lastName: 'Bình', gender: 'G1', address: '45 Trần Hưng Đạo, Hoàn Kiếm, Hà Nội', phoneNumber: '0901234002', positionId: 'P4', image: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==' },
   { email: 'bs.lethicuong@bookingcare.vn', firstName: 'Lê Thị', lastName: 'Cường', gender: 'G2', address: '78 Hai Bà Trưng, Quận 3, TP.HCM', phoneNumber: '0901234003', positionId: 'P3' },
   { email: 'bs.phamvandung@bookingcare.vn', firstName: 'Phạm Văn', lastName: 'Dũng', gender: 'G1', address: '90 Điện Biên Phủ, Ba Đình, Hà Nội', phoneNumber: '0901234004', positionId: 'P5' },
   { email: 'bs.hoangthiem@bookingcare.vn', firstName: 'Hoàng Thị', lastName: 'Em', gender: 'G2', address: '12 Nguyễn Huệ, Quận 1, TP.HCM', phoneNumber: '0901234005', positionId: 'P3' },
@@ -246,13 +246,14 @@ const seed = async () => {
     console.log(`>>> Seeded ${patientUsers.length} patient accounts`);
 
     // 5. Seed Specialties
+    const commonImageBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
     const specialties = [];
     for (const s of specialtyData) {
       const spec = await db.Specialty.create({
         name: s.name,
         descriptionMarkdown: s.descriptionMarkdown,
         descriptionHTML: s.descriptionHTML,
-        image: null,
+        image: commonImageBase64,
       });
       specialties.push(spec);
     }
@@ -266,7 +267,7 @@ const seed = async () => {
         address: c.address,
         descriptionMarkdown: c.descriptionMarkdown,
         descriptionHTML: c.descriptionHTML,
-        image: null,
+        image: commonImageBase64,
       });
       clinics.push(clinic);
     }
@@ -300,9 +301,9 @@ const seed = async () => {
       for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
         const date = new Date(today);
         date.setDate(date.getDate() + dayOffset);
-        // Use start-of-day UTC timestamp (milliseconds) as date string
-        const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-        const dateStr = startOfDay.getTime().toString();
+        // FIX BUG: Start-of-day MUST be UTC (midnight UTC) to match frontend moment.utc().startOf('day')
+        const utcStartOfDay = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+        const dateStr = utcStartOfDay.toString();
 
         // Each doctor has 4-6 random time slots per day
         const numSlots = 4 + Math.floor(Math.random() * 3);
@@ -323,26 +324,28 @@ const seed = async () => {
     }
     console.log(`>>> Seeded ${scheduleCount} schedule records (7 days x ${doctorUsers.length} doctors)`);
 
-    // 9. Seed some Bookings (sample appointments)
+    // 9. Seed some Bookings (sample appointments) including past bookings for Reviews
     const bookingData = [
-      { doctorIdx: 0, patientIdx: 0, dayOffset: 0, timeType: 'T1', status: 'S2', reason: 'Đau khớp gối kéo dài 2 tuần', patientName: 'Nguyễn Thị Lan', patientPhone: '0912345001', patientAddress: '100 Lê Văn Sỹ, Q3, TP.HCM', patientGender: 'G2', patientBirthday: '1990-05-15' },
-      { doctorIdx: 0, patientIdx: 1, dayOffset: 0, timeType: 'T2', status: 'S2', reason: 'Thoái hóa cột sống cổ', patientName: 'Trần Văn Minh', patientPhone: '0912345002', patientAddress: '200 Cầu Giấy, HN', patientGender: 'G1', patientBirthday: '1985-03-20' },
-      { doctorIdx: 1, patientIdx: 2, dayOffset: 1, timeType: 'T3', status: 'S1', reason: 'Đau đầu thường xuyên, chóng mặt', patientName: 'Lê Hoàng Nam', patientPhone: '0912345003', patientAddress: '55 NVL, Đà Nẵng', patientGender: 'G1', patientBirthday: '1992-11-10' },
-      { doctorIdx: 2, patientIdx: 3, dayOffset: 1, timeType: 'T5', status: 'S1', reason: 'Khám tim mạch định kỳ, huyết áp cao', patientName: 'Phạm Thị Oanh', patientPhone: '0912345004', patientAddress: '32 VVT, Q3, TP.HCM', patientGender: 'G2', patientBirthday: '1978-07-25' },
-      { doctorIdx: 3, patientIdx: 4, dayOffset: 2, timeType: 'T1', status: 'S1', reason: 'Viêm xoang mãn tính, nghẹt mũi', patientName: 'Hoàng Văn Phú', patientPhone: '0912345005', patientAddress: '15 LTT, Q1, TP.HCM', patientGender: 'G1', patientBirthday: '1988-01-30' },
-      { doctorIdx: 4, patientIdx: 0, dayOffset: 2, timeType: 'T6', status: 'S1', reason: 'Mụn trứng cá nặng, cần tư vấn', patientName: 'Nguyễn Thị Lan', patientPhone: '0912345001', patientAddress: '100 LVS, Q3, TP.HCM', patientGender: 'G2', patientBirthday: '1990-05-15' },
-      { doctorIdx: 5, patientIdx: 1, dayOffset: 3, timeType: 'T2', status: 'S1', reason: 'Đau bụng, khó tiêu kéo dài', patientName: 'Trần Văn Minh', patientPhone: '0912345002', patientAddress: '200 Cầu Giấy, HN', patientGender: 'G1', patientBirthday: '1985-03-20' },
-      { doctorIdx: 6, patientIdx: 2, dayOffset: 3, timeType: 'T3', status: 'S1', reason: 'Bé 5 tuổi ho kéo dài, sốt nhẹ', patientName: 'Lê Hoàng Nam (con)', patientPhone: '0912345003', patientAddress: '55 NVL, ĐN', patientGender: 'G1', patientBirthday: '2021-06-01' },
+      // Future bookings
+      { doctorIdx: 0, patientIdx: 0, dayOffset: 0, timeType: 'T1', status: 'S2', reason: 'Đau khớp gối kéo dài 2 tuần', patientName: 'Nguyễn Thị Lan', patientPhone: '0912345001' },
+      { doctorIdx: 0, patientIdx: 1, dayOffset: 0, timeType: 'T2', status: 'S2', reason: 'Thoái hóa cột sống cổ', patientName: 'Trần Văn Minh', patientPhone: '0912345002' },
+      { doctorIdx: 1, patientIdx: 2, dayOffset: 1, timeType: 'T3', status: 'S1', reason: 'Đau đầu thường xuyên, chóng mặt', patientName: 'Lê Hoàng Nam', patientPhone: '0912345003' },
+      
+      // Past bookings for reviews (Done status S3)
+      { doctorIdx: 0, patientIdx: 2, dayOffset: -5, timeType: 'T1', status: 'S3', reason: 'Tái khám khớp gối', patientName: 'Lê Hoàng Nam', patientPhone: '0912345003', hasReview: true, rating: 5, comment: 'Bác sĩ An rất tận tâm, giải thích cặn kẽ bệnh tình.' },
+      { doctorIdx: 0, patientIdx: 3, dayOffset: -10, timeType: 'T4', status: 'S3', reason: 'Đau mỏi vai gáy', patientName: 'Phạm Thị Oanh', patientPhone: '0912345004', hasReview: true, rating: 4, comment: 'Phòng khám sạch sẽ, bác sĩ khám kỹ nhưng hẹn lịch hơi đông.' },
+      { doctorIdx: 1, patientIdx: 4, dayOffset: -3, timeType: 'T2', status: 'S3', reason: 'Mất ngủ kéo dài', patientName: 'Hoàng Văn Phú', patientPhone: '0912345005', hasReview: true, rating: 5, comment: 'Đã hết đau nửa đầu sau liệu trình của bác sĩ Bình.' }
     ];
 
     let bookingCount = 0;
+    let reviewCount = 0;
     for (const b of bookingData) {
       const date = new Date(today);
       date.setDate(date.getDate() + b.dayOffset);
-      const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-      const dateStr = startOfDay.getTime().toString();
+      const utcStartOfDay = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+      const dateStr = utcStartOfDay.toString();
 
-      await db.Booking.create({
+      const newBooking = await db.Booking.create({
         statusId: b.status,
         doctorId: doctorUsers[b.doctorIdx].id,
         patientId: patientUsers[b.patientIdx].id,
@@ -350,15 +353,27 @@ const seed = async () => {
         timeType: b.timeType,
         token: uuidv4(),
         reason: b.reason,
-        patientName: b.patientName,
-        patientPhoneNumber: b.patientPhone,
-        patientAddress: b.patientAddress,
-        patientGender: b.patientGender,
-        patientBirthday: b.patientBirthday,
+        patientName: b.patientName || 'Test Patient',
+        patientPhoneNumber: b.patientPhone || '090',
+        patientAddress: 'Address',
+        patientGender: 'G1',
+        patientBirthday: '1990-01-01',
       });
       bookingCount++;
+
+      // Seed explicit Reviews for 'Done' bookings
+      if (b.hasReview) {
+        await db.Review.create({
+          doctorId: doctorUsers[b.doctorIdx].id,
+          patientId: patientUsers[b.patientIdx].id,
+          bookingId: newBooking.id,
+          rating: b.rating,
+          comment: b.comment,
+        });
+        reviewCount++;
+      }
     }
-    console.log(`>>> Seeded ${bookingCount} booking records`);
+    console.log(`>>> Seeded ${bookingCount} bookings & ${reviewCount} reviews`);
 
     // ========== SUMMARY ==========
     console.log('');
@@ -371,8 +386,8 @@ const seed = async () => {
     console.log(`  - Specialties: ${specialties.length} records`);
     console.log(`  - Clinics: ${clinics.length} records`);
     console.log(`  - Doctor_Info: ${doctorInfoData.length} records`);
-    console.log(`  - Schedules: ${scheduleCount} records (7 days)`);
-    console.log(`  - Bookings: ${bookingCount} records`);
+    console.log(`  - Schedules: ${scheduleCount} records`);
+    console.log(`  - Bookings/Reviews: ${bookingCount}/${reviewCount}`);
     console.log('  - All passwords: 123456');
     console.log('========================================');
 

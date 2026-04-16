@@ -30,7 +30,7 @@ app.use(bodyParser.urlencoded({ limit: '8mb', extended: true }));
 // ═══════════════════════════════════════════════════════════════════════
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 phút
-  max: 100,                 // Tối đa 100 requests mỗi IP
+  max: 10000,               // Tối đa 10000 requests mỗi IP cho môi trường dev
   standardHeaders: true,    // Trả về rate limit info trong headers `RateLimit-*`
   legacyHeaders: false,     // Tắt headers `X-RateLimit-*` cũ
   message: {
@@ -51,8 +51,25 @@ db.sequelize.authenticate()
     console.log('>>> Database connected');
     return db.sequelize.sync();
   })
-  .then(() => {
+  .then(async () => {
     console.log('>>> All tables synced');
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase 10 — 🔒 HARD-FAIL BOOT CHECK — Zero Trust cho Dữ liệu Y tế]
+    // Kiểm tra session timezone SAU KHI Sequelize sync thành công.
+    // TUYỆT ĐỐI KHÔNG chấp nhận auto-fix. Nếu sai → process.exit(1).
+    // ═══════════════════════════════════════════════════════════════════════
+    const [tzResult] = await db.sequelize.query("SELECT @@session.time_zone AS tz");
+    const sessionTz = tzResult[0]?.tz;
+    if (sessionTz !== '+07:00') {
+      console.error(`\n❌ [FATAL — TIMEZONE MISMATCH]`);
+      console.error(`   Session timezone = '${sessionTz}', expected '+07:00'.`);
+      console.error(`   → Kiểm tra cấu hình models/index.js: timezone + hooks.afterConnect`);
+      console.error(`   → Server DỪNG NGAY để bảo vệ tính toàn vẹn dữ liệu y tế.\n`);
+      process.exit(1); // ← Dừng server, TUYỆT ĐỐI KHÔNG auto-fix
+    }
+    console.log('✅ [TIMEZONE OK] Session timezone = +07:00');
+
     app.listen(PORT, () => {
       console.log(`>>> Server running on http://localhost:${PORT}`);
     });
