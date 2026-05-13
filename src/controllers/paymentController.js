@@ -17,6 +17,21 @@ const generateReceiptToken = require('../utils/generateReceiptToken');
 const sanitizeLog = require('../utils/sanitizeLog');
 const VNPAY_ALLOWED_KEYS = require('../utils/vnpayAllowedKeys');
 
+function sortObject(obj) {
+  let sorted = {};
+  let str = [];
+  let key;
+  for (key in obj) {
+    if (obj.hasOwnProperty(key)) {
+      str.push(encodeURIComponent(key));
+    }
+  }
+  str.sort();
+  for (key = 0; key < str.length; key++) {
+    sorted[str[key]] = encodeURIComponent(obj[str[key]]).replace(/%20/g, '+');
+  }
+  return sorted;
+}
 // ═══ ENV Constants ═══
 const VNP_TMN_CODE = process.env.VNP_TMN_CODE;
 const VNP_HASH_SECRET = process.env.VNP_HASH_SECRET;
@@ -53,23 +68,21 @@ function buildVnpayUrl(paymentToken, amount, ipAddr, updatedAt) {
     vnp_CurrCode: 'VND',
     vnp_TxnRef: paymentToken,
     vnp_OrderInfo: cleanOrderInfo,
+    vnp_OrderType: 'other',
     vnp_Locale: 'vn',
     vnp_ReturnUrl: VNP_RETURN_URL,
-    vnp_IpAddr: ipAddr,
+    vnp_IpAddr: ipAddr || '127.0.0.1',
     vnp_CreateDate: createDate,
     vnp_ExpireDate: expireDate, // [NEW LOGIC VNPAY-MAIL]: Lỗi 27
   };
-  const sorted = {};
-  Object.keys(params)
-    .sort()
-    .forEach((k) => (sorted[k] = params[k]));
+  const sorted = sortObject(params);
   const signData = qs.stringify(sorted, { encode: false });
   const hash = crypto
     .createHmac('sha512', VNP_HASH_SECRET)
     .update(Buffer.from(signData, 'utf-8'))
     .digest('hex');
-  const urlQuery = qs.stringify(sorted, { encode: true });
-  return `${VNP_URL}?${urlQuery}&vnp_SecureHashType=SHA512&vnp_SecureHash=${hash}`;
+  const urlQuery = qs.stringify(sorted, { encode: false });
+  return `${VNP_URL}?${urlQuery}&vnp_SecureHash=${hash}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -327,10 +340,7 @@ async function vnpayIpn(req, res) {
     const params = Object.assign(Object.create(null), vnp_Params);
     delete params['vnp_SecureHash'];
     delete params['vnp_SecureHashType'];
-    const sorted = Object.create(null);
-    Object.keys(params)
-      .sort()
-      .forEach((k) => (sorted[k] = params[k]));
+    const sorted = sortObject(params);
     const signData = qs.stringify(sorted, { encode: false });
     const expected = crypto
       .createHmac('sha512', VNP_HASH_SECRET)
@@ -526,8 +536,9 @@ async function createPaymentUrlByToken(req, res) {
 // Guard #16: Computed Property Name ["24"]
 // ═══════════════════════════════════════════════════════════════════════
 async function vnpayQuerydr(booking) {
+  const vnp_RequestId = String(Date.now());
   const params = {
-    vnp_RequestId: crypto.randomUUID(),
+    vnp_RequestId: vnp_RequestId,
     vnp_Version: '2.1.0',
     vnp_Command: 'querydr',
     vnp_TmnCode: VNP_TMN_CODE,
@@ -536,22 +547,28 @@ async function vnpayQuerydr(booking) {
       /[^a-zA-Z0-9 ]/g,
       '',
     ),
-    // ✅ [v20.0 F2] Null-check createdAt trước moment()
-    vnp_TransactionDate: booking.createdAt
-      ? moment(booking.createdAt)
-          .tz('Asia/Ho_Chi_Minh')
-          .format('YYYYMMDDHHmmss')
+    vnp_TransactionDate: booking.updatedAt
+      ? moment(booking.updatedAt).tz('Asia/Ho_Chi_Minh').format('YYYYMMDDHHmmss')
       : '',
     vnp_CreateDate: moment().tz('Asia/Ho_Chi_Minh').format('YYYYMMDDHHmmss'),
     vnp_IpAddr: '127.0.0.1',
   };
-  const sorted = {};
-  Object.keys(params)
-    .sort()
-    .forEach((k) => (sorted[k] = params[k]));
+  
+  const signData = [
+    params.vnp_RequestId,
+    params.vnp_Version,
+    params.vnp_Command,
+    params.vnp_TmnCode,
+    params.vnp_TxnRef,
+    params.vnp_TransactionDate,
+    params.vnp_CreateDate,
+    params.vnp_IpAddr,
+    params.vnp_OrderInfo
+  ].join('|');
+
   params.vnp_SecureHash = crypto
     .createHmac('sha512', VNP_HASH_SECRET)
-    .update(Buffer.from(qs.stringify(sorted, { encode: false }), 'utf-8'))
+    .update(Buffer.from(signData, 'utf-8'))
     .digest('hex');
 
   const resp = await axios.post(VNP_API_URL, params, { timeout: 10000 });
@@ -798,12 +815,11 @@ async function bookingByToken(req, res) {
 
   try {
     // ✅ [v20.3 FIX-2] Query theo paymentToken (= vnp_TxnRef từ return URL).
-    // publicReceiptToken là internal token — frontend không bao giờ có.
-    // Guard thay thế: paymentStatus = "paid" chặn truy cập booking chưa TT.
+    // Bỏ điều kiện paymentStatus = "paid" để xử lý Race Condition và Localhost
+    // Thay vào đó, gọi chủ động QueryDR nếu chưa paid
     const booking = await db.Booking.findOne({
       where: {
         paymentToken: token,
-        paymentStatus: 'paid',
       },
       include: [
         {
@@ -820,6 +836,25 @@ async function bookingByToken(req, res) {
       ],
     });
     if (!booking) return res.status(404).json({ errCode: 2 });
+
+    // Active QueryDR (Fix cho Localhost / Race Condition khi IPN chưa tới)
+    if (booking.paymentStatus !== 'paid' && booking.paymentStatus !== 'refunded') {
+      try {
+        const queryRes = await vnpayQuerydr(booking);
+        if (queryRes.status === 'paid') {
+          booking.paymentStatus = 'paid';
+          booking.statusId = 'S2';
+          booking.vnp_PayDate = queryRes.data?.vnp_PayDate || moment().format('YYYYMMDDHHmmss');
+          booking.vnpayTransactionNo = queryRes.data?.vnp_TransactionNo;
+          await booking.save();
+        } else if (queryRes.status === 'failed' || queryRes.status === 'cancelled') {
+          booking.paymentStatus = 'failed';
+          await booking.save();
+        }
+      } catch (err) {
+        console.warn('>>> [QueryDR Fallback] Failed:', err.message);
+      }
+    }
 
     const safeName = String(
       (booking.patientData?.lastName || '') +

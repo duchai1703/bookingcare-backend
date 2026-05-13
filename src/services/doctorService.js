@@ -253,6 +253,7 @@ const getListPatientForDoctor = async (doctorId, date, statusId) => {
           ],
         },
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'genderBookingData', attributes: ['valueVi', 'valueEn'] },
       ],
       raw: false,
       nest: true,

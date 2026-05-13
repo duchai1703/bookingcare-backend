@@ -155,6 +155,27 @@ const postBookAppointment = async (data, patientId) => {
     // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S1.5)
 
     // ═══════════════════════════════════════════════════════════
+    // [NEW LOGIC EMAIL]: Tự động lấy Tên bác sĩ, Giờ và Ngày để gửi mail
+    // ═══════════════════════════════════════════════════════════
+    const doctorUser = await db.User.findByPk(data.doctorId, {
+      attributes: ['firstName', 'lastName'],
+      transaction: t,
+    });
+    const computedDoctorName = doctorUser ? `${doctorUser.lastName} ${doctorUser.firstName}` : 'Bác sĩ';
+
+    const timeAllcode = await db.Allcode.findOne({
+      where: { keyMap: data.timeType, type: 'TIME' },
+      attributes: ['valueVi', 'valueEn'],
+      transaction: t,
+    });
+    const computedTimeString = data.language === 'en' ? timeAllcode?.valueEn : timeAllcode?.valueVi;
+
+    const parsedDate = new Date(parseInt(data.date, 10));
+    const computedDateString = data.language === 'en'
+      ? `${parsedDate.getMonth() + 1}/${parsedDate.getDate()}/${parsedDate.getFullYear()}`
+      : `${parsedDate.getDate()}/${parsedDate.getMonth() + 1}/${parsedDate.getFullYear()}`;
+
+    // ═══════════════════════════════════════════════════════════
     // [NEW LOGIC VNPAY-MAIL]: Lỗi 26 — Gửi Email NGOÀI Transaction
     // COMMIT DB trước, sau đó mới gửi email. Nếu email lỗi, chỉ log warning
     // chứ TUYỆT ĐỐI không rollback DB (tránh sập hệ thống đặt khám vì SMTP)
@@ -167,9 +188,9 @@ const postBookAppointment = async (data, patientId) => {
       await emailService.sendEmailBooking({
         email: data.email,
         patientName: data.fullName,
-        doctorName: data.doctorName || 'Bác sĩ',
-        time: data.timeString || '',
-        date: data.dateString || '',
+        doctorName: computedDoctorName,
+        time: computedTimeString || '',
+        date: computedDateString,
         redirectLink: redirectLink,
         language: data.language || 'vi',
       });
