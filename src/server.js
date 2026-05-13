@@ -8,9 +8,28 @@ const routes = require('./routes/web');
 
 const app = express();
 
-// SRS Section 5.4: CORS Policy
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 11 — Guard #64] Anti-Hash Decode & Trust Proxy
+// "simple" parser chặn prototype pollution qua nested query string
+// "trust proxy" cho phép Express lấy đúng IP từ header X-Forwarded-For
+// ═══════════════════════════════════════════════════════════════════════
+app.set('query parser', 'simple');
+app.set('trust proxy', 1);
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 11 — Guard #64] URI Length Guard
+// Chặn request với URL quá dài (> 2048 ký tự) trước khi vào router
+// ═══════════════════════════════════════════════════════════════════════
+app.use((req, res, next) => {
+  if (req.originalUrl.length > 2048) {
+    return res.status(414).json({ RspCode: '99' });
+  }
+  next();
+});
+
+// SRS Section 5.4: CORS Policy — bổ sung VNPay sandbox origin
 app.use(cors({
-  origin: process.env.URL_REACT,
+  origin: [process.env.URL_REACT, 'https://sandbox.vnpayment.vn'],
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   credentials: true,
 }));
@@ -49,7 +68,7 @@ const PORT = process.env.PORT || 8080;
 db.sequelize.authenticate()
   .then(() => {
     console.log('>>> Database connected');
-    return db.sequelize.sync();
+    return db.syncSchema(); // ✅ [Fix B5] Thực thi sync từ models layer
   })
   .then(async () => {
     console.log('>>> All tables synced');

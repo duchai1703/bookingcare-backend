@@ -27,6 +27,8 @@ const allcodeData = [
   { type: 'TIME', keyMap: 'T8', valueVi: '16:00 - 17:00', valueEn: '4:00 PM - 5:00 PM' },
   // STATUS
   { type: 'STATUS', keyMap: 'S1', valueVi: 'Lịch hẹn mới', valueEn: 'New appointment' },
+  // [NEW LOGIC VNPAY-MAIL]: Trạng thái trung gian S1.5 — Đã xác thực email, giữ chỗ 20 phút chờ thanh toán
+  { type: 'STATUS', keyMap: 'S1.5', valueVi: 'Chờ thanh toán', valueEn: 'Pending Payment' },
   { type: 'STATUS', keyMap: 'S2', valueVi: 'Đã xác nhận', valueEn: 'Confirmed' },
   { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám xong', valueEn: 'Done' },
   { type: 'STATUS', keyMap: 'S4', valueVi: 'Đã hủy', valueEn: 'Cancelled' },

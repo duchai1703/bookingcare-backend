@@ -1,6 +1,10 @@
 // src/controllers/statisticController.js
 // [Phase 10] Statistics Controllers — Admin only
+// [Phase 11] + getKpiStatistics (Doctor KPI)
 const statisticService = require('../services/statisticService');
+const moment = require('moment-timezone');
+const { Op } = require('sequelize');
+const db = require('../models');
 
 const getOverviewStatistics = async (req, res) => {
   try {
@@ -72,4 +76,38 @@ const getTopDoctors = async (req, res) => {
   }
 };
 
-module.exports = { getOverviewStatistics, getBookingsByDay, getBookingsByStatus, getTopSpecialties, getTopDoctors };
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase 11 — GĐ 11.5] getKpiStatistics — Doctor KPI Dashboard
+// Route: GET /api/v1/doctor/kpi-statistics
+// Guard #17: IDOR-safe — doctorId = req.user.id (KHÔNG nhận từ client)
+// Guard #25: catch return 500
+// ═══════════════════════════════════════════════════════════════════════
+const getKpiStatistics = async (req, res) => {
+  try {
+    const doctorId = req.user.id; // IDOR-safe: KHÔNG nhận từ client
+
+    const totalBookings = await db.Booking.count({
+      where: { doctorId, statusId: { [Op.in]: ['S2', 'S3'] } },
+    });
+    const totalRevenue =
+      (await db.Booking.sum('bookingPrice', {
+        where: { doctorId, paymentStatus: 'paid' },
+      })) || 0;
+    const todayBookings = await db.Booking.count({
+      where: {
+        doctorId,
+        date: moment().tz('Asia/Ho_Chi_Minh').format('YYYY-MM-DD'),
+        statusId: { [Op.in]: ['S1', 'S2'] },
+      },
+    });
+
+    res.json({
+      errCode: 0,
+      data: { totalBookings, totalRevenue, todayBookings },
+    });
+  } catch (err) {
+    return res.status(500).json({ errCode: -1 });
+  }
+};
+
+module.exports = { getOverviewStatistics, getBookingsByDay, getBookingsByStatus, getTopSpecialties, getTopDoctors, getKpiStatistics };

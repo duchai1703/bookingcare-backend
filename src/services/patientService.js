@@ -2,6 +2,7 @@
 const db = require('../models');
 const emailService = require('./emailService');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto'); // [NEW LOGIC VNPAY-MAIL]: Lỗi 11 — paymentToken
 const bcrypt = require('bcryptjs'); // FIX BE-03
 const { Op } = require('sequelize'); // FIX BE-04
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
@@ -11,6 +12,8 @@ const { sanitizeContent } = require('../utils/sanitizeHtml');
 
 // ===== BOOK APPOINTMENT (SRS 3.9, REQ-PT-012 → 023) =====
 // [Phase 9.3 FIX] Dual Mode: JWT (primary) + Guest Fallback (deprecated)
+// [NEW LOGIC VNPAY-MAIL]: Lỗi 11 (paymentToken), Lỗi 14 (null Doctor_Info),
+//   Lỗi 15 (bookingPrice=valueVi), Lỗi 26 (email NGOÀI transaction)
 const postBookAppointment = async (data, patientId) => {
   // DS-05 FIX: Validate trước transaction để tránh mở transaction khi input sai
   // REQ-PT-014: Validate dữ liệu đầu vào
@@ -39,7 +42,7 @@ const postBookAppointment = async (data, patientId) => {
   let resolvedPatientId = patientId; // Từ JWT
   let deprecationWarning = null;
 
-  // DS-05 FIX: transaction để đảm bảo atomicity (Booking + Email phải thành công cùng nhau)
+  // DS-05 FIX: transaction để đảm bảo atomicity
   const t = await db.sequelize.transaction();
   try {
     // REQ-AM-023: Kiểm tra lịch khám còn chỗ trống không
@@ -108,6 +111,27 @@ const postBookAppointment = async (data, patientId) => {
       return { errCode: 2, message: 'Bạn đã đặt lịch này rồi!' };
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // [NEW LOGIC VNPAY-MAIL]: Lỗi 14 — Null Pointer Exception nếu bác sĩ chưa cấu hình giá
+    // Fetch Doctor_Info để lấy priceId → Allcode.valueVi (VND)
+    // ═══════════════════════════════════════════════════════════
+    const doctorInfor = await db.Doctor_Info.findOne({
+      where: { doctorId: data.doctorId },
+      include: [
+        { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+      ],
+      transaction: t,
+    });
+    if (!doctorInfor) {
+      await t.rollback();
+      return { errCode: 6, message: 'Bác sĩ chưa cấu hình thông tin khám! Vui lòng chọn bác sĩ khác.' };
+    }
+
+    // [NEW LOGIC VNPAY-MAIL]: Lỗi 15 — Forex Leak: BẮT BUỘC lưu valueVi (VND)
+    // Parse chuỗi "500.000đ" → số 500000
+    const priceStr = doctorInfor.priceData?.valueVi || '0';
+    const bookingPrice = parseInt(priceStr.replace(/[^0-9]/g, ''), 10) || 0;
+
     // REQ-PT-015: Lưu booking (statusId = 'S1' theo State Machine)
     await db.Booking.create({
       statusId: 'S1',
@@ -116,6 +140,10 @@ const postBookAppointment = async (data, patientId) => {
       date: data.date,
       timeType: data.timeType,
       token: token,
+      // [NEW LOGIC VNPAY-MAIL]: Lỗi 11 — paymentToken cho VNPay (crypto.randomUUID)
+      paymentToken: crypto.randomUUID(),
+      // [NEW LOGIC VNPAY-MAIL]: Lỗi 15 — bookingPrice luôn bằng VND
+      bookingPrice: bookingPrice,
       reason: data.reason || '',
       patientName: data.fullName,
       patientPhoneNumber: data.phoneNumber,
@@ -124,49 +152,58 @@ const postBookAppointment = async (data, patientId) => {
       patientBirthday: data.birthday || '',
     }, { transaction: t }); // DS-05
 
-    // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S2)
+    // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S1.5)
 
-    // REQ-PT-016, 017: Gửi email xác thực
+    // ═══════════════════════════════════════════════════════════
+    // [NEW LOGIC VNPAY-MAIL]: Lỗi 26 — Gửi Email NGOÀI Transaction
+    // COMMIT DB trước, sau đó mới gửi email. Nếu email lỗi, chỉ log warning
+    // chứ TUYỆT ĐỐI không rollback DB (tránh sập hệ thống đặt khám vì SMTP)
+    // ═══════════════════════════════════════════════════════════
+    await t.commit(); // DS-05: commit DB trước
+
+    // Gửi email NGOÀI transaction — lỗi email không ảnh hưởng DB
     const redirectLink = `${process.env.URL_REACT}/verify-booking?token=${token}&doctorId=${data.doctorId}`;
-    await emailService.sendEmailBooking({
-      email: data.email,
-      patientName: data.fullName,
-      doctorName: data.doctorName || 'Bác sĩ',
-      time: data.timeString || '',
-      date: data.dateString || '',
-      redirectLink: redirectLink,
-      language: data.language || 'vi',
-    });
-
-    await t.commit(); // DS-05: email OK → commit tất cả DB changes
+    try {
+      await emailService.sendEmailBooking({
+        email: data.email,
+        patientName: data.fullName,
+        doctorName: data.doctorName || 'Bác sĩ',
+        time: data.timeString || '',
+        date: data.dateString || '',
+        redirectLink: redirectLink,
+        language: data.language || 'vi',
+      });
+    } catch (emailErr) {
+      // [NEW LOGIC VNPAY-MAIL]: Lỗi 26 — Log cảnh báo, KHÔNG rollback
+      console.warn('>>> [EMAIL_WARNING] Không gửi được email xác thực:', emailErr.message);
+    }
 
     const response = { errCode: 0, message: 'Đặt lịch thành công! Vui lòng kiểm tra email.' };
     // Trả kèm cảnh báo deprecation nếu dùng Guest Mode
     if (deprecationWarning) response.deprecationWarning = deprecationWarning;
     return response;
   } catch (err) {
-    await t.rollback(); // DS-05: bất kỳ lỗi nào (kể cả SMTP) → rollback DB
+    if (!t.finished) await t.rollback(); // DS-05
     console.error('>>> postBookAppointment error:', err);
-    if (err.message?.includes('email') || err.code === 'ECONNREFUSED') {
-      return { errCode: -1, message: 'Không thể gửi email xác thực. Vui lòng thử lại!' };
-    }
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
 
 // ===== ⭐ [CRITICAL FIX] VERIFY BOOKING — TRANSACTION + PESSIMISTIC LOCK =====
 // (SRS 3.10, REQ-PT-019, 020)
+// [NEW LOGIC VNPAY-MAIL]: S1 → S1.5 (giữ chỗ 20 phút, chờ thanh toán VNPay)
+//   + DoS Guard: Nếu đã S1.5 → return ngay, KHÔNG gọi save() (chống gia hạn updatedAt)
 //
 // RACE CONDITION TRƯỚC ĐÂY:
 //   Bệnh nhân click link xác nhận 2 lần liên tiếp (hoặc mở 2 tab)
-//   → Request 1: findOne({statusId:'S1'}) → TÌM THẤY → S1→S2 → increment
-//   → Request 2: findOne({statusId:'S1'}) → VẪN TÌM THẤY (chưa commit) → S1→S2 → increment
+//   → Request 1: findOne({statusId:'S1'}) → TÌM THẤY → S1→S1.5 → increment
+//   → Request 2: findOne({statusId:'S1'}) → VẪN TÌM THẤY (chưa commit) → S1→S1.5 → increment
 //   → currentNumber tăng 2 LẦN cho 1 booking → DATA SỆCH!
 //
 // FIX: Transaction + lock: t.LOCK.UPDATE
 //   → Request 1 khóa dòng → update → commit → mở khóa
-//   → Request 2 bị block → sau khi mở khóa → findOne trả NULL (statusId đã = S2, ≠ S1)
-//   → Trả errCode: 3 → Chỉ increment 1 LẦN DUY NHẤT
+//   → Request 2 bị block → sau khi mở khóa → findOne trả NULL (statusId đã = S1.5, ≠ S1)
+//   → Rơi vào nhánh DoS Guard → Trả errCode: 0 → Chỉ increment 1 LẦN DUY NHẤT
 const postVerifyBookAppointment = async (data) => {
   // Validate trước khi mở transaction
   if (!data.token || !data.doctorId) {
@@ -176,6 +213,32 @@ const postVerifyBookAppointment = async (data) => {
   const t = await db.sequelize.transaction();
 
   try {
+    // ═══════════════════════════════════════════════════════════
+    // [NEW LOGIC VNPAY-MAIL]: DoS Guard — Check nếu booking ĐÃ là S1.5
+    // Nếu đã S1.5, TUYỆT ĐỐI KHÔNG gọi save() (chống gia hạn updatedAt 20 phút)
+    // ═══════════════════════════════════════════════════════════
+    const existingS15 = await db.Booking.findOne({
+      where: {
+        token: data.token,
+        doctorId: data.doctorId,
+        statusId: 'S1.5',
+      },
+      raw: true,
+      transaction: t,
+    });
+    if (existingS15) {
+      await t.rollback();
+      // [NEW LOGIC VNPAY-MAIL]: Idempotent — trả thành công nhưng KHÔNG save/update gì cả
+      return {
+        errCode: 0,
+        message: 'Lịch hẹn đã được xác nhận trước đó!',
+        data: {
+          bookingPrice: existingS15.bookingPrice,
+          paymentToken: existingS15.paymentToken,
+        },
+      };
+    }
+
     // ===== 1. FIND BOOKING VỚI PESSIMISTIC LOCK =====
     const booking = await db.Booking.findOne({
       where: {
@@ -193,8 +256,9 @@ const postVerifyBookAppointment = async (data) => {
       return { errCode: 3, message: 'Lịch hẹn không tồn tại hoặc đã được xác nhận!' };
     }
 
-    // ===== 2. UPDATE STATUS S1 → S2 (trong transaction) =====
-    booking.statusId = 'S2';
+    // ===== 2. UPDATE STATUS S1 → S1.5 (trong transaction) =====
+    // [NEW LOGIC VNPAY-MAIL]: Chuyển sang S1.5 thay vì S2
+    booking.statusId = 'S1.5';
     await booking.save({ transaction: t });
 
     // ===== 3. TĂNG SLOT SAU KHI XÁC NHẬN (trong transaction) =====
@@ -212,7 +276,7 @@ const postVerifyBookAppointment = async (data) => {
 
     // Guard Overflow: Chỉ increment NẾU còn slot trống
     if (!schedule || schedule.currentNumber >= schedule.maxNumber) {
-      // Rollback status change (S1→S2) vì slot đã đầy
+      // Rollback status change (S1→S1.5) vì slot đã đầy
       await t.rollback();
       return { errCode: 5, message: 'Khung giờ đã đầy! Không thể xác nhận lịch hẹn.' };
     }
@@ -222,7 +286,15 @@ const postVerifyBookAppointment = async (data) => {
     // ===== 4. COMMIT — Cả 2 thao tác thành công =====
     await t.commit();
 
-    return { errCode: 0, message: 'Xác nhận lịch hẹn thành công!' };
+    // [NEW LOGIC VNPAY-MAIL]: Trả data cho Frontend hiển thị UI thanh toán
+    return {
+      errCode: 0,
+      message: 'Xác nhận lịch hẹn thành công!',
+      data: {
+        bookingPrice: booking.bookingPrice,
+        paymentToken: booking.paymentToken,
+      },
+    };
   } catch (err) {
     await t.rollback();
     console.error('>>> postVerifyBookAppointment error:', err);
@@ -454,13 +526,14 @@ const getPatientBookings = async (patientId, query) => {
 };
 
 // ─────────────────────────────────────────────────────
-// 5. CANCEL BOOKING — Hủy lịch hẹn (S1/S2 → S4)
+// 5. CANCEL BOOKING — Hủy lịch hẹn (S1/S1.5/S2 → S4)
 // ─────────────────────────────────────────────────────
 // [v2.0 SECURITY FIX #3] Race Condition Prevention + Idempotency
 // BẮT BUỘC: Transaction + Pessimistic Row Lock (FOR UPDATE)
-// Logic trả slot:
+// [NEW LOGIC VNPAY-MAIL]: Logic trả slot mở rộng:
 //   - S1 (chưa verify) → S4: KHÔNG trả slot (vì chưa tăng slot ở S1)
-//   - S2 (đã verify) → S4: Trả slot (decrement) CHỈ KHI currentNumber > 0
+//   - S1.5 (đã verify, chờ thanh toán) → S4: Trả slot + paymentStatus='cancelled' (Ghost Booking fix)
+//   - S2 (đã thanh toán) → S4: Trả slot + paymentStatus='refund_pending' (Lỗi 12)
 // ─────────────────────────────────────────────────────
 const cancelBooking = async (data, patientId) => {
   try {
@@ -497,8 +570,8 @@ const cancelBooking = async (data, patientId) => {
         return { errCode: 0, message: 'Lịch hẹn đã được hủy trước đó.' };
       }
 
-      // [Guard] Chỉ cho hủy khi status là S1 hoặc S2
-      if (!['S1', 'S2'].includes(booking.statusId)) {
+      // [NEW LOGIC VNPAY-MAIL]: Mở rộng cho S1.5
+      if (!['S1', 'S1.5', 'S2'].includes(booking.statusId)) {
         await t.rollback();
         return { errCode: 3, message: 'Không thể hủy lịch hẹn ở trạng thái này!' };
       }
@@ -507,13 +580,25 @@ const cancelBooking = async (data, patientId) => {
 
       // Update status → S4 (Đã hủy)
       booking.statusId = 'S4';
+
+      // ═══════════════════════════════════════════════════════════
+      // [NEW LOGIC VNPAY-MAIL]: Gán paymentStatus phù hợp
+      // ═══════════════════════════════════════════════════════════
+      if (oldStatus === 'S1.5') {
+        // Ghost Booking fix: gán cancelled để IPN không thể ghi đè S2
+        booking.paymentStatus = 'cancelled';
+      } else if (oldStatus === 'S2') {
+        // Lỗi 12: Trách nhiệm tài chính — Admin cần hoàn tiền thủ công
+        booking.paymentStatus = 'refund_pending';
+      }
+
       await booking.save({ transaction: t });
 
       // ═══════════════════════════════════════════════════════════
-      // [Slot Management] Trả slot CHỈ KHI status cũ là S2 (đã xác nhận = đã tăng slot)
+      // [NEW LOGIC VNPAY-MAIL]: Trả slot nếu S1.5 hoặc S2 (đã tăng slot)
       // S1 chưa verify → chưa tăng slot → KHÔNG trả
       // ═══════════════════════════════════════════════════════════
-      if (oldStatus === 'S2') {
+      if (oldStatus === 'S1.5' || oldStatus === 'S2') {
         // Lock Schedule row để tránh race condition trên currentNumber
         const schedule = await db.Schedule.findOne({
           where: {

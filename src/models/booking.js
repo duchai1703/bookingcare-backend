@@ -14,6 +14,19 @@ module.exports = (sequelize, DataTypes) => {
     patientAddress:     { type: DataTypes.STRING(255), allowNull: true },
     patientGender:      { type: DataTypes.STRING(10), allowNull: true },
     patientBirthday:    { type: DataTypes.STRING(20), allowNull: true },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase 11] VNPay Payment Integration — 9 cột mới
+    // ═══════════════════════════════════════════════════════════════════════
+    paymentToken:         { type: DataTypes.STRING(255), allowNull: true, unique: true },
+    paymentStatus:        { type: DataTypes.STRING(10),  allowNull: true, defaultValue: 'unpaid' },
+    bookingPrice:         { type: DataTypes.INTEGER,     allowNull: true, defaultValue: 0 },
+    vnpayTransactionNo:   { type: DataTypes.STRING(50),  allowNull: true },
+    vnp_PayDate:          { type: DataTypes.STRING(20),  allowNull: true },
+    publicReceiptToken:   { type: DataTypes.STRING(100), allowNull: true, unique: true },
+    receiptExpiredAt:     { type: DataTypes.DATE,        allowNull: true },
+    reconcileFirstSeenAt: { type: DataTypes.DATE,        allowNull: true },
+    lastQuerydrCode:      { type: DataTypes.STRING(4),   allowNull: true },
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [
@@ -21,6 +34,8 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['statusId'], name: 'idx_bookings_statusId' },             // Filter theo tab (S1-S4)
       { fields: ['patientId', 'statusId'], name: 'idx_bookings_patient_status' }, // Composite index
       { fields: ['doctorId', 'date'], name: 'idx_bookings_doctor_date' },  // getListPatientForDoctor
+      // [NEW LOGIC VNPAY-MAIL]: Composite Index cho Cronjob cleanupS1 (Lỗi 24 — chống Full Table Scan)
+      { fields: ['statusId', 'paymentStatus'], name: 'idx_bookings_status_payment' },
     ],
   });
   return Booking;

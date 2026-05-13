@@ -6,6 +6,7 @@ const reviewController = require('../controllers/reviewController');
 const specialtyController = require('../controllers/specialtyController');
 const clinicController = require('../controllers/clinicController');
 const statisticController = require('../controllers/statisticController');
+const paymentController = require('../controllers/paymentController'); // [NEW LOGIC VNPAY-MAIL]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -72,6 +73,14 @@ const routes = (app) => {
   // Allcode & Search – Public
   app.get('/api/v1/allcode', userController.getAllCode);
   app.get('/api/v1/search', userController.handleSearch);                                               // REQ-PT-002
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [NEW LOGIC VNPAY-MAIL]: VNPay Payment Routes — Public (không cần JWT)
+  // Bệnh nhân bấm từ email → chưa đăng nhập → cần public endpoint
+  // ═══════════════════════════════════════════════════════════════════════
+  app.post('/api/v1/payment/create-payment-url-by-token', paymentController.createPaymentUrlByToken);
+  app.get('/api/v1/payment/vnpay-ipn', paymentController.vnpayIpn);
+  app.get('/api/v1/payment/booking-by-token', paymentController.bookingByToken);
 
   // ===== ADMIN ROUTES – Yêu cầu role R1 (SRS REQ-AU-004, 008) =====
 

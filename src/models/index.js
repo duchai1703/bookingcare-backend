@@ -15,6 +15,12 @@ const sequelize = new Sequelize(
     dialect: process.env.DB_DIALECT,
     logging: false,
 
+    // [Phase 11 — Guard #54] Pool acquire timeout
+    // Chống treo khi pool cạn connection dưới tải cao
+    pool: {
+      acquire: 5000,
+    },
+
     // [Phase 10 — Zero Trust Timezone Lock] Khóa timezone tầng Sequelize
     timezone: '+07:00',
     dialectOptions: {
@@ -200,5 +206,8 @@ db.Token.belongsTo(db.User, { foreignKey: 'userId', as: 'tokenUserData' });
 
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
+
+// ✅ [Fix B5] Quản lý sync policy tập trung — server.js gọi db.syncSchema()
+db.syncSchema = () => sequelize.sync({ alter: true });
 
 module.exports = db;
