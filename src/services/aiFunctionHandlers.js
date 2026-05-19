@@ -140,6 +140,37 @@ const aiFunctions = {
       required: ['doctorId'],
     },
   },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 13] SIÊU CÔNG CỤ — universalSystemSearch
+  // Gộp khả năng tra cứu MỌI bảng trong hệ thống vào 1 tool duy nhất
+  // ═══════════════════════════════════════════════════════════════════════
+  universalSystemSearch: {
+    description:
+      'Siêu công cụ tra cứu MỌI dữ liệu trong hệ thống BookingCare. Dùng khi người dùng hỏi về Bác sĩ, Chuyên khoa, Phòng khám, Đánh giá (Review) của bệnh nhân, hoặc Từ điển hệ thống (giá khám, tỉnh thành, phương thức thanh toán). Ưu tiên gọi hàm này trước các hàm chuyên biệt khác khi câu hỏi mang tính tổng quát.',
+    parameters: {
+      type: 'object',
+      properties: {
+        entityType: {
+          type: 'string',
+          enum: ['doctor', 'specialty', 'clinic', 'review', 'allcode'],
+          description:
+            'Loại thực thể cần tra cứu: doctor (bác sĩ), specialty (chuyên khoa), clinic (phòng khám), review (đánh giá bệnh nhân), allcode (từ điển hệ thống: giá, tỉnh, thanh toán)',
+        },
+        keyword: {
+          type: 'string',
+          description:
+            'Từ khóa tìm kiếm tự do (VD: "Tim mạch", "Chợ Rẫy", "Tốt", "23 năm kinh nghiệm", "PROVINCE")',
+        },
+        filters: {
+          type: 'object',
+          description:
+            'Bộ lọc chính xác. VD: {"doctorId": 32}, {"type": "PROVINCE"}, {"specialtyName": "Tiêu hóa"}, {"rating": 5}',
+        },
+      },
+      required: ['entityType'],
+    },
+  },
 };
 
 // Nhóm 2: Tra cứu cá nhân (Authenticated — cần userId từ JWT)
@@ -436,6 +467,7 @@ async function handleGetAvailableSchedules(args, signal) {
   if (available.length === 0) {
     return {
       message: 'Bác sĩ này không có lịch trong ngày yêu cầu. Vui lòng gợi ý bệnh nhân tìm bác sĩ khác.',
+      doctorId,
       doctorName: resolvedDoctorName || undefined,
       date,
       schedules: [],
@@ -443,6 +475,7 @@ async function handleGetAvailableSchedules(args, signal) {
   }
 
   return {
+    doctorId,
     doctorName: resolvedDoctorName || undefined,
     date,
     availableSlots: available,
@@ -664,6 +697,336 @@ async function handleGetMyPaymentStatus(args, userId, signal) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// Handler 7: universalSystemSearch — SIÊU CÔNG CỤ TRA CỨU TOÀN HỆ THỐNG
+// ═══════════════════════════════════════════════════════════════════════
+async function handleUniversalSystemSearch(args, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const { entityType, keyword, filters = {} } = args;
+
+  if (!entityType) {
+    return { status: 'error', message: 'Thiếu entityType.' };
+  }
+
+  const safeKeyword = typeof keyword === 'string'
+    ? Array.from(sanitizeWildcard(keyword.trim())).slice(0, 500).join('')
+    : '';
+
+  try {
+    switch (entityType) {
+
+      // ══════════════════════════════════════════════════
+      // CASE 1: DOCTOR — Quét bảng User (roleId: R2)
+      // ══════════════════════════════════════════════════
+      case 'doctor': {
+        if (signal?.aborted) return { error: 'Đã hủy' };
+
+        const where = { roleId: 'R2' };
+
+        // Lọc theo doctorId cụ thể
+        if (filters.doctorId) {
+          const dId = parseInt(String(filters.doctorId), 10);
+          if (Number.isFinite(dId) && dId > 0) where.id = dId;
+        }
+
+        // Lọc theo từ khóa tên
+        if (safeKeyword) {
+          where[Op.or] = [
+            { firstName: { [Op.like]: `%${safeKeyword}%` } },
+            { lastName: { [Op.like]: `%${safeKeyword}%` } },
+          ];
+        }
+
+        const doctors = await db.User.findAll({
+          where,
+          attributes: ['id', 'firstName', 'lastName'],
+          limit: 10,
+          order: [['id', 'ASC']],
+          lock: false,
+          include: [
+            { model: db.Allcode, as: 'positionData', attributes: ['valueVi'] },
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              attributes: ['description', 'specialtyId'],
+              include: [
+                { model: db.Allcode, as: 'priceData', attributes: ['valueVi'] },
+                { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['name', 'address'] },
+              ],
+            },
+          ],
+        });
+
+        // Lọc thêm theo keyword trong description (chéo bảng)
+        let result = doctors.map((d) => {
+          const j = d.toJSON();
+          return {
+            doctorId: j.id,
+            name: `${j.lastName || ''} ${j.firstName || ''}`.trim(),
+            position: j.positionData?.valueVi || '',
+            specialty: j.doctorInfoData?.specialtyData?.name || '',
+            clinic: j.doctorInfoData?.clinicData?.name || '',
+            clinicAddress: j.doctorInfoData?.clinicData?.address || '',
+            price: j.doctorInfoData?.priceData?.valueVi || '',
+            description: j.doctorInfoData?.description
+              ? Array.from(j.doctorInfoData.description).slice(0, 200).join('')
+              : '',
+          };
+        });
+
+        // Nếu có keyword, ưu tiên bác sĩ có keyword xuất hiện trong description
+        if (safeKeyword && result.length > 0) {
+          const kwLower = safeKeyword.toLowerCase();
+          const prioritized = result.filter(
+            (r) => r.description.toLowerCase().includes(kwLower)
+              || r.specialty.toLowerCase().includes(kwLower)
+              || r.name.toLowerCase().includes(kwLower)
+          );
+          if (prioritized.length > 0) result = prioritized;
+        }
+
+        // Lọc theo specialtyName trong filters
+        if (filters.specialtyName && typeof filters.specialtyName === 'string') {
+          const specLower = filters.specialtyName.toLowerCase();
+          result = result.filter((r) => r.specialty.toLowerCase().includes(specLower));
+        }
+
+        if (result.length === 0) {
+          return { status: 'empty', message: 'Hệ thống không tìm thấy bác sĩ phù hợp.' };
+        }
+        return { entityType: 'doctor', total: result.length, data: result.slice(0, 10) };
+      }
+
+      // ══════════════════════════════════════════════════
+      // CASE 2: SPECIALTY — Quét bảng Specialty
+      // ══════════════════════════════════════════════════
+      case 'specialty': {
+        if (signal?.aborted) return { error: 'Đã hủy' };
+
+        const where = {};
+        if (safeKeyword) {
+          where.name = { [Op.like]: `%${safeKeyword}%` };
+        }
+
+        const specialties = await db.Specialty.findAll({
+          where,
+          attributes: ['id', 'name', 'descriptionMarkdown'],
+          limit: 10,
+          order: [['name', 'ASC']],
+          lock: false,
+        });
+
+        if (specialties.length === 0) {
+          return { status: 'empty', message: 'Hệ thống không tìm thấy chuyên khoa phù hợp.' };
+        }
+        return {
+          entityType: 'specialty',
+          total: specialties.length,
+          data: specialties.map((s) => ({
+            id: s.id,
+            name: s.name,
+            description: s.descriptionMarkdown
+              ? Array.from(s.descriptionMarkdown).slice(0, 300).join('')
+              : '',
+          })),
+        };
+      }
+
+      // ══════════════════════════════════════════════════
+      // CASE 3: CLINIC — Quét bảng Clinic
+      // ══════════════════════════════════════════════════
+      case 'clinic': {
+        if (signal?.aborted) return { error: 'Đã hủy' };
+
+        const where = {};
+        if (safeKeyword) {
+          where[Op.or] = [
+            { name: { [Op.like]: `%${safeKeyword}%` } },
+            { address: { [Op.like]: `%${safeKeyword}%` } },
+          ];
+        }
+
+        const clinics = await db.Clinic.findAll({
+          where,
+          attributes: ['id', 'name', 'address', 'descriptionMarkdown'],
+          limit: 10,
+          order: [['name', 'ASC']],
+          lock: false,
+        });
+
+        if (clinics.length === 0) {
+          return { status: 'empty', message: 'Hệ thống không tìm thấy phòng khám phù hợp.' };
+        }
+        return {
+          entityType: 'clinic',
+          total: clinics.length,
+          data: clinics.map((c) => ({
+            id: c.id,
+            name: c.name,
+            address: c.address || '',
+            description: c.descriptionMarkdown
+              ? Array.from(c.descriptionMarkdown).slice(0, 300).join('')
+              : '',
+          })),
+        };
+      }
+
+      // ══════════════════════════════════════════════════
+      // CASE 4: REVIEW — Quét bảng Review + JOIN Doctor & Patient
+      // ══════════════════════════════════════════════════
+      case 'review': {
+        if (signal?.aborted) return { error: 'Đã hủy' };
+
+        const where = {};
+
+        // Lọc theo doctorId cụ thể
+        if (filters.doctorId) {
+          const dId = parseInt(String(filters.doctorId), 10);
+          if (Number.isFinite(dId) && dId > 0) where.doctorId = dId;
+        }
+
+        // Lọc theo rating
+        if (filters.rating) {
+          const r = parseInt(String(filters.rating), 10);
+          if (Number.isFinite(r) && r >= 1 && r <= 5) where.rating = r;
+        }
+
+        // Lọc theo keyword trong comment
+        if (safeKeyword) {
+          where.comment = { [Op.like]: `%${safeKeyword}%` };
+        }
+
+        // Nếu có filters.specialtyName → tìm doctorIds thuộc chuyên khoa đó
+        if (filters.specialtyName && typeof filters.specialtyName === 'string') {
+          const safeSpecName = Array.from(sanitizeWildcard(filters.specialtyName.trim()))
+            .slice(0, 500)
+            .join('');
+
+          const specialty = await db.Specialty.findOne({
+            where: { name: { [Op.like]: `%${safeSpecName}%` } },
+            attributes: ['id'],
+            lock: false,
+          });
+
+          if (specialty) {
+            const doctorInfos = await db.Doctor_Info.findAll({
+              where: { specialtyId: specialty.id },
+              attributes: ['doctorId'],
+              lock: false,
+            });
+            const doctorIds = doctorInfos.map((di) => di.doctorId);
+            if (doctorIds.length > 0) {
+              where.doctorId = { [Op.in]: doctorIds };
+            } else {
+              return { status: 'empty', message: `Không tìm thấy bác sĩ chuyên khoa ${filters.specialtyName} để lấy đánh giá.` };
+            }
+          } else {
+            return { status: 'empty', message: `Không tìm thấy chuyên khoa "${filters.specialtyName}" trong hệ thống.` };
+          }
+        }
+
+        const reviews = await db.Review.findAll({
+          where,
+          attributes: ['id', 'doctorId', 'patientId', 'rating', 'comment', 'createdAt'],
+          limit: 10,
+          order: [['createdAt', 'DESC']],
+          lock: false,
+          include: [
+            {
+              model: db.User,
+              as: 'reviewDoctorData',
+              attributes: ['firstName', 'lastName'],
+            },
+            {
+              model: db.User,
+              as: 'reviewPatientData',
+              attributes: ['firstName', 'lastName'],
+            },
+          ],
+        });
+
+        if (reviews.length === 0) {
+          return { status: 'empty', message: 'Hệ thống không tìm thấy đánh giá phù hợp.' };
+        }
+        return {
+          entityType: 'review',
+          total: reviews.length,
+          data: reviews.map((rv) => {
+            const j = rv.toJSON();
+            return {
+              reviewId: j.id,
+              doctor: `${j.reviewDoctorData?.lastName || ''} ${j.reviewDoctorData?.firstName || ''}`.trim(),
+              patient: `${j.reviewPatientData?.lastName || ''} ${j.reviewPatientData?.firstName || ''}`.trim(),
+              rating: j.rating,
+              comment: j.comment
+                ? Array.from(j.comment).slice(0, 300).join('')
+                : '',
+              date: j.createdAt,
+            };
+          }),
+        };
+      }
+
+      // ══════════════════════════════════════════════════
+      // CASE 5: ALLCODE — Từ điển hệ thống
+      // ══════════════════════════════════════════════════
+      case 'allcode': {
+        if (signal?.aborted) return { error: 'Đã hủy' };
+
+        const where = {};
+
+        // Lọc theo type (PROVINCE, PRICE, PAYMENT, POSITION...)
+        if (filters.type && typeof filters.type === 'string') {
+          where.type = sanitizeWildcard(filters.type.trim());
+        }
+
+        // Lọc theo keyMap
+        if (filters.keyMap && typeof filters.keyMap === 'string') {
+          where.keyMap = sanitizeWildcard(filters.keyMap.trim());
+        }
+
+        // Tìm theo keyword trong valueVi hoặc valueEn
+        if (safeKeyword) {
+          where[Op.or] = [
+            { valueVi: { [Op.like]: `%${safeKeyword}%` } },
+            { valueEn: { [Op.like]: `%${safeKeyword}%` } },
+          ];
+        }
+
+        const allcodes = await db.Allcode.findAll({
+          where,
+          attributes: ['id', 'keyMap', 'type', 'valueVi', 'valueEn'],
+          limit: 10,
+          order: [['type', 'ASC'], ['keyMap', 'ASC']],
+          lock: false,
+        });
+
+        if (allcodes.length === 0) {
+          return { status: 'empty', message: 'Hệ thống không tìm thấy dữ liệu từ điển phù hợp.' };
+        }
+        return {
+          entityType: 'allcode',
+          total: allcodes.length,
+          data: allcodes.map((a) => ({
+            keyMap: a.keyMap,
+            type: a.type,
+            valueVi: a.valueVi,
+            valueEn: a.valueEn,
+          })),
+        };
+      }
+
+      default:
+        return { status: 'error', message: `entityType "${entityType}" không hợp lệ. Chấp nhận: doctor, specialty, clinic, review, allcode.` };
+    }
+  } catch (err) {
+    console.error('[AI_FN] universalSystemSearch error:', err?.message || err);
+    return { status: 'error', message: 'Lỗi khi truy vấn dữ liệu. Vui lòng thử lại.' };
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // DISPATCHER
 // ═══════════════════════════════════════════════════════════════════════
 async function executeFunctionCall(functionName, args, userId, signal) {
@@ -683,6 +1046,8 @@ async function executeFunctionCall(functionName, args, userId, signal) {
     getMyBookings: () => handleGetMyBookings(safeArgs, userId, signal),
     getMyPaymentStatus: () =>
       handleGetMyPaymentStatus(safeArgs, userId, signal),
+    universalSystemSearch: () =>
+      handleUniversalSystemSearch(safeArgs, signal),
   };
 
   const handler = handlers[functionName];
@@ -695,6 +1060,7 @@ async function executeFunctionCall(functionName, args, userId, signal) {
     getDoctorDetail: { message: 'No data found' },
     getMyBookings: { bookings: [], message: 'No data found' },
     getMyPaymentStatus: { message: 'No data found' },
+    universalSystemSearch: { status: 'empty', message: 'Hệ thống không tìm thấy dữ liệu phù hợp.' },
   };
 
   let result;
