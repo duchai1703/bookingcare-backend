@@ -1,3 +1,5 @@
+// [SRE NETWORK PATCH] Ép Node.js ưu tiên giải mã IPv4 để vá lỗi 'fetch failed' với Google API
+require('dns').setDefaultResultOrder('ipv4first');
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');

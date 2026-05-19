@@ -147,6 +147,27 @@ const routes = (app) => {
 
   // Review API (Design Doc v3.0, Mục 4.1.3) — Protected, R3 only
   app.post('/api/v1/reviews', verifyToken, checkPatientRole, reviewController.submitReview);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 12] AI Chatbot — SSE Stream
+  // Protected: verifyToken + checkPatientRole (chỉ R3)
+  // ═══════════════════════════════════════════════════════════════════════
+  app.post('/api/v1/ai/chat',
+    // 1. PRE-CHECK BẢO VỆ TUYẾN ĐẦU (Chặn trước khi global body-parser kịp đọc)
+    (req, res, next) => {
+      const contentLength = req.headers['content-length'];
+      if (contentLength && parseInt(contentLength, 10) > 10240) {
+        return res.status(413).json({ error: 'Payload quá lớn! Giới hạn tối đa là 10kb.' });
+      }
+      next();
+    },
+    // 2. MIDDLEWARE CỤC BỘ
+    require('express').json({ limit: '10kb' }),
+    verifyToken,
+    checkPatientRole,
+    // 3. XỬ LÝ CỐT LÕI
+    require('../controllers/aiController').streamChat
+  );
 };
 
 module.exports = routes;
