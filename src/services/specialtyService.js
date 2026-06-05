@@ -68,13 +68,47 @@ const getDetailSpecialtyById = async (id, location) => {
     if (location && location !== 'ALL') {
       whereClause.provinceId = location;
     }
+    // ✅ [v4.0] Query đầy đủ thông tin bác sĩ (avatar, tên, chức danh, chuyên khoa, phòng khám)
     const doctorInfos = await db.Doctor_Info.findAll({
       where: whereClause,
-      attributes: ['doctorId', 'provinceId'],
+      attributes: ['doctorId', 'specialtyId', 'clinicId', 'description', 'provinceId'],
+      include: [
+        {
+          model: db.User, as: 'doctorData',
+          attributes: ['id', 'firstName', 'lastName', 'image', 'gender', 'positionId'],
+          include: [
+            { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
+          ],
+        },
+        { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['name', 'address'] },
+      ],
+      raw: false,
+      nest: true,
+    });
+    // Chuyển đổi từ Doctor_Info → User object (frontend cần format doctor object)
+    const doctorList = doctorInfos.map(info => {
+      const user = info.doctorData;
+      if (user && user.image) {
+        user.setDataValue('image', convertBlobToBase64(user.image));
+      }
+      return {
+        id: user?.id,
+        firstName: user?.firstName,
+        lastName: user?.lastName,
+        image: user?.getDataValue('image') || '',
+        positionData: user?.positionData || {},
+        Doctor_Info: {
+          specialtyData: info.specialtyData || {},
+          clinicData: info.clinicData || {},
+          description: info.description || '',
+          provinceId: info.provinceId || '',
+        },
+      };
     });
     return {
       errCode: 0,
-      data: { specialty, doctorList: doctorInfos.map(d => d.doctorId) },
+      data: { specialty, doctorList },
     };
   } catch (err) {
     console.error('>>> getDetailSpecialtyById error:', err);

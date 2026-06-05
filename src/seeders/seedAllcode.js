@@ -1,4 +1,4 @@
-// src/seeders/seedAllcode.js — SUPER SEEDER v2.0
+// src/seeders/seedAllcode.js — SUPER SEEDER v3.0
 // Sinh Big Data tự động bằng vòng lặp & logic random
 // Chạy: npm run seed (hoặc: node src/seeders/seedAllcode.js)
 
@@ -8,9 +8,9 @@ const bcrypt = require('bcryptjs');
 const {
   pick, randInt, shuffle, uuidv4,
   specialtyNames, clinicPool, reviewComments, bookingReasons,
-  commonImageBase64,
   generateSpecialtyMarkdown, generateClinicMarkdown,
   generateRandomUser, generateDoctorInfo,
+  generateSpecialtyImageBase64, generateClinicImageBase64,
 } = require('./seedHelpers');
 
 // ══════════════════════════════════════════════════════════════
@@ -128,17 +128,19 @@ const seed = async () => {
     console.log(`✅ Patients: ${patientUsers.length} accounts`);
 
     // ═══════════ 5. SPECIALTIES (15 — bulkCreate) ═══════════
-    const specialtyDataArray = specialtyNames.map(name => {
+    const specialtyDataArray = specialtyNames.map((name, idx) => {
       const { md, html } = generateSpecialtyMarkdown(name);
-      return { name, descriptionMarkdown: md, descriptionHTML: html, image: commonImageBase64 };
+      const img = generateSpecialtyImageBase64(idx);
+      return { name, descriptionMarkdown: md, descriptionHTML: html, image: img };
     });
     const specialties = await db.Specialty.bulkCreate(specialtyDataArray);
     console.log(`✅ Specialties: ${specialties.length} records`);
 
     // ═══════════ 6. CLINICS (10 — bulkCreate) ═══════════
-    const clinicDataArray = clinicPool.map(c => {
+    const clinicDataArray = clinicPool.map((c, idx) => {
       const { md, html } = generateClinicMarkdown(c);
-      return { name: c.name, address: c.address, descriptionMarkdown: md, descriptionHTML: html, image: commonImageBase64 };
+      const img = generateClinicImageBase64(idx);
+      return { name: c.name, address: c.address, descriptionMarkdown: md, descriptionHTML: html, image: img };
     });
     const clinics = await db.Clinic.bulkCreate(clinicDataArray);
     console.log(`✅ Clinics: ${clinics.length} records`);
@@ -250,7 +252,7 @@ const seed = async () => {
 
     console.log('');
     console.log('╔══════════════════════════════════════════════════╗');
-    console.log('║         🚀 SUPER SEEDER v2.0 — COMPLETE         ║');
+    console.log('║         🚀 SUPER SEEDER v3.0 — COMPLETE         ║');
     console.log('╠══════════════════════════════════════════════════╣');
     console.log(`║  Allcode       : ${String(allcodeData.length).padStart(6)} records              ║`);
     console.log(`║  Admin         :      1 account               ║`);

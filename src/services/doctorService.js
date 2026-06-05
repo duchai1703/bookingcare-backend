@@ -19,6 +19,16 @@ const getTopDoctorHome = async (limit) => {
       include: [
         { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'genderData', attributes: ['valueVi', 'valueEn'] },
+        // ✅ [v4.0] Include Doctor_Info + specialtyData + clinicData
+        // Để frontend hiển thị tên chuyên khoa và phòng khám dưới tên bác sĩ
+        {
+          model: db.Doctor_Info, as: 'doctorInfoData',
+          attributes: ['specialtyId', 'clinicId', 'description'],
+          include: [
+            { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
+            { model: db.Clinic, as: 'clinicData', attributes: ['name'] },
+          ],
+        },
       ],
       raw: false,
       nest: true,
