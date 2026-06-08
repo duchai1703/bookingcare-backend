@@ -6,7 +6,6 @@
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-// [DEVOPS GUARD] Chặn sập server ngầm khi thiếu Key
 if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'PLEASE_ENTER_YOUR_REAL_API_KEY_HERE') {
   console.warn("⚠️ [WARNING] GEMINI_API_KEY chưa được cấu hình hợp lệ. Chức năng AI sẽ bị gián đoạn!");
 }
@@ -18,7 +17,7 @@ const SYSTEM_PROMPT = "Bạn là trợ lý AI của hệ thống đặt lịch k
 
 // ──── Khởi tạo Model Gemini ────
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.1-flash-lite',
+  model: 'gemini-3.1-pro-preview',
   generationConfig: {
     maxOutputTokens: 500,
     temperature: 0.7,
