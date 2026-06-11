@@ -443,7 +443,7 @@ async function handleGetAvailableSchedules(args, signal) {
   const schedules = await db.Schedule.findAll({
     where: { doctorId, date },
     attributes: ['id', 'timeType', 'maxNumber', 'currentNumber', 'date'],
-    limit: 5,
+    limit: 20,
     order: [['timeType', 'ASC']],
     lock: false,
     include: [
@@ -466,7 +466,8 @@ async function handleGetAvailableSchedules(args, signal) {
 
   if (available.length === 0) {
     return {
-      message: 'Bác sĩ này không có lịch trong ngày yêu cầu. Vui lòng gợi ý bệnh nhân tìm bác sĩ khác.',
+      status: 'no_schedule',
+      message: `Bác sĩ ${resolvedDoctorName || 'này'} hiện không có lịch trống trong ngày được yêu cầu.`,
       doctorId,
       doctorName: resolvedDoctorName || undefined,
       date,
@@ -731,9 +732,26 @@ async function handleUniversalSystemSearch(args, signal) {
 
         // Lọc theo từ khóa tên
         if (safeKeyword) {
+          // Bỏ các danh xưng để tìm chính xác tên
+          const cleanName = safeKeyword
+            .replace(/^(Bác\s*sĩ|BS|Tiến\s*sĩ|TS|Thạc\s*sĩ|ThS|PGS|GS|Dr\.?|Giáo\s*sư|Phó\s*Giáo\s*sư)\s*/gi, '')
+            .trim();
+            
+          const nameParts = cleanName.split(/\s+/).filter(Boolean);
+          const orConditions = nameParts.map((part) => ({
+            [Op.or]: [
+              { firstName: { [Op.like]: `%${part}%` } },
+              { lastName: { [Op.like]: `%${part}%` } },
+            ],
+          }));
+
+          // Hỗ trợ tìm theo chuỗi ghép Tên đầy đủ HOẶC tìm các phần tử của tên
           where[Op.or] = [
-            { firstName: { [Op.like]: `%${safeKeyword}%` } },
-            { lastName: { [Op.like]: `%${safeKeyword}%` } },
+            db.sequelize.where(
+              db.sequelize.fn('CONCAT', db.sequelize.col('lastName'), ' ', db.sequelize.col('firstName')),
+              { [Op.like]: `%${cleanName}%` }
+            ),
+            ...(orConditions.length > 0 ? [{ [Op.and]: orConditions }] : [])
           ];
         }
 

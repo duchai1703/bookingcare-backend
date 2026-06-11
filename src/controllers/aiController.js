@@ -78,8 +78,8 @@ async function streamChat(req, res) {
 
   // ──── [Guard #7 — Zalgo Clean — Zero-width Regex] ────
   const cleanMessage = safeMessage
-    .replace(/[\u0300-\u036f]{3,}/g, '')     // Strip excessive combining marks
-    .replace(/[\u200B-\u200F\uFEFF]/g, '');  // Strip zero-width chars
+    .replace(/[\u0300-\u036f]{3,}/g, '')
+    .replace(/[\u200B-\u200F\uFEFF]/g, '');
 
   const parseFunctionResult = (value) => {
     if (value && typeof value === 'object') return value;
@@ -88,17 +88,9 @@ async function streamChat(req, res) {
     const end = '\n---/DB_RESULT---';
     if (value.includes(start)) {
       const raw = value.split(start)[1]?.split(end)[0] || '';
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return { error: 'Invalid function result JSON' };
-      }
+      try { return JSON.parse(raw); } catch { return { error: 'Invalid function result JSON' }; }
     }
-    try {
-      return JSON.parse(value);
-    } catch {
-      return { error: 'Invalid function result JSON' };
-    }
+    try { return JSON.parse(value); } catch { return { error: 'Invalid function result JSON' }; }
   };
 
   const extractScheduleRequest = (text) => {
@@ -159,20 +151,17 @@ async function streamChat(req, res) {
     if (!result || result.error) {
       return result?.error || 'Không thể kiểm tra lịch khám lúc này. Vui lòng thử lại.';
     }
-
     const resolvedName = result.doctorName || doctorName || 'bác sĩ';
     if (Array.isArray(result.schedules) && result.schedules.length === 0) {
-      return `Dạ, bác sĩ ${resolvedName} hiện không có lịch vào ngày ${dateLabel}. Tuy nhiên trong ngày ${dateLabel}, chuyên khoa liên quan vẫn có thể còn bác sĩ khác. Bạn có muốn tôi tìm giúp không ạ?`;
+      return `Dạ, bác sĩ ${resolvedName} hiện không có lịch trống vào ngày ${dateLabel}. Bạn có muốn thử xem ngày khác không ạ?`;
     }
-
     if (Array.isArray(result.availableSlots) && result.availableSlots.length > 0) {
       const slots = result.availableSlots
-        .map((s) => `• ${s.timeLabel || s.timeType} (còn ${s.remaining})`)
+        .map((s) => `• ${s.timeLabel || s.timeType} (còn ${s.remaining} suất)`)
         .join('\n');
-      return `Dạ, lịch trống của bác sĩ ${resolvedName} vào ngày ${dateLabel} như sau:\n${slots}\n\nBạn muốn chọn khung giờ nào để tôi hỗ trợ đặt lịch?`;
+      return `Dạ, lịch trống của bác sĩ ${resolvedName} vào ngày ${dateLabel} như sau:\n${slots}\n\nNếu bạn muốn đặt lịch, hãy truy cập [trang bác sĩ ${resolvedName}](/doctor/${result.doctorId}) để chọn khung giờ phù hợp ạ.`;
     }
-
-    return `Dạ, hiện chưa có lịch trống cho bác sĩ ${resolvedName} vào ngày ${dateLabel}. Bạn có muốn tôi tìm bác sĩ khác không ạ?`;
+    return `Dạ, hiện chưa có lịch trống cho bác sĩ ${resolvedName} vào ngày ${dateLabel}. Bạn có muốn thử xem ngày khác không ạ?`;
   };
 
   // ══════════════════════════════════════════════════════
@@ -190,8 +179,8 @@ async function streamChat(req, res) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
     'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',              // [Guard #10] Bypass Nginx buffering
-    'X-Content-Type-Options': 'nosniff',    // [Guard #11] Header nosniff
+    'X-Accel-Buffering': 'no',
+    'X-Content-Type-Options': 'nosniff',
     'Access-Control-Allow-Origin': process.env.URL_REACT,
     'Access-Control-Allow-Credentials': 'true',
   });
@@ -200,27 +189,22 @@ async function streamChat(req, res) {
 
   // ──── [Guard #9 — SSE Heartbeat — 15s] ────
   heartbeatInterval = setInterval(() => {
-    if (!res.writableEnded) {
-      res.write(':heartbeat\n\n');
-    }
+    if (!res.writableEnded) { res.write(':heartbeat\n\n'); }
   }, 15000);
 
   // ──── [Guard #10 — Hard Timeout 60s] ────
   hardTimeoutHandle = setTimeout(() => {
     ac.abort();
-    if (!res.writableEnded) {
-      res.write('data: [TIMEOUT]\n\n');
-      res.end();
-    }
+    if (!res.writableEnded) { res.write('data: [TIMEOUT]\n\n'); res.end(); }
   }, 60000);
 
-  // ──── [Guard #11 — Ngắt kết nối vật lý: req.on('close')] ────
+  // ──── [Guard #11 — Ngắt kết nối vật lý] ────
   req.on('close', () => {
     isClientConnected = false;
     console.log('⚠️ [AI_STREAM] Client thực sự đã đóng Socket kết nối!');
   });
 
-  // ──── [Guard #12 — Bẫy lỗi OS: res.on('error')] ────
+  // ──── [Guard #12 — Bẫy lỗi OS] ────
   res.on('error', (err) => {
     if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') {
       console.error('[SSE res.error]', err.code);
@@ -239,28 +223,18 @@ async function streamChat(req, res) {
           : (typeof msg?.parts === 'string'
             ? msg.parts
             : msg?.parts?.[0]?.text || '');
-
         if (text && text.trim() !== '') {
           geminiHistory.push({ role, parts: [{ text }] });
         }
       });
     }
 
+    // ──── Shortcut: Schedule Request ────
     const scheduleRequest = extractScheduleRequest(cleanMessage);
     if (scheduleRequest) {
-      const fnRaw = await executeFunctionCall(
-        'getAvailableSchedules',
-        scheduleRequest,
-        userId,
-        signal
-      );
+      const fnRaw = await executeFunctionCall('getAvailableSchedules', scheduleRequest, userId, signal);
       const fnResult = parseFunctionResult(fnRaw);
-      const responseText = formatScheduleResponse(
-        fnResult,
-        scheduleRequest.doctorName,
-        scheduleRequest.date
-      );
-
+      const responseText = formatScheduleResponse(fnResult, scheduleRequest.doctorName, scheduleRequest.date);
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({ text: responseText })}\n\n`);
         res.write('data: [DONE]\n\n');
@@ -269,108 +243,70 @@ async function streamChat(req, res) {
       return;
     }
 
+    // ──── Shortcut: Wants Other Doctors / Other Day ────
     const wantsOtherDoctors = /b\s*a\s*c\s*s\s*i\s*kh\s*a\s*c|ki\s*e\s*m\s*t\s*r\s*a\s*l\s*i\s*c\s*h|t\s*i\s*m\s*b\s*a\s*c\s*s\s*i\s*kh\s*a\s*c/i.test(cleanMessage);
     const wantsOtherDay = /ng\s*a\s*y\s*kh\s*a\s*c|tr\s*o\s*n\s*g\s*tu\s*a\s*n|tu\s*a\s*n\s*n\s*a\s*y|k\s*h\s*o\s*a\s*n\s*g\s*th\s*o\s*i\s*g\s*i\s*a\s*n/i.test(cleanMessage);
     if (wantsOtherDoctors || wantsOtherDay) {
       const specialtyName = extractSpecialtyName(cleanMessage) || findLatestFromHistory(extractSpecialtyName);
       if (!specialtyName) {
-        const ask = 'Bạn muốn kiểm tra lịch cho chuyên khoa nào ạ?';
         if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: ask })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          res.end();
+          res.write(`data: ${JSON.stringify({ text: 'Bạn muốn kiểm tra lịch cho chuyên khoa nào ạ?' })}\n\n`);
+          res.write('data: [DONE]\n\n'); res.end();
         }
         return;
       }
-
       const explicitDate = extractDateLabel(cleanMessage) || findLatestFromHistory(extractDateLabel);
       let dateCandidates = explicitDate ? [explicitDate] : [];
-      if (dateCandidates.length === 0 && wantsOtherDay) {
-        dateCandidates = getUpcomingDates(7);
-      }
-
+      if (dateCandidates.length === 0 && wantsOtherDay) { dateCandidates = getUpcomingDates(7); }
       if (dateCandidates.length === 0) {
-        const ask = 'Bạn muốn kiểm tra lịch vào ngày nào ạ?';
         if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: ask })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          res.end();
+          res.write(`data: ${JSON.stringify({ text: 'Bạn muốn kiểm tra lịch vào ngày nào ạ?' })}\n\n`);
+          res.write('data: [DONE]\n\n'); res.end();
         }
         return;
       }
-
-      const listRaw = await executeFunctionCall(
-        'searchDoctorsBySpecialty',
-        { specialtyName, language: req.body.language || 'vi' },
-        userId,
-        signal
-      );
+      const listRaw = await executeFunctionCall('searchDoctorsBySpecialty', { specialtyName, language: req.body.language || 'vi' }, userId, signal);
       const listResult = parseFunctionResult(listRaw);
       const doctors = Array.isArray(listResult?.doctors) ? listResult.doctors : [];
       const candidates = doctors.filter((d) => d?.name).slice(0, 5);
-
       if (candidates.length === 0) {
-        const msg = `Dạ, hiện hệ thống chưa có bác sĩ chuyên khoa ${specialtyName}. Bạn muốn thử chuyên khoa khác không ạ?`;
         if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: msg })}\n\n`);
-          res.write('data: [DONE]\n\n');
-          res.end();
+          res.write(`data: ${JSON.stringify({ text: `Dạ, hiện hệ thống chưa có bác sĩ chuyên khoa ${specialtyName}. Bạn muốn thử chuyên khoa khác không ạ?` })}\n\n`);
+          res.write('data: [DONE]\n\n'); res.end();
         }
         return;
       }
-
       const availableByDate = [];
       for (const dateLabel of dateCandidates.slice(0, 3)) {
         const availableDoctors = [];
         for (const doctor of candidates) {
-          const schedRaw = await executeFunctionCall(
-            'getAvailableSchedules',
-            { doctorName: doctor.name, date: dateLabel },
-            userId,
-            signal
-          );
+          const schedRaw = await executeFunctionCall('getAvailableSchedules', { doctorName: doctor.name, date: dateLabel }, userId, signal);
           const schedResult = parseFunctionResult(schedRaw);
-          const slots = Array.isArray(schedResult?.availableSlots)
-            ? schedResult.availableSlots
-            : [];
+          const slots = Array.isArray(schedResult?.availableSlots) ? schedResult.availableSlots : [];
           if (slots.length > 0) {
-            availableDoctors.push({
-              name: doctor.name,
-              clinic: doctor.clinic,
-              price: doctor.price,
-              slots,
-            });
+            availableDoctors.push({ name: doctor.name, clinic: doctor.clinic, price: doctor.price, slots });
           }
           if (availableDoctors.length >= 3) break;
         }
-        if (availableDoctors.length > 0) {
-          availableByDate.push({ dateLabel, doctors: availableDoctors });
-        }
+        if (availableDoctors.length > 0) { availableByDate.push({ dateLabel, doctors: availableDoctors }); }
         if (availableByDate.length >= 2) break;
       }
-
       let responseText = '';
       if (availableByDate.length === 0) {
-        const shownDate = dateCandidates[0];
-        responseText = `Dạ, hiện chưa có bác sĩ chuyên khoa ${specialtyName} có lịch trống vào ngày ${shownDate}. Bạn muốn chọn ngày khác không ạ?`;
+        responseText = `Dạ, hiện chưa có bác sĩ chuyên khoa ${specialtyName} có lịch trống vào ngày ${dateCandidates[0]}. Bạn muốn chọn ngày khác không ạ?`;
       } else {
         const blocks = availableByDate.map((entry) => {
           const lines = entry.doctors.map((doc) => {
-            const slotLabels = doc.slots
-              .slice(0, 3)
-              .map((s) => s.timeLabel || s.timeType)
-              .join(', ');
+            const slotLabels = doc.slots.slice(0, 3).map((s) => s.timeLabel || s.timeType).join(', ');
             return `• ${doc.name}${doc.clinic ? ` (${doc.clinic})` : ''}${doc.price ? ` - Giá khám: ${doc.price}` : ''}. Khung giờ trống: ${slotLabels}`;
           });
           return `Ngày ${entry.dateLabel}:\n${lines.join('\n')}`;
         });
         responseText = `Dạ, dưới đây là lịch trống của bác sĩ chuyên khoa ${specialtyName}:\n${blocks.join('\n\n')}\n\nBạn muốn chọn bác sĩ nào để tôi hỗ trợ đặt lịch?`;
       }
-
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({ text: responseText })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
+        res.write('data: [DONE]\n\n'); res.end();
       }
       return;
     }
@@ -382,8 +318,8 @@ async function streamChat(req, res) {
     console.log('[AI_STREAM] 2. Bắt đầu gọi genAI.getGenerativeModel...');
     const model = genAI.getGenerativeModel({
       model: 'gemini-3.1-flash-lite',
-      systemInstruction: SYSTEM_PROMPT + `\n\nThời gian hiện tại (UTC): ${nowUTC}`,
-      generationConfig: { maxOutputTokens: 500, temperature: 0.7 },
+      systemInstruction: SYSTEM_PROMPT + `\n\nThời gian hiện tại (UTC): ${nowUTC}\n\n[LUẬT CHỐNG BỊA DỮ LIỆU - TUYỆT ĐỐI TUÂN THỦ]: Khi trả lời về một bác sĩ cụ thể, BẮT BUỘC chỉ sử dụng CHÍNH XÁC dữ liệu từ kết quả function trả về. TUYỆT ĐỐI CẤM trộn lẫn thông tin của bác sĩ khác. Nếu function trả về bác sĩ A thì CHỈ nói về bác sĩ A.`,
+      generationConfig: { maxOutputTokens: 500, temperature: 0.3 },
       tools: [{
         functionDeclarations: [
           ...Object.entries(aiFunctions).map(([name, def]) => ({ name, ...def })),
@@ -394,187 +330,131 @@ async function streamChat(req, res) {
 
     const chat = model.startChat({ history: geminiHistory });
 
-    // ──── [Guard #15 — Function Calling Loop — Max 3 Calls] ────
+    // ──── [Guard #15 — Function Calling Loop — Max 8 Calls] ────
     let currentMessage = cleanMessage;
-    let streamResult;
+    let isFirstRound = true;
 
     while (true) {
-      streamResult = await chat.sendMessageStream(currentMessage);
-      let fullText = '';
-      let pendingFunctionCall = null;
+      if (isFirstRound) {
+        // Lần đầu: stream realtime cho user
+        const streamResult = await chat.sendMessageStream(currentMessage);
+        let pendingFunctionCall = null;
 
-      for await (const chunk of streamResult.stream) {
-        const functionCalls = chunk.functionCalls();
-        if (functionCalls && functionCalls.length > 0) {
-          pendingFunctionCall = functionCalls[0];
-          break; // break out of for-await, move to function call processing
-        }
-
-        const deltaText = chunk.text();
-        if (deltaText) {
-          // [Phase 12.6] Pure Append — Gemini SDK trả delta text
-          // KHÔNG dùng Overlap Merge vì sẽ nuốt ký tự ở biên chunk
-          fullText += deltaText;
-
-          // ──── [Guard #12 — Chống SSE Protocol Injection] ────
-          const safeChunk = deltaText.replace(/\n\ndata:/g, '\n\n data:');
-
-          // ──── [Guard #13 — Check res.writableEnded] ────
-          if (!res.writableEnded) {
-            // Kiểm tra socket chết TRƯỚC KHI xử lý chunk
-            if (!isClientConnected) {
-              console.log('🛑 [AI_STREAM_ABORT] Dừng stream vì socket đã đóng.');
-              break; // break out of for-await
-            }
-
-            if (safeChunk) {
-              const canWrite = res.write(
-                `data: ${JSON.stringify({ text: safeChunk })}\n\n`
-              );
-
-              // Xử lý Backpressure với Race-Condition Listener
-              if (!canWrite) {
-                await new Promise((resolve) => {
-                  const cleanup = () => {
-                    res.removeListener('drain', onDrain);
-                    req.removeListener('close', onClose);
-                    resolve();
-                  };
-                  const onDrain = () => cleanup();
-                  const onClose = () => cleanup();
-
-                  res.on('drain', onDrain);
-                  req.on('close', onClose);
-
-                  if (!isClientConnected) {
-                    cleanup();
-                  }
-                });
+        for await (const chunk of streamResult.stream) {
+          const fCalls = chunk.functionCalls();
+          if (fCalls && fCalls.length > 0) { pendingFunctionCall = fCalls[0]; break; }
+          const deltaText = chunk.text();
+          if (deltaText) {
+            const safeChunk = deltaText.replace(/\n\ndata:/g, '\n\n data:');
+            if (!res.writableEnded) {
+              if (!isClientConnected) { break; }
+              if (safeChunk) {
+                const canWrite = res.write(`data: ${JSON.stringify({ text: safeChunk })}\n\n`);
+                if (!canWrite) {
+                  await new Promise((resolve) => {
+                    const cleanup = () => { res.removeListener('drain', onDrain); req.removeListener('close', onClose); resolve(); };
+                    const onDrain = () => cleanup();
+                    const onClose = () => cleanup();
+                    res.on('drain', onDrain); req.on('close', onClose);
+                    if (!isClientConnected) cleanup();
+                  });
+                }
               }
-            }
-
-            // Kiểm tra socket chết SAU KHI xử lý chunk
-            if (!isClientConnected) {
-              console.log('🛑 [AI_STREAM_ABORT] Dừng stream vì socket đã đóng.');
-              break; // break out of for-await
+              if (!isClientConnected) { break; }
             }
           }
         }
-      } // closes for-await
 
-      // If socket closed during for-await, break out of while(true)
-      if (!isClientConnected) {
+        if (!isClientConnected) break;
+
+        if (pendingFunctionCall && !signal.aborted) {
+          isFirstRound = false;
+          functionCallCount++;
+          if (functionCallCount > 8) { break; }
+          let fnResult;
+          try {
+            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${pendingFunctionCall?.name}`);
+            fnResult = await executeFunctionCall(pendingFunctionCall.name, pendingFunctionCall.args, userId, signal);
+            console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
+          } catch (fnErr) {
+            fnResult = { error: 'Lỗi truy vấn dữ liệu' };
+            console.error('[AI_FN_ERR]', pendingFunctionCall.name, fnErr);
+          }
+          console.log('🔄 [AI_FUNC_REPLY] Gửi kết quả DB ngược lại cho Gemini...');
+          currentMessage = [{ functionResponse: { name: pendingFunctionCall.name, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
+          continue;
+        }
+        break; // No function call, done
+
+      } else {
+        // Các lần sau: dùng sendMessage (không stream) để tránh lỗi Gemini 400
+        const nonStreamResult = await chat.sendMessage(currentMessage);
+        const response = nonStreamResult.response;
+        const nextFCalls = response.functionCalls();
+
+        if (nextFCalls && nextFCalls.length > 0) {
+          functionCallCount++;
+          if (functionCallCount > 8) { break; }
+          let fnResult;
+          try {
+            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${nextFCalls[0]?.name}`);
+            fnResult = await executeFunctionCall(nextFCalls[0].name, nextFCalls[0].args, userId, signal);
+            console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
+          } catch (fnErr) {
+            fnResult = { error: 'Lỗi truy vấn dữ liệu' };
+            console.error('[AI_FN_ERR]', nextFCalls[0].name, fnErr);
+          }
+          currentMessage = [{ functionResponse: { name: nextFCalls[0].name, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
+          continue;
+        }
+
+        // Lấy text cuối cùng gửi cho client
+        const finalText = response.text();
+        if (finalText && !res.writableEnded && isClientConnected) {
+          const safeText = finalText.replace(/\n\ndata:/g, '\n\n data:');
+          res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
+        }
         break;
       }
-
-      // ──── Process Function Call ────
-      if (pendingFunctionCall && !signal.aborted) {
-        functionCallCount++;
-
-        // ──── [Guard #15 — Max 5 Calls AI] ────
-        if (functionCallCount > 5) {
-          if (!res.writableEnded) {
-            res.write(
-              `data: ${JSON.stringify({ text: '\n\n_Đã đạt giới hạn truy vấn dữ liệu._' })}\n\n`
-            );
-          }
-          break;
-        }
-
-        // ──── Execute Function Call ────
-        let fnResult;
-        try {
-          console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${pendingFunctionCall?.name}`);
-          fnResult = await executeFunctionCall(
-            pendingFunctionCall.name,
-            pendingFunctionCall.args,
-            userId,
-            signal
-          );
-          console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
-        } catch (fnErr) {
-          fnResult = JSON.stringify({ error: 'Lỗi truy vấn dữ liệu' });
-          console.error('[AI_FN_ERR]', pendingFunctionCall.name, fnErr);
-        }
-
-        // Send function result back to Gemini
-        console.log('🔄 [AI_FUNC_REPLY] Gửi kết quả DB ngược lại cho Gemini để tóm tắt...');
-        currentMessage = [{
-          functionResponse: {
-            name: pendingFunctionCall.name,
-            response: typeof fnResult === 'object' ? fnResult : { result: fnResult }
-          }
-        }];
-
-        continue; // Next round with function result
-      }
-
-      break; // No more function calls, streaming done
     }
 
-    // ──── [Guard #17 — Bắt 429 Google Avalanche] ────
   } catch (error) {
     console.error('[AI_STREAM_ERROR] LỖI RỒI:', error);
     const status = error.status || 500;
     const errMsg = error.message || '';
-    // ──── [BẢO ĐẢM 4: HARD STOP — 403/400/BILLING/KEY] ────
-    if (status === 403 || status === 400 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('BILLING')) {
-      res.write(`data: ${JSON.stringify({ error: 'Hệ thống bảo trì vui lòng quay lại sau.' })}\n\n`);
-      res.end(); // [BẢO ĐẢM 4] Chém đứt luồng kết nối ngay lập tức!
+
+    if (status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('BILLING')) {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: 'Hệ thống bảo trì vui lòng quay lại sau.' })}\n\n`);
+        res.end();
+      }
       return;
     }
-    // ──── [Guard #17 — Bắt 429 — Rate Limit Google] ────
-    if (status === 429 || errMsg.includes('RESOURCE_EXHAUSTED')) {
-      console.warn('[AI_429] Gemini rate limited. Chi tiết lỗi:', errMsg);
+    if (status === 400) {
+      console.warn('[AI_400] Gemini bad request:', errMsg);
       if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: true,
-            text: 'AI đang quá tải. Vui lòng thử lại sau 30 giây.',
-          })}\n\n`
-        );
+        res.write(`data: ${JSON.stringify({ text: 'Dạ, xin lỗi bạn. Hệ thống gặp trục trặc khi xử lý. Vui lòng thử lại nhé!' })}\n\n`);
       }
-    }
-    // ──── [Guard #19 — Suppress AbortError] ────
-    else if (error.name === 'AbortError' || signal.aborted) {
-      // Silent — client disconnected, no action needed
-    } else {
-      // [Guard #22 — Sanitize Log]
-      console.error(
-        '[AI_STREAM_ERR]',
-        typeof errMsg === 'string'
-          ? Array.from(errMsg).slice(0, 200).join('')
-          : 'unknown'
-      );
+    } else if (status === 429 || errMsg.includes('RESOURCE_EXHAUSTED')) {
+      console.warn('[AI_429] Gemini rate limited:', errMsg);
       if (!res.writableEnded) {
-        res.write(
-          `data: ${JSON.stringify({
-            error: true,
-            text: 'Đã xảy ra lỗi. Vui lòng thử lại.',
-          })}\n\n`
-        );
+        res.write(`data: ${JSON.stringify({ error: true, text: 'AI đang quá tải. Vui lòng thử lại sau 30 giây.' })}\n\n`);
+      }
+    } else if (error.name === 'AbortError' || signal.aborted) {
+      // Silent
+    } else {
+      console.error('[AI_STREAM_ERR]', typeof errMsg === 'string' ? Array.from(errMsg).slice(0, 200).join('') : 'unknown');
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, text: 'Đã xảy ra lỗi. Vui lòng thử lại.' })}\n\n`);
       }
     }
   } finally {
-    // ──── [Guard #20 — ClearInterval Heartbeat] ────
     if (heartbeatInterval) clearInterval(heartbeatInterval);
-
-    // ──── [Guard #20 — Clear Hard Timeout] ────
     if (hardTimeoutHandle) clearTimeout(hardTimeoutHandle);
-
-    // ──── [Guard #21 — removeAllListeners — Event Leak Prevention] ────
-    // (FIXED) KHÔNG gọi removeAllListeners() ở đây vì nó sẽ xoá luôn các
-    // sự kiện nội bộ của Node.js (như finish, drain) làm cho res.end()
-    // không thể kết thúc connection, dẫn đến Frontend bị treo "AI đang suy nghĩ...".
-    // Các sự kiện tự tạo (req.on('close')) sẽ tự động dọn khi socket đóng.
-
-    // ──── [SSE Done signal] ────
     if (!res.writableEnded) {
       res.write('data: [DONE]\n\n');
       res.end();
     }
-
-    // ──── Decrement counter ────
     activeStreams = Math.max(0, activeStreams - 1);
   }
 }

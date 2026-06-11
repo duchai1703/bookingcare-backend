@@ -1,0 +1,230 @@
+# ==========================================
+# BOOKINGCARE PRODUCTION DOCKER COMPOSE — PHASE 13 BLUEPRINT COMPLIANT
+# Tệp: docker-compose.yml
+# Vị trí triển khai: bookingcare-backend/ (root directory)
+# Phiên bản: 2.0-MySQL | Ngày: 2026-05-25
+# Nguồn đặc tả: Phase13-MySQL-Blueprint-Part2.md (Phần 2)
+# ==========================================
+
+# ==========================================
+# CẤU TRÚC PHÂN VÙNG MẠNG CÔ LẬP (3-TIER NETWORK ISOLATION LAYOUT)
+# Blueprint: Part2.md — Networks: frontend-net + backend-net
+# NGHIÊM CẤM mạng phẳng bridge duy nhất cho toàn bộ 4 dịch vụ
+# Container Frontend KHÔNG ĐƯỢC giao tiếp trực tiếp với db-mysql hoặc redis-cache
+# ==========================================
+networks:
+  frontend-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
+  backend-net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
+
+# ==========================================
+# CẤU TRÚC PHÂN VÙNG QUYỀN GHI Ổ ĐĨA VĨNH VIỄN (VOLUMES LAYOUT)
+# ==========================================
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_uploads:
+    driver: local
+
+# ==========================================
+# ĐẶC TẢ CHI TIẾT CẤU THÀNH 4 SERVICES HẠ TẦNG
+# ==========================================
+services:
+  # ------------------------------------------
+  # TẦNG DỮ LIỆU: Hệ quản trị cơ sở dữ liệu MySQL 8.0 Core
+  # Blueprint: Part2.md — Service db-mysql
+  # Deploy limits memory: 1024M | cpus: 1.0
+  # Network: backend-net (CẤM expose ports ra ngoài)
+  # ------------------------------------------
+  db-mysql:
+    image: mysql:8.0
+    container_name: db-mysql
+    restart: always
+    environment:
+      TZ: UTC
+      MYSQL_DATABASE: bookingcare
+      MYSQL_USER: bookingcare_user
+    env_file:
+      - .env
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --default-time-zone=+00:00
+      --table_open_cache=2000
+      --table_definition_cache=2000
+      --max_connections=150
+      --innodb_buffer_pool_size=256M
+      --lower-case-table-names=0
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - /dev/urandom:/dev/urandom:ro
+    networks:
+      - backend-net
+    ports:
+      - "3306:3306" # Mở cổng MySQL phục vụ Development
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------
+  # TẦNG ĐỆM CHỨA: Bộ nhớ lưu lịch sử chat AI và Idempotency Key VNPay
+  # Blueprint: Part2.md — Service redis-cache
+  # Chính sách eviction: volatile-lru (chỉ xóa key có TTL — bảo vệ Idempotency Key VNPay)
+  # Deploy limits memory: 512M (headroom an toàn cho AOF)
+  # Network: backend-net (CẤM expose ports ra ngoài)
+  # ------------------------------------------
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    restart: always
+    env_file:
+      - .env
+    command: redis-server --requirepass $$REDIS_PASSWORD --maxmemory 128mb --maxmemory-policy volatile-lru --appendonly yes
+    volumes:
+      - redis_data:/data
+      - /dev/urandom:/dev/urandom:ro
+    networks:
+      - backend-net
+    ports:
+      - "6379:6379" # Mở cổng Redis phục vụ Development
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ------------------------------------------
+  # TẦNG ỨNG DỤNG: Core Engine Backend Node.js
+  # Blueprint: Part2.md — Service app-backend
+  # init: true — Giải phóng Node.js khỏi PID 1, bắt trọn vẹn SIGTERM cho Graceful Shutdown 8 bước
+  # Deploy limits memory: 2048M (heap 1024M + C++ Allocator overhead 1024M — triệt tiêu Exit Code 137)
+  # Networks: frontend-net + backend-net (cầu nối 2 phân vùng)
+  # ------------------------------------------
+  app-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: app-backend
+    restart: always
+    env_file:
+      - .env
+    init: true
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      NODE_OPTIONS: "--max-old-space-size=1024"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2048M
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    expose:
+      - "8080"
+    dns:
+      - 8.8.8.8
+    networks:
+      - frontend-net
+      - backend-net
+    depends_on:
+      db-mysql:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/uploads
+      - /dev/urandom:/dev/urandom:ro
+    stop_grace_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+
+  # ------------------------------------------
+  # TẦNG BIÊN PROXY UI: Nginx Web Server điều hướng Frontend
+  # Blueprint: Part2.md — Service app-frontend
+  # Build args: VITE_BACKEND_URL, VITE_APP_NAME (Build-Time ARG — CẤM truyền qua environment Run-Time)
+  # tmpfs: /tmp:size=256M, /var/cache/nginx:size=128M (tránh nghẽn bão hòa upload base64)
+  # Network: frontend-net (CẤM truy cập trực tiếp db-mysql hoặc redis-cache)
+  # ------------------------------------------
+  app-frontend:
+    build:
+      context: ../bookingcare-frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL
+        - VITE_APP_NAME
+    container_name: app-frontend
+    restart: always
+    ports:
+      - "0.0.0.0:80:8080"
+    networks:
+      - frontend-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    tmpfs:
+      - /tmp:size=256M
+      - /var/cache/nginx:size=128M
+    volumes:
+      - backend_uploads:/usr/share/nginx/uploads:ro
+      - /dev/urandom:/dev/urandom:ro
+    depends_on:
+      app-backend:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

@@ -15,15 +15,20 @@ const sequelize = new Sequelize(
     dialect: process.env.DB_DIALECT,
     logging: false,
 
-    // [Phase 11 — Guard #54] Pool acquire timeout
-    // Chống treo khi pool cạn connection dưới tải cao
+    // [Phase 13 — Blueprint PK8.4] Enterprise Connection Pool Hardening
+    // Công thức: Sequelize_Max_Pool = (MySQL_Max_Connections - 30) / Total_Backend_Instances
+    // Trị số cứng: (150 - 30) / 1 = 120 kết nối tối đa
     pool: {
-      acquire: 5000,
+      max: 120,      // Trị số số nguyên cứng dựa trên công thức phân rã an toàn: (150 - 30) / 1
+      min: 10,       // Duy trì kết nối mạch nền ổn định chống cold-start delay
+      idle: 10000,   // Giải phóng kết nối thừa về trạng thái nghỉ sau 10 giây không hoạt động
+      acquire: 5000  // Hard timeout ngắt Event Loop nếu không thể cấp phát socket sau 5 giây
     },
 
     // [Phase 10 — Zero Trust Timezone Lock] Khóa timezone tầng Sequelize
     timezone: '+07:00',
     dialectOptions: {
+      connectTimeout: 5000,
       useUTC: false,      // CHỐNG tự động convert về UTC
       dateStrings: true,  // Trả date dạng string, không auto-parse
       typeCast: true,

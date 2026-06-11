@@ -38,9 +38,11 @@ const verifyToken = async (req, res, next) => {
     }
 
     // So sánh tokenVersion trong JWT với tokenVersion hiện tại trong DB
-    // [v3.0 STRICT] Token thiếu tokenVersion hoặc mismatch đều phải bị reject
+    // [v3.0] Backward compatibility cho token cũ: nếu token cũ không có tokenVersion (undefined) thì coi như = 0
     const currentTokenVersion = Number.isInteger(user.tokenVersion) ? user.tokenVersion : 0;
-    if (!Number.isInteger(decoded.tokenVersion) || decoded.tokenVersion !== currentTokenVersion) {
+    const decodedVersion = Number.isInteger(decoded.tokenVersion) ? decoded.tokenVersion : 0;
+    
+    if (decodedVersion !== currentTokenVersion) {
       return res.status(401).json({
         errCode: -2,
         message: 'Phiên đăng nhập đã bị thu hồi! Vui lòng đăng nhập lại.',

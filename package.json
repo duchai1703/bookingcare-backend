@@ -31,7 +31,7 @@
     "qs": "^6.15.1",
     "sanitize-html": "^2.17.2",
     "sequelize": "^6.37.7",
-    "uuid": "^13.0.0",
+    "uuid": "^9.0.1",
     "validator": "^13.15.35"
   },
   "devDependencies": {
