@@ -23,10 +23,11 @@ const getTopDoctorHome = async (limit) => {
         // Để frontend hiển thị tên chuyên khoa và phòng khám dưới tên bác sĩ
         {
           model: db.Doctor_Info, as: 'doctorInfoData',
-          attributes: ['specialtyId', 'clinicId', 'description'],
+          attributes: ['specialtyId', 'clinicId', 'provinceId', 'priceId', 'description'],
           include: [
             { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
             { model: db.Clinic, as: 'clinicData', attributes: ['name'] },
+            { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
           ],
         },
       ],
