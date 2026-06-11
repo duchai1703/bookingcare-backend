@@ -145,6 +145,9 @@ services:
     environment:
       TZ: Asia/Ho_Chi_Minh
       NODE_OPTIONS: "--max-old-space-size=1024"
+      DB_HOST: db-mysql
+      REDIS_HOST: redis-cache
+      URL_REACT: http://localhost
     deploy:
       resources:
         limits:
@@ -154,6 +157,8 @@ services:
       nofile:
         soft: 65536
         hard: 65536
+    ports:
+      - "8080:8080"
     expose:
       - "8080"
     dns:
