@@ -7,8 +7,117 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { executeFunctionCall, aiFunctions, aiAuthFunctions } = require('../services/aiFunctionHandlers');
 const { SYSTEM_PROMPT } = require('../services/aiService');
+const db = require('../models');
+const { Op } = require('sequelize');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'MISSING_KEY');
+
+function normalizeString(str) {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function correctDoctorArgs(functionName, args, userQuery) {
+  if (!args || typeof args !== 'object') return args;
+  if (!['getDoctorDetail', 'getAvailableSchedules', 'universalSystemSearch'].includes(functionName)) {
+    return args;
+  }
+  const normalizedQuery = normalizeString(userQuery);
+  if (!normalizedQuery) return args;
+
+  try {
+    const doctors = await db.User.findAll({
+      where: { roleId: 'R2' },
+      attributes: ['id', 'firstName', 'lastName'],
+      lock: false
+    });
+
+    const sortedDocs = doctors.map(d => ({
+      id: d.id,
+      name: `${d.lastName || ''} ${d.firstName || ''}`.trim(),
+      normalized: normalizeString(`${d.lastName || ''} ${d.firstName || ''}`.trim())
+    })).sort((a, b) => b.normalized.length - a.normalized.length);
+
+    // 1. Đối với getDoctorDetail hoặc getAvailableSchedules
+    if (functionName === 'getDoctorDetail' || functionName === 'getAvailableSchedules') {
+      const currentId = parseInt(String(args.doctorId || ''), 10);
+      let currentDoctorName = '';
+
+      if (Number.isFinite(currentId) && currentId > 0) {
+        const doc = sortedDocs.find(d => d.id === currentId);
+        if (doc) currentDoctorName = doc.name;
+      }
+
+      // Nếu doctorId hiện tại khớp với bác sĩ được nhắc đến trong câu query, giữ nguyên
+      if (currentDoctorName && normalizedQuery.includes(normalizeString(currentDoctorName))) {
+        return args;
+      }
+
+      // Nếu không, tìm xem có bác sĩ nào khác được nhắc đến không
+      for (const d of sortedDocs) {
+        if (d.normalized && normalizedQuery.includes(d.normalized)) {
+          console.log(`[AI_CORRECT] Tự động sửa doctorId lệch trong ${functionName}: Thay ${currentId} ("${currentDoctorName}") bằng ${d.id} ("${d.name}")`);
+          args.doctorId = d.id;
+          if (args.doctorName !== undefined) {
+            args.doctorName = d.name;
+          }
+          break;
+        }
+      }
+    }
+
+    // 2. Đối với universalSystemSearch
+    if (functionName === 'universalSystemSearch') {
+      // 2.1. Lọc theo filters.doctorId
+      if (args.filters && args.filters.doctorId !== undefined) {
+        const currentId = parseInt(String(args.filters.doctorId || ''), 10);
+        let currentDoctorName = '';
+
+        if (Number.isFinite(currentId) && currentId > 0) {
+          const doc = sortedDocs.find(d => d.id === currentId);
+          if (doc) currentDoctorName = doc.name;
+        }
+
+        if (currentDoctorName && normalizedQuery.includes(normalizeString(currentDoctorName))) {
+          return args;
+        }
+
+        for (const d of sortedDocs) {
+          if (d.normalized && normalizedQuery.includes(d.normalized)) {
+            console.log(`[AI_CORRECT] Tự động sửa filters.doctorId lệch: Thay ${currentId} ("${currentDoctorName}") bằng ${d.id} ("${d.name}")`);
+            args.filters.doctorId = d.id;
+            break;
+          }
+        }
+      }
+
+      // 2.2. Lọc theo keyword khi entityType là doctor
+      if (args.entityType === 'doctor' && args.keyword) {
+        const currentKeywordNormalized = normalizeString(args.keyword);
+        if (currentKeywordNormalized && !normalizedQuery.includes(currentKeywordNormalized)) {
+          for (const d of sortedDocs) {
+            if (d.normalized && normalizedQuery.includes(d.normalized)) {
+              console.log(`[AI_CORRECT] Sửa keyword tìm kiếm bác sĩ lệch: Thay "${args.keyword}" bằng "${d.name}"`);
+              args.keyword = d.name;
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[AI_ERR] Error correcting doctor args:', err);
+  }
+
+  return args;
+}
 
 // ═══ [Guard #2] Concurrent Stream Counter ═══
 let activeStreams = 0;
@@ -215,7 +324,9 @@ async function streamChat(req, res) {
     // ──── [Guard #24 — Gộp Role History] ────
     const geminiHistory = [];
     if (Array.isArray(history) && history.length > 0) {
-      history.forEach((msg) => {
+      const maxHistory = 6; // Lọc lấy tối đa 6 tin nhắn gần nhất từ FE gửi lên
+      const slicedHistory = history.slice(-maxHistory);
+      slicedHistory.forEach((msg) => {
         const roleHint = msg?.sender || msg?.role;
         const role = roleHint === 'user' ? 'user' : 'model';
         const text = typeof msg?.text === 'string'
@@ -318,8 +429,8 @@ async function streamChat(req, res) {
     console.log('[AI_STREAM] 2. Bắt đầu gọi genAI.getGenerativeModel...');
     const model = genAI.getGenerativeModel({
       model: 'gemini-3.1-flash-lite',
-      systemInstruction: SYSTEM_PROMPT + `\n\nThời gian hiện tại (UTC): ${nowUTC}\n\n[LUẬT CHỐNG BỊA DỮ LIỆU - TUYỆT ĐỐI TUÂN THỦ]: Khi trả lời về một bác sĩ cụ thể, BẮT BUỘC chỉ sử dụng CHÍNH XÁC dữ liệu từ kết quả function trả về. TUYỆT ĐỐI CẤM trộn lẫn thông tin của bác sĩ khác. Nếu function trả về bác sĩ A thì CHỈ nói về bác sĩ A.`,
-      generationConfig: { maxOutputTokens: 500, temperature: 0.3 },
+      systemInstruction: SYSTEM_PROMPT + `\n\nThời gian hiện tại (UTC): ${nowUTC}\n\n[LUẬT CHỐNG BỊA DỮ LIỆU & LUẬT TẬP TRUNG - TUYỆT ĐỐI TUÂN THỦ]: \n1. Khi trả lời về một bác sĩ cụ thể, BẮT BUỘC chỉ sử dụng CHÍNH XÁC dữ liệu từ kết quả function trả về. TUYỆT ĐỐI CẤM trộn lẫn thông tin của bác sĩ khác. Nếu function trả về bác sĩ A thì CHỈ nói về bác sĩ A.\n2. Nếu người dùng hỏi về một bác sĩ cụ thể (ví dụ: Mai Hồ Hồng), bạn CHỈ được phép gọi hàm liên quan đến bác sĩ đó (như getAvailableSchedules hoặc getDoctorDetail). TUYỆT ĐỐI CẤM tự ý gọi searchDoctorsBySpecialty hay universalSystemSearch để tìm các bác sĩ khác trong chuyên khoa nếu người dùng không yêu cầu.`,
+      generationConfig: { maxOutputTokens: 1000, temperature: 0.15 },
       tools: [{
         functionDeclarations: [
           ...Object.entries(aiFunctions).map(([name, def]) => ({ name, ...def })),
@@ -333,6 +444,13 @@ async function streamChat(req, res) {
     // ──── [Guard #15 — Function Calling Loop — Max 8 Calls] ────
     let currentMessage = cleanMessage;
     let isFirstRound = true;
+    let hasDoctorSpecificCall = false;
+
+    const isDoctorSpecific = (name, args) => {
+      if (name === 'getAvailableSchedules' || name === 'getDoctorDetail') return true;
+      if (name === 'universalSystemSearch' && args?.entityType === 'doctor') return true;
+      return false;
+    };
 
     while (true) {
       if (isFirstRound) {
@@ -342,9 +460,16 @@ async function streamChat(req, res) {
 
         for await (const chunk of streamResult.stream) {
           const fCalls = chunk.functionCalls();
-          if (fCalls && fCalls.length > 0) { pendingFunctionCall = fCalls[0]; break; }
-          const deltaText = chunk.text();
-          if (deltaText) {
+          if (fCalls && fCalls.length > 0) {
+            pendingFunctionCall = fCalls[0];
+          }
+          let deltaText = '';
+          try {
+            deltaText = chunk.text();
+          } catch (e) {
+            // Bỏ qua lỗi nếu chunk không chứa text (ví dụ chunk chứa function call)
+          }
+          if (deltaText && !pendingFunctionCall) {
             const safeChunk = deltaText.replace(/\n\ndata:/g, '\n\n data:');
             if (!res.writableEnded) {
               if (!isClientConnected) { break; }
@@ -372,9 +497,13 @@ async function streamChat(req, res) {
           functionCallCount++;
           if (functionCallCount > 8) { break; }
           let fnResult;
+          if (isDoctorSpecific(pendingFunctionCall.name, pendingFunctionCall.args)) {
+            hasDoctorSpecificCall = true;
+          }
           try {
-            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${pendingFunctionCall?.name}`);
-            fnResult = await executeFunctionCall(pendingFunctionCall.name, pendingFunctionCall.args, userId, signal);
+            const correctedArgs = await correctDoctorArgs(pendingFunctionCall.name, pendingFunctionCall.args, req.body.message);
+            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${pendingFunctionCall?.name} với args:`, JSON.stringify(correctedArgs));
+            fnResult = await executeFunctionCall(pendingFunctionCall.name, correctedArgs, userId, signal);
             console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
           } catch (fnErr) {
             fnResult = { error: 'Lỗi truy vấn dữ liệu' };
@@ -396,15 +525,28 @@ async function streamChat(req, res) {
           functionCallCount++;
           if (functionCallCount > 8) { break; }
           let fnResult;
-          try {
-            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${nextFCalls[0]?.name}`);
-            fnResult = await executeFunctionCall(nextFCalls[0].name, nextFCalls[0].args, userId, signal);
-            console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
-          } catch (fnErr) {
-            fnResult = { error: 'Lỗi truy vấn dữ liệu' };
-            console.error('[AI_FN_ERR]', nextFCalls[0].name, fnErr);
+          const currentCallName = nextFCalls[0]?.name;
+          const currentCallArgs = nextFCalls[0]?.args;
+
+          if (isDoctorSpecific(currentCallName, currentCallArgs)) {
+            hasDoctorSpecificCall = true;
           }
-          currentMessage = [{ functionResponse: { name: nextFCalls[0].name, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
+
+          if (hasDoctorSpecificCall && (currentCallName === 'searchDoctorsBySpecialty' || (currentCallName === 'universalSystemSearch' && currentCallArgs?.entityType !== 'doctor'))) {
+            console.log(`⚠️ [AI_FUNC_INTERCEPT] Bỏ qua gọi hàm ${currentCallName} vì cuộc hội thoại đang tập trung vào bác sĩ cụ thể.`);
+            fnResult = { result: "Bệnh nhân đang yêu cầu xem thông tin hoặc lịch khám của bác sĩ cụ thể, không cần đề xuất các bác sĩ khác." };
+          } else {
+            try {
+              const correctedArgs = await correctDoctorArgs(currentCallName, currentCallArgs, req.body.message);
+              console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${currentCallName} với args:`, JSON.stringify(correctedArgs));
+              fnResult = await executeFunctionCall(currentCallName, correctedArgs, userId, signal);
+              console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
+            } catch (fnErr) {
+              fnResult = { error: 'Lỗi truy vấn dữ liệu' };
+              console.error('[AI_FN_ERR]', currentCallName, fnErr);
+            }
+          }
+          currentMessage = [{ functionResponse: { name: currentCallName, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
           continue;
         }
 

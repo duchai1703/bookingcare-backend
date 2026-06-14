@@ -838,16 +838,71 @@ async function handleUniversalSystemSearch(args, signal) {
         if (specialties.length === 0) {
           return { status: 'empty', message: 'Hệ thống không tìm thấy chuyên khoa phù hợp.' };
         }
-        return {
-          entityType: 'specialty',
-          total: specialties.length,
-          data: specialties.map((s) => ({
+
+        const data = [];
+        for (const s of specialties) {
+          if (signal?.aborted) return { error: 'Đã hủy' };
+          const doctorInfos = await db.Doctor_Info.findAll({
+            where: { specialtyId: s.id },
+            attributes: ['doctorId', 'description'],
+            limit: 4,
+            order: [['doctorId', 'ASC']],
+            lock: false,
+            include: [
+              {
+                model: db.Allcode,
+                as: 'priceData',
+                attributes: ['valueVi', 'valueEn'],
+              },
+              {
+                model: db.Clinic,
+                as: 'clinicData',
+                attributes: ['name', 'address'],
+              },
+              {
+                model: db.User,
+                as: 'doctorData',
+                attributes: ['id', 'firstName', 'lastName'],
+                include: [
+                  {
+                    model: db.Allcode,
+                    as: 'positionData',
+                    attributes: ['valueVi', 'valueEn'],
+                  },
+                ],
+              },
+            ],
+          });
+
+          const docs = doctorInfos.map((di) => {
+            const d = di.toJSON();
+            return {
+              doctorId: d.doctorData?.id,
+              name: `${d.doctorData?.lastName || ''} ${d.doctorData?.firstName || ''}`.trim(),
+              position: d.doctorData?.positionData?.valueVi || '',
+              price: d.priceData?.valueVi || '',
+              clinic: d.clinicData?.name || '',
+              address: d.clinicData?.address || '',
+              description: d.description
+                ? Array.from(d.description).slice(0, 150).join('')
+                : '',
+            };
+          });
+
+          data.push({
             id: s.id,
             name: s.name,
             description: s.descriptionMarkdown
-              ? Array.from(s.descriptionMarkdown).slice(0, 300).join('')
+              ? Array.from(s.descriptionMarkdown).slice(0, 200).join('')
               : '',
-          })),
+            doctors: docs,
+          });
+        }
+
+        return {
+          entityType: 'specialty',
+          total: specialties.length,
+          data,
         };
       }
 
