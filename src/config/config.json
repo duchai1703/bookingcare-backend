@@ -1,24 +1,27 @@
 {
   "development": {
-    "username": "root",
-    "password": null,
+    "username": "bookingcare_user",
+    "password": "StrongPgPass2026",
     "database": "bookingcare",
     "host": "127.0.0.1",
-    "dialect": "mysql",
+    "port": 5433,
+    "dialect": "postgres",
     "logging": false
   },
   "test": {
-    "username": "root",
-    "password": null,
-    "database": "database_test",
+    "username": "bookingcare_user",
+    "password": "StrongPgPass2026",
+    "database": "bookingcare_test",
     "host": "127.0.0.1",
-    "dialect": "mysql"
+    "port": 5433,
+    "dialect": "postgres"
   },
   "production": {
-    "username": "root",
+    "username": "bookingcare_user",
     "password": null,
-    "database": "database_production",
+    "database": "bookingcare_production",
     "host": "127.0.0.1",
-    "dialect": "mysql"
+    "port": 5433,
+    "dialect": "postgres"
   }
 }

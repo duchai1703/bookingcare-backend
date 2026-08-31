@@ -169,7 +169,7 @@ async function createPaymentUrl(req, res) {
     const t = await db.sequelize.transaction({
       isolationLevel: READ_COMMITTED,
     });
-    await db.sequelize.query('SET SESSION innodb_lock_wait_timeout=5', {
+    await db.sequelize.query("SET LOCAL lock_timeout = '5s'", {
       transaction: t,
     });
 
@@ -219,8 +219,8 @@ async function createPaymentUrl(req, res) {
         // ═══ S1/Cutoff Logic — Guard #27 ═══
         // Raw SQL dùng NOW() server-side để tránh NTP drift
         const cutoff = await db.sequelize.query(
-          `SELECT (createdAt<DATE_SUB(NOW(),INTERVAL 20 MINUTE)) AS isExpired
-           FROM Bookings WHERE id=:id`,
+          `SELECT ("createdAt" < NOW() - INTERVAL '20 minutes') AS "isExpired"
+           FROM "Bookings" WHERE id=:id`,
           {
             replacements: { id: existing.id },
             type: Sequelize.QueryTypes.SELECT,
@@ -405,7 +405,7 @@ async function vnpayIpn(req, res) {
         booking.vnpayTransactionNo = vnpTransNo;
         booking.vnp_PayDate = vnp_Params['vnp_PayDate'];
         booking.receiptExpiredAt = db.sequelize.literal(
-          'DATE_ADD(NOW(),INTERVAL 24 HOUR)',
+          "NOW() + INTERVAL '24 hours'",
         );
         booking.reconcileFirstSeenAt = null;
         booking.lastQuerydrCode = '00';
@@ -594,14 +594,13 @@ async function cleanupS1(req, res) {
   let lockAcquired = false;
   try {
     const lockResult = await db.sequelize.query(
-      "SELECT GET_LOCK('cron_cleanup_s1', 30) AS acquired",
+      "SELECT pg_try_advisory_lock(hashtext('cron_cleanup_s1')) AS acquired",
       {
         type: Sequelize.QueryTypes.SELECT,
         plain: true,
-        options: { type: 'write' },
       },
     );
-    lockAcquired = lockResult.acquired === 1;
+    lockAcquired = lockResult.acquired === true;
     if (!lockAcquired) return res.json({ skipped: true });
 
     // ═══════════════════════════════════════════════════════════════════
@@ -614,7 +613,7 @@ async function cleanupS1(req, res) {
         statusId: 'S1',
         paymentStatus: 'unpaid',
         createdAt: {
-          [Op.lt]: db.sequelize.literal('DATE_SUB(NOW(), INTERVAL 20 MINUTE)'),
+          [Op.lt]: db.sequelize.literal("NOW() - INTERVAL '20 minutes'"),
         },
       },
     });
@@ -625,7 +624,7 @@ async function cleanupS1(req, res) {
         statusId: 'S1.5',
         paymentStatus: 'unpaid',
         updatedAt: {
-          [Op.lt]: db.sequelize.literal('DATE_SUB(NOW(), INTERVAL 20 MINUTE)'),
+          [Op.lt]: db.sequelize.literal("NOW() - INTERVAL '20 minutes'"),
         },
       },
     });
@@ -697,8 +696,8 @@ async function cleanupS1(req, res) {
 
               // Check matured (>10min)
               const m = await db.sequelize.query(
-                `SELECT (reconcileFirstSeenAt < DATE_SUB(NOW(), INTERVAL 10 MINUTE)) AS ok
-               FROM Bookings WHERE id=:id`,
+                `SELECT ("reconcileFirstSeenAt" < NOW() - INTERVAL '10 minutes') AS ok
+                 FROM "Bookings" WHERE id=:id`,
                 {
                   replacements: { id: booking.id },
                   type: Sequelize.QueryTypes.SELECT,
@@ -736,7 +735,7 @@ async function cleanupS1(req, res) {
                   freshBooking.statusId = 'S2';
                   freshBooking.paymentStatus = 'paid';
                   freshBooking.receiptExpiredAt = db.sequelize.literal(
-                    'DATE_ADD(NOW(), INTERVAL 24 HOUR)',
+                    "NOW() + INTERVAL '24 hours'",
                   );
                   freshBooking.reconcileFirstSeenAt = null;
                   await generateReceiptToken(freshBooking, t);
@@ -764,7 +763,7 @@ async function cleanupS1(req, res) {
 
                 // Zombie check (>24h)
                 const z = await db.sequelize.query(
-                  `SELECT (createdAt<DATE_SUB(NOW(),INTERVAL 24 HOUR)) AS isZ FROM Bookings WHERE id=:id`,
+                  `SELECT ("createdAt" < NOW() - INTERVAL '24 hours') AS "isZ" FROM "Bookings" WHERE id=:id`,
                   {
                     replacements: { id: freshBooking.id },
                     type: Sequelize.QueryTypes.SELECT,
@@ -782,7 +781,7 @@ async function cleanupS1(req, res) {
                 throw err;
               }
             } catch (err) {
-              if ([1213, 1205].includes(err.parent?.errno) && retries < 2) {
+              if (['40P01', '55P03'].includes(err.parent?.code) && retries < 2) {
                 retries++;
                 continue;
               }
@@ -797,7 +796,7 @@ async function cleanupS1(req, res) {
   } finally {
     if (lockAcquired)
       await db.sequelize
-        .query("SELECT RELEASE_LOCK('cron_cleanup_s1')")
+        .query("SELECT pg_advisory_unlock(hashtext('cron_cleanup_s1'))")
         .catch(() => {});
   }
 }

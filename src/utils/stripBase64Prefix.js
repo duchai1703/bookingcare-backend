@@ -1,6 +1,6 @@
 // src/utils/stripBase64Prefix.js
 // ✅ [FIX-IMAGE] Utility: Loại bỏ prefix "data:image/...;base64," khỏi chuỗi base64
-// trước khi lưu vào MySQL BLOB — tránh Double-Encoding bug
+// trước khi lưu vào PostgreSQL BYTEA — tránh Double-Encoding bug
 //
 // LUỒNG ĐÚNG:
 //   Frontend gửi: "data:image/jpeg;base64,/9j/4AAQ..."

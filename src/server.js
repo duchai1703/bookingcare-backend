@@ -89,26 +89,26 @@ routes(app);
 // ═══════════════════════════════════════════════════════════════════════
 async function checkSystemTimezoneEnforcement() {
   try {
-    console.log('[DEVSECOPS INIT] Launching boot-time database timezone verification now.');
+    console.log('[DEVSECOPS INIT] Launching boot-time PostgreSQL timezone verification now.');
 
     const results = await db.sequelize.query(
-      "SELECT @@session.time_zone AS tz;",
+      "SELECT current_setting('TIMEZONE') AS tz;",
       { type: db.Sequelize.QueryTypes.SELECT }
     );
 
     if (!results || results.length === 0) {
-      console.error('[FATAL ERROR] Unable to retrieve session timezone information from MySQL server during boot.');
+      console.error('[FATAL ERROR] Unable to retrieve session timezone information from PostgreSQL server during boot.');
       process.exit(1);
     }
 
     const systemTimezone = results[0].tz;
 
-    if (systemTimezone !== '+07:00') {
-      console.error(`[FATAL CRITICAL ERROR] Hardened Timezone Mismatch detected! MySQL Session TZ is '${systemTimezone}', expected '+07:00'. Halting system initialization immediately to prevent booking FSM data desync state between database layer and backend app engine.`);
+    if (systemTimezone !== 'Asia/Ho_Chi_Minh') {
+      console.error(`[FATAL CRITICAL ERROR] Hardened Timezone Mismatch detected! PostgreSQL Session TZ is '${systemTimezone}', expected 'Asia/Ho_Chi_Minh'. Halting system initialization immediately to prevent booking FSM data desync state between database layer and backend app engine.`);
       process.exit(1);
     }
 
-    console.log('[DEVSECOPS SUCCESS] MySQL Native Timezone Alignment confirmed at +07:00. System initialization approved.');
+    console.log('[DEVSECOPS SUCCESS] PostgreSQL Timezone Alignment confirmed at Asia/Ho_Chi_Minh (UTC+07). System initialization approved.');
   } catch (error) {
     // [HOTFIX CODEX AUDIT] Ép ngắt mạch sập nguồn container ngay khi lỗi bắt tay xảy ra, cấm chạy cố
     console.error('[FATAL ERROR] Critical database handshake failure during boot timezone check validation loop:', error);
@@ -153,9 +153,9 @@ async function executeEnterpriseGracefulShutdown(signal) {
     console.log('[SHUTDOWN STEP 4 SUCCESS] Pending VNPay transactions safely settled.');
 
     // Bước 5: Quét sạch rác khóa phân tán Advisory Lock đang mở ngầm tầng DB
-    console.log('[SHUTDOWN STEP 5] Releasing Advisory Lock cron_cleanup_s1 from MySQL engine.');
+    console.log('[SHUTDOWN STEP 5] Releasing Advisory Lock cron_cleanup_s1 from PostgreSQL engine.');
     try {
-      await db.sequelize.query("SELECT RELEASE_LOCK('cron_cleanup_s1');");
+      await db.sequelize.query("SELECT pg_advisory_unlock(hashtext('cron_cleanup_s1'));");
       console.log('[SHUTDOWN STEP 5 SUCCESS] Advisory lock cron_cleanup_s1 successfully released.');
     } catch (lockErr) {
       console.log('[SHUTDOWN STEP 5 INFO] Advisory lock release skipped:', lockErr.message);

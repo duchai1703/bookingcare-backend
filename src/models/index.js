@@ -16,10 +16,11 @@ const sequelize = new Sequelize(
     logging: false,
 
     // [Phase 13 — Blueprint PK8.4] Enterprise Connection Pool Hardening
-    // Công thức: Sequelize_Max_Pool = (MySQL_Max_Connections - 30) / Total_Backend_Instances
-    // Trị số cứng: (150 - 30) / 1 = 120 kết nối tối đa
+    // PostgreSQL default max_connections = 100
+    // Công thức: Sequelize_Max_Pool = (PG_Max_Connections - 10) / Total_Backend_Instances
+    // Trị số cứng: (100 - 10) / 1 = 90 kết nối tối đa
     pool: {
-      max: 120,      // Trị số số nguyên cứng dựa trên công thức phân rã an toàn: (150 - 30) / 1
+      max: 90,       // Trị số số nguyên cứng dựa trên công thức phân rã an toàn: (100 - 10) / 1
       min: 10,       // Duy trì kết nối mạch nền ổn định chống cold-start delay
       idle: 10000,   // Giải phóng kết nối thừa về trạng thái nghỉ sau 10 giây không hoạt động
       acquire: 5000  // Hard timeout ngắt Event Loop nếu không thể cấp phát socket sau 5 giây
@@ -27,29 +28,25 @@ const sequelize = new Sequelize(
 
     // [Phase 10 — Zero Trust Timezone Lock] Khóa timezone tầng Sequelize
     timezone: '+07:00',
+    // [PostgreSQL Migration] Dialect options cho pg driver
     dialectOptions: {
       connectTimeout: 5000,
-      useUTC: false,      // CHỐNG tự động convert về UTC
-      dateStrings: true,  // Trả date dạng string, không auto-parse
-      typeCast: true,
+      // SSL cho production (uncomment khi deploy)
+      // ssl: { rejectUnauthorized: false },
     },
 
-    // [🔒 TZ-POOL-001 v2.0] Khóa timezone cho TẤT CẢ kết nối bằng Manual Promise
-    // ⚠️ KHÔNG dùng `async/await connection.query()` vì driver mysql2
-    //   sử dụng cơ chế Callback — `await` có thể resolve TRƯỚC KHI query thực sự hoàn tất.
-    // ✅ Dùng hooks.afterConnect + new Promise() — đảm bảo connection CHỈ được trả về pool
-    //   SAU KHI MySQL xác nhận SET time_zone thành công (callback được gọi).
+    // [🔒 TZ-POOL-001 v3.0 PostgreSQL] Khóa timezone cho TẤT CẢ kết nối
+    // PostgreSQL driver (pg) hỗ trợ async/await natively — dùng await trực tiếp.
+    // ✅ Dùng hooks.afterConnect + async/await — đảm bảo connection CHỈ được trả về pool
+    //   SAU KHI PostgreSQL xác nhận SET timezone thành công.
     hooks: {
-      afterConnect: (connection) => {
-        return new Promise((resolve, reject) => {
-          connection.query("SET time_zone = '+07:00';", (err) => {
-            if (err) {
-              console.error('❌ [FATAL] Timezone Hook Failed:', err);
-              return reject(err); // Connection bị từ chối — không đưa vào pool
-            }
-            resolve(); // MySQL xác nhận thành công → connection sẵn sàng
-          });
-        });
+      afterConnect: async (connection) => {
+        try {
+          await connection.query("SET timezone TO 'Asia/Ho_Chi_Minh';");
+        } catch (err) {
+          console.error('❌ [FATAL] Timezone Hook Failed:', err);
+          throw err; // Connection bị từ chối — không đưa vào pool
+        }
       },
     },
   }

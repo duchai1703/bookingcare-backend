@@ -1,5 +1,5 @@
 // src/utils/convertBlobToBase64.js
-// ✅ [FIX-IMAGE v2] Utility: Convert MySQL BLOB → base64 string an toàn
+// ✅ [FIX-IMAGE v3] Utility: Convert PostgreSQL BYTEA → base64 string an toàn
 // Dùng khi đọc image từ DB để trả về Frontend
 //
 // MÔ HÌNH LƯU TRỮ:
@@ -13,7 +13,7 @@
 //   Case 2 (DATA CŨ):  BLOB chứa UTF-8 bytes của "data:image/...;base64,..." → toString('utf8') → strip prefix
 
 /**
- * Convert BLOB/Buffer từ MySQL → pure base64 string.
+ * Convert BYTEA/Buffer từ PostgreSQL → pure base64 string.
  * Tương thích ngược với cả data cũ (có prefix) và data mới (pure base64).
  * @param {Buffer|string|null} blob - Image data từ database
  * @returns {string} Pure base64 string (không có prefix data:image/...)
