@@ -118,7 +118,7 @@ const postBookAppointment = async (data, patientId) => {
     const doctorInfor = await db.Doctor_Info.findOne({
       where: { doctorId: data.doctorId },
       include: [
-        { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
       transaction: t,
     });
@@ -340,7 +340,7 @@ const getPatientProfile = async (patientId) => {
       raw: false,
       include: [
         // Include Allcode để lấy tên giới tính (Giới tính: Nam/Nữ)
-        { model: db.Allcode, as: 'genderData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
     });
 
@@ -502,13 +502,13 @@ const getPatientBookings = async (patientId, query) => {
           as: 'doctorBookingData',
           attributes: ['id', 'firstName', 'lastName', 'image'],
           include: [
-            { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
         // Allcode: trạng thái booking (Chờ xác nhận, Đã xác nhận, Đã khám, Đã hủy)
-        { model: db.Allcode, as: 'statusData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         // Allcode: khung giờ (8:00-9:00, ...)
-        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         // Review: kiểm tra đã đánh giá chưa (chỉ cần id)
         { model: db.Review, as: 'reviewData', attributes: ['id'] },
       ],

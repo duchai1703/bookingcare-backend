@@ -17,8 +17,8 @@ const getTopDoctorHome = async (limit) => {
       order: [['createdAt', 'DESC']],
       attributes: { exclude: ['password'] },
       include: [
-        { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
-        { model: db.Allcode, as: 'genderData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         // ✅ [v4.0] Include Doctor_Info + specialtyData + clinicData
         // Để frontend hiển thị tên chuyên khoa và phòng khám dưới tên bác sĩ
         {
@@ -27,7 +27,7 @@ const getTopDoctorHome = async (limit) => {
           include: [
             { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
             { model: db.Clinic, as: 'clinicData', attributes: ['name'] },
-            { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
       ],
@@ -54,13 +54,13 @@ const getDetailDoctorById = async (id) => {
       where: { id },
       attributes: { exclude: ['password'] },
       include: [
-        { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         {
           model: db.Doctor_Info, as: 'doctorInfoData',
           include: [
-            { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
-            { model: db.Allcode, as: 'paymentData', attributes: ['valueVi', 'valueEn'] },
-            { model: db.Allcode, as: 'provinceData', attributes: ['valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'paymentData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'provinceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
             { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
             { model: db.Clinic, as: 'clinicData', attributes: ['name', 'address'] },
           ],
@@ -226,7 +226,7 @@ const getScheduleByDate = async (doctorId, date, includeAll = false) => {
     const schedules = await db.Schedule.findAll({
       where: { doctorId, date },
       include: [
-        { model: db.Allcode, as: 'timeTypeData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
       raw: false,
       nest: true,
@@ -260,11 +260,11 @@ const getListPatientForDoctor = async (doctorId, date, statusId) => {
           model: db.User, as: 'patientData',
           attributes: ['email', 'firstName', 'lastName', 'address', 'gender', 'phoneNumber'],
           include: [
-            { model: db.Allcode, as: 'genderData', attributes: ['valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
-        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['valueVi', 'valueEn'] },
-        { model: db.Allcode, as: 'genderBookingData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'genderBookingData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
       raw: false,
       nest: true,
@@ -439,7 +439,7 @@ const getPatientBookingHistory = async (patientId, doctorId) => {
           model: db.User, as: 'doctorBookingData',
           attributes: ['firstName', 'lastName', 'email'],
         },
-        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
       order: [['createdAt', 'DESC']],
       raw: false,

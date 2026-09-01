@@ -74,7 +74,7 @@ const getDetailClinicById = async (id) => {
           model: db.User, as: 'doctorData',
           attributes: ['id', 'firstName', 'lastName', 'image', 'gender', 'positionId'],
           include: [
-            { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
+            { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
         { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },

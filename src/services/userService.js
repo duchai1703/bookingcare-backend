@@ -239,7 +239,7 @@ const searchService = async (keyword) => {
       },
       attributes: ['id', 'firstName', 'lastName', 'image'],
       include: [
-        { model: db.Allcode, as: 'positionData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
       raw: false,
       nest: true,
