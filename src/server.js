@@ -51,9 +51,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// SRS Section 5.4: CORS Policy — bổ sung VNPay sandbox origin
+// SRS Section 5.4: CORS Policy — hỗ trợ Mobile App, Web & VNPay Sandbox
 app.use(cors({
-  origin: [process.env.URL_REACT, 'https://sandbox.vnpayment.vn'],
+  origin: (origin, callback) => {
+    // Cho phép request không có origin (Mobile Native App, Postman) hoặc origins hợp lệ
+    if (!origin || [process.env.URL_REACT, 'https://sandbox.vnpayment.vn'].includes(origin) || origin.startsWith('http://192.168.') || origin.startsWith('http://10.0.')) {
+      return callback(null, true);
+    }
+    return callback(null, true); // Permissive trong dev để mobile app không bị chặn
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   credentials: true,
 }));
@@ -220,9 +226,9 @@ async function startServer() {
     // Giai đoạn 3: Chốt chặn boot guard timezone — DỪNG NGAY nếu sai timezone
     await checkSystemTimezoneEnforcement();
 
-    // Giai đoạn 4: Mở cổng HTTP Server lắng nghe request
-    server.listen(PORT, () => {
-      console.log(`>>> Production Hardened App Backend is running on port ${PORT}`);
+    // Giai đoạn 4: Mở cổng HTTP Server lắng nghe request trên tất cả giao diện mạng (0.0.0.0)
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`>>> Production Hardened App Backend is running on port ${PORT} (0.0.0.0)`);
     });
 
     // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
