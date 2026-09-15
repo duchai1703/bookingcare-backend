@@ -110,4 +110,71 @@ const getKpiStatistics = async (req, res) => {
   }
 };
 
-module.exports = { getOverviewStatistics, getBookingsByDay, getBookingsByStatus, getTopSpecialties, getTopDoctors, getKpiStatistics };
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B.6] Revenue Statistics Handlers — Admin R1
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /api/v1/statistics/monthly-revenue?year=2025
+const getMonthlyRevenue = async (req, res) => {
+  try {
+    const year = req.query.year ? parseInt(req.query.year, 10) : new Date().getFullYear();
+    const result = await statisticService.getMonthlyRevenue(year);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('>>> getMonthlyRevenue error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/revenue-by-doctor?from=YYYY-MM-DD&to=YYYY-MM-DD
+const getRevenueByDoctor = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ errCode: 1, message: 'Missing from, to' });
+    const result = await statisticService.getRevenueByDoctor(from, to);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('>>> getRevenueByDoctor error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/revenue-by-clinic?from=YYYY-MM-DD&to=YYYY-MM-DD
+const getRevenueByClinic = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ errCode: 1, message: 'Missing from, to' });
+    const result = await statisticService.getRevenueByClinic(from, to);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('>>> getRevenueByClinic error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/revenue-by-specialty?from=YYYY-MM-DD&to=YYYY-MM-DD
+const getRevenueBySpecialty = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) return res.status(400).json({ errCode: 1, message: 'Missing from, to' });
+    const result = await statisticService.getRevenueBySpecialty(from, to);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error('>>> getRevenueBySpecialty error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+module.exports = {
+  getOverviewStatistics,
+  getBookingsByDay,
+  getBookingsByStatus,
+  getTopSpecialties,
+  getTopDoctors,
+  getKpiStatistics,
+  // [Phase B.6]
+  getMonthlyRevenue,
+  getRevenueByDoctor,
+  getRevenueByClinic,
+  getRevenueBySpecialty,
+};

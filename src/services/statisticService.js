@@ -118,4 +118,121 @@ const getTopDoctors = async (fromTimestamp, toTimestamp, limit) => {
   return results;
 };
 
-module.exports = { getOverviewStatistics, getBookingsByDay, getBookingsByStatus, getTopSpecialties, getTopDoctors };
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B.6] Revenue Statistics — Admin
+// ═══════════════════════════════════════════════════════════════════════
+
+// B.6.1 — Doanh thu theo tháng (toàn hệ thống)
+const getMonthlyRevenue = async (year) => {
+  const targetYear = year || new Date().getFullYear();
+  const results = await db.sequelize.query(
+    `SELECT
+       EXTRACT(MONTH FROM TO_TIMESTAMP(CAST(date AS BIGINT) / 1000) AT TIME ZONE 'Asia/Ho_Chi_Minh')::INT AS month,
+       SUM("bookingPrice") AS revenue,
+       COUNT(*) AS count
+     FROM "Bookings"
+     WHERE "statusId" = 'S3'
+       AND "paymentStatus" = 'paid'
+       AND date LIKE :yearPattern
+     GROUP BY month
+     ORDER BY month ASC`,
+    { replacements: { yearPattern: `${targetYear}-%` }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  // Build full 12-month array
+  const monthly = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, revenue: 0, count: 0 }));
+  results.forEach(r => {
+    const idx = parseInt(r.month, 10) - 1;
+    if (idx >= 0 && idx < 12) {
+      monthly[idx].revenue = parseFloat(r.revenue) || 0;
+      monthly[idx].count   = parseInt(r.count, 10) || 0;
+    }
+  });
+  const total = monthly.reduce((s, m) => s + m.revenue, 0);
+  return { errCode: 0, data: { monthly, total, year: targetYear } };
+};
+
+// B.6.2 — Doanh thu theo bác sĩ
+const getRevenueByDoctor = async (from, to) => {
+  const results = await db.sequelize.query(
+    `SELECT
+       b."doctorId",
+       CONCAT(u."lastName", ' ', u."firstName") AS "doctorName",
+       SUM(b."bookingPrice") AS revenue,
+       COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Users" u ON b."doctorId" = u.id
+     WHERE b."statusId" = 'S3'
+       AND b."paymentStatus" = 'paid'
+       AND b.date >= :from AND b.date <= :to
+     GROUP BY b."doctorId", u."lastName", u."firstName"
+     ORDER BY revenue DESC
+     LIMIT 20`,
+    { replacements: { from, to }, type: db.sequelize.QueryTypes.SELECT }
+  );
+  return {
+    errCode: 0,
+    data: results.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 }))
+  };
+};
+
+// B.6.3 — Doanh thu theo phòng khám
+const getRevenueByClinic = async (from, to) => {
+  const results = await db.sequelize.query(
+    `SELECT
+       c.id AS "clinicId",
+       c.name AS "clinicName",
+       SUM(b."bookingPrice") AS revenue,
+       COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Doctor_Infos" di ON b."doctorId" = di."doctorId"
+     INNER JOIN "Clinics" c ON di."clinicId" = c.id
+     WHERE b."statusId" = 'S3'
+       AND b."paymentStatus" = 'paid'
+       AND b.date >= :from AND b.date <= :to
+     GROUP BY c.id, c.name
+     ORDER BY revenue DESC`,
+    { replacements: { from, to }, type: db.sequelize.QueryTypes.SELECT }
+  );
+  return {
+    errCode: 0,
+    data: results.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 }))
+  };
+};
+
+// B.6.4 — Doanh thu theo chuyên khoa
+const getRevenueBySpecialty = async (from, to) => {
+  const results = await db.sequelize.query(
+    `SELECT
+       s.id AS "specialtyId",
+       s.name AS "specialtyName",
+       SUM(b."bookingPrice") AS revenue,
+       COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Doctor_Infos" di ON b."doctorId" = di."doctorId"
+     INNER JOIN "Specialties" s ON di."specialtyId" = s.id
+     WHERE b."statusId" = 'S3'
+       AND b."paymentStatus" = 'paid'
+       AND b.date >= :from AND b.date <= :to
+     GROUP BY s.id, s.name
+     ORDER BY revenue DESC`,
+    { replacements: { from, to }, type: db.sequelize.QueryTypes.SELECT }
+  );
+  return {
+    errCode: 0,
+    data: results.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 }))
+  };
+};
+
+module.exports = {
+  getOverviewStatistics,
+  getBookingsByDay,
+  getBookingsByStatus,
+  getTopSpecialties,
+  getTopDoctors,
+  // [Phase B.6]
+  getMonthlyRevenue,
+  getRevenueByDoctor,
+  getRevenueByClinic,
+  getRevenueBySpecialty,
+};

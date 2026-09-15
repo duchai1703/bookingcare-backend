@@ -27,6 +27,26 @@ module.exports = (sequelize, DataTypes) => {
     receiptExpiredAt:     { type: DataTypes.DATE,        allowNull: true },
     reconcileFirstSeenAt: { type: DataTypes.DATE,        allowNull: true },
     lastQuerydrCode:      { type: DataTypes.STRING(4),   allowNull: true },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase A] BookingCare v2.0 — Thông tin hoàn tiền
+    // ═══════════════════════════════════════════════════════════════════════
+    bankAccountNumber: { type: DataTypes.STRING(50),   allowNull: true },  // Số TK hoàn tiền
+    bankAccountName:   { type: DataTypes.STRING(255),  allowNull: true },  // Tên chủ TK
+    bankName:          { type: DataTypes.STRING(255),  allowNull: true },  // Tên ngân hàng
+    refundRate:        { type: DataTypes.DECIMAL(5, 2),allowNull: true },  // % hoàn (vd: 80.00)
+    refundAmount:      { type: DataTypes.INTEGER,      allowNull: true },  // Số tiền hoàn (VNĐ)
+    // refundStatus values: 'none' | 'pending' | 'done'
+    refundStatus:      { type: DataTypes.STRING(20),   allowNull: true, defaultValue: 'none' },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
+    // ═══════════════════════════════════════════════════════════════════════
+    symptoms:          { type: DataTypes.TEXT, allowNull: true },          // Triệu chứng bệnh nhân báo
+    clinicalNotes:     { type: DataTypes.TEXT, allowNull: true },          // Ghi chú lâm sàng bác sĩ
+    diagnosis:         { type: DataTypes.TEXT, allowNull: true },          // Chẩn đoán
+    followUpDate:      { type: DataTypes.STRING(20), allowNull: true },    // Ngày tái khám "YYYY-MM-DD"
+    careInstructions:  { type: DataTypes.TEXT, allowNull: true },          // Hướng dẫn chăm sóc tại nhà
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [

@@ -165,17 +165,19 @@ const bulkCreateSchedule = async (data) => {
     if (!data.arrSchedule || !Array.isArray(data.arrSchedule) || data.arrSchedule.length === 0) {
       return { errCode: 1, message: 'Thiếu dữ liệu lịch khám!' };
     }
+    // ✅ [FIX] Ép kiểu date → String để tránh lỗi PostgreSQL "character varying = bigint"
     const schedules = data.arrSchedule.map(item => ({
       ...item,
+      date: String(item.date),
       maxNumber: item.maxNumber || 10,
       currentNumber: 0,
     }));
     const existing = await db.Schedule.findAll({
-      where: { doctorId: schedules[0].doctorId, date: schedules[0].date },
+      where: { doctorId: schedules[0].doctorId, date: String(schedules[0].date) },
       attributes: ['timeType', 'doctorId', 'date'],
       raw: true,
     });
-    const toCreate = schedules.filter(s => !existing.find(e => e.timeType === s.timeType && +e.date === +s.date));
+    const toCreate = schedules.filter(s => !existing.find(e => e.timeType === s.timeType && String(e.date) === String(s.date)));
     if (toCreate.length > 0) {
       await db.Schedule.bulkCreate(toCreate);
     }
@@ -223,8 +225,9 @@ const deleteSchedule = async (data) => {
 // ===== GET SCHEDULE BY DATE (SRS 3.8 REQ-PT-009) =====
 const getScheduleByDate = async (doctorId, date, includeAll = false) => {
   try {
+    // ✅ [FIX] Ép kiểu date → String để tránh lỗi PostgreSQL "character varying = bigint"
     const schedules = await db.Schedule.findAll({
-      where: { doctorId, date },
+      where: { doctorId, date: String(date) },
       include: [
         { model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
@@ -452,6 +455,195 @@ const getPatientBookingHistory = async (patientId, doctorId) => {
   }
 };
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getAllDoctors — Bộ lọc bác sĩ theo clinicId / specialtyId
+// GET /api/v1/doctors?clinicId=&specialtyId=&page=&limit=
+// ═══════════════════════════════════════════════════════════════════════
+const getAllDoctors = async ({ clinicId, specialtyId, page = 1, limit = 12 } = {}) => {
+  try {
+    const doctorInfoWhere = {};
+    if (clinicId)    doctorInfoWhere.clinicId    = parseInt(clinicId);
+    if (specialtyId) doctorInfoWhere.specialtyId = parseInt(specialtyId);
+
+    const result = await db.User.findAndCountAll({
+      where: { roleId: 'R2' },
+      attributes: { exclude: ['password', 'tokenVersion'] },
+      include: [{
+        model: db.Doctor_Info,
+        as: 'doctorInfoData',
+        where: Object.keys(doctorInfoWhere).length ? doctorInfoWhere : undefined,
+        required: Object.keys(doctorInfoWhere).length > 0,
+        include: [
+          { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+          { model: db.Clinic,    as: 'clinicData',    attributes: ['id', 'name'] },
+          { model: db.Allcode,   as: 'priceData',     attributes: ['valueVi', 'valueEn'] },
+          { model: db.Allcode,   as: 'provinceData',  attributes: ['valueVi', 'valueEn'] },
+        ],
+      }],
+      limit:  parseInt(limit),
+      offset: (parseInt(page) - 1) * parseInt(limit),
+      order:  [['id', 'DESC']],
+      distinct: true,
+    });
+
+    // Convert BLOB image → base64
+    const rows = result.rows.map(u => {
+      const plain = u.toJSON ? u.toJSON() : u;
+      if (plain.image) plain.image = convertBlobToBase64(plain.image);
+      return plain;
+    });
+
+    return { errCode: 0, data: rows, total: result.count };
+  } catch (err) {
+    console.error('>>> getAllDoctors error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] updateMedicalInfo — Bác sĩ ghi nhận thông tin khám
+// PUT /api/v1/bookings/:bookingId/medical-info
+// ═══════════════════════════════════════════════════════════════════════
+const updateMedicalInfo = async (bookingId, doctorId, data) => {
+  try {
+    const booking = await db.Booking.findOne({ where: { id: bookingId, doctorId } });
+    if (!booking) return { errCode: 1, message: 'Booking not found or unauthorized' };
+
+    await booking.update({
+      symptoms:         data.symptoms         ?? booking.symptoms,
+      clinicalNotes:    data.clinicalNotes    ?? booking.clinicalNotes,
+      diagnosis:        data.diagnosis        ?? booking.diagnosis,
+      followUpDate:     data.followUpDate     ?? booking.followUpDate,
+      careInstructions: data.careInstructions ?? booking.careInstructions,
+    });
+
+    // Cập nhật đơn thuốc nếu có
+    if (Array.isArray(data.medicines)) {
+      await db.BookingMedicine.destroy({ where: { bookingId } });
+      if (data.medicines.length > 0) {
+        await db.BookingMedicine.bulkCreate(
+          data.medicines.map(m => ({
+            bookingId,
+            medicineId:        m.medicineId,
+            quantity:          m.quantity,
+            dosage:            m.dosage,
+            usageInstructions: m.usageInstructions,
+          }))
+        );
+      }
+    }
+
+    // Cập nhật chỉ định y khoa nếu có
+    if (Array.isArray(data.catalogIds)) {
+      await booking.setPrescribedCatalogs(data.catalogIds);
+    }
+
+    return { errCode: 0, message: 'Medical info updated successfully' };
+  } catch (err) {
+    console.error('>>> updateMedicalInfo error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getDoctorOwnProfile — Bác sĩ xem hồ sơ cá nhân
+// GET /api/v1/doctor/profile
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorOwnProfile = async (doctorId) => {
+  try {
+    const user = await db.User.findByPk(doctorId, {
+      attributes: { exclude: ['password', 'tokenVersion'] },
+      include: [{
+        model: db.Doctor_Info,
+        as: 'doctorInfoData',
+        include: [
+          { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+          { model: db.Clinic,    as: 'clinicData',    attributes: ['id', 'name'] },
+          { model: db.Allcode,   as: 'priceData',     attributes: ['valueVi', 'valueEn'] },
+          { model: db.Allcode,   as: 'provinceData',  attributes: ['valueVi', 'valueEn'] },
+        ],
+      }],
+    });
+    if (!user) return { errCode: 1, message: 'Doctor not found' };
+
+    const plain = user.toJSON ? user.toJSON() : user;
+    if (plain.image) plain.image = convertBlobToBase64(plain.image);
+    return { errCode: 0, data: plain };
+  } catch (err) {
+    console.error('>>> getDoctorOwnProfile error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] updateDoctorOwnProfile — Bác sĩ tự cập nhật hồ sơ
+// PUT /api/v1/doctor/profile
+// Chỉ cho sửa: firstName, lastName, address, phoneNumber, image, contentHTML, contentMarkdown, description
+// KHÔNG cho sửa: email, roleId, positionId, specialtyId, clinicId (Admin quản lý)
+// ═══════════════════════════════════════════════════════════════════════
+const updateDoctorOwnProfile = async (doctorId, data) => {
+  try {
+    const userFields = {};
+    if (data.firstName)   userFields.firstName   = data.firstName;
+    if (data.lastName)    userFields.lastName     = data.lastName;
+    if (data.address)     userFields.address      = data.address;
+    if (data.phoneNumber) userFields.phoneNumber  = data.phoneNumber;
+    if (data.image) {
+      userFields.image = Buffer.from(stripBase64Prefix(data.image), 'base64');
+    }
+    if (Object.keys(userFields).length > 0) {
+      await db.User.update(userFields, { where: { id: doctorId } });
+    }
+
+    const infoFields = {};
+    if (data.contentHTML)     infoFields.contentHTML     = sanitizeContent(data.contentHTML);
+    if (data.contentMarkdown) infoFields.contentMarkdown = data.contentMarkdown;
+    if (data.description)     infoFields.description     = data.description;
+    if (Object.keys(infoFields).length > 0) {
+      await db.Doctor_Info.update(infoFields, { where: { doctorId } });
+    }
+
+    return { errCode: 0, message: 'Profile updated successfully' };
+  } catch (err) {
+    console.error('>>> updateDoctorOwnProfile error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getDoctorRevenue — Doanh thu cá nhân theo năm
+// GET /api/v1/doctor/revenue?year=2025
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorRevenue = async (doctorId, year) => {
+  try {
+    const targetYear = year || new Date().getFullYear();
+    const bookings = await db.Booking.findAll({
+      where: {
+        doctorId,
+        statusId:      'S3',
+        paymentStatus: 'paid',
+        date: { [db.Sequelize.Op.like]: `${targetYear}-%` },
+      },
+      attributes: ['date', 'bookingPrice'],
+    });
+
+    const monthly = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, revenue: 0, count: 0 }));
+    bookings.forEach(b => {
+      const monthIdx = parseInt((b.date || '').split('-')[1], 10) - 1;
+      if (monthIdx >= 0 && monthIdx < 12) {
+        monthly[monthIdx].revenue += b.bookingPrice || 0;
+        monthly[monthIdx].count   += 1;
+      }
+    });
+    const total = monthly.reduce((s, m) => s + m.revenue, 0);
+    return { errCode: 0, data: { monthly, total, year: targetYear } };
+  } catch (err) {
+    console.error('>>> getDoctorRevenue error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -464,4 +656,11 @@ module.exports = {
   sendRemedy,
   cancelBooking,
   getPatientBookingHistory,
+  // [Phase B] New exports
+  getAllDoctors,
+  updateMedicalInfo,
+  getDoctorOwnProfile,
+  updateDoctorOwnProfile,
+  getDoctorRevenue,
 };
+

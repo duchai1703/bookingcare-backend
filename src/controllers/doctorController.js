@@ -240,6 +240,66 @@ const getPatientBookingHistory = async (req, res) => {
   }
 };
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getAllDoctors — GET /api/v1/doctors?clinicId=&specialtyId=&page=&limit=
+// ═══════════════════════════════════════════════════════════════════════
+const getAllDoctors = async (req, res) => {
+  try {
+    const result = await doctorService.getAllDoctors(req.query);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] updateMedicalInfo — PUT /api/v1/bookings/:bookingId/medical-info
+// ═══════════════════════════════════════════════════════════════════════
+const updateMedicalInfo = async (req, res) => {
+  try {
+    const doctorId  = req.user.id;   // IDOR: luôn lấy từ JWT
+    const bookingId = parseInt(req.params.bookingId, 10);
+    const result = await doctorService.updateMedicalInfo(bookingId, doctorId, req.body);
+    return res.status(result.errCode === 0 ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getDoctorOwnProfile / updateDoctorOwnProfile
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorOwnProfile = async (req, res) => {
+  try {
+    const result = await doctorService.getDoctorOwnProfile(req.user.id);
+    return res.status(result.errCode === 0 ? 200 : 404).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+const updateDoctorOwnProfile = async (req, res) => {
+  try {
+    const result = await doctorService.updateDoctorOwnProfile(req.user.id, req.body);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] getDoctorRevenue — GET /api/v1/doctor/revenue?year=
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorRevenue = async (req, res) => {
+  try {
+    const result = await doctorService.getDoctorRevenue(req.user.id, req.query.year);
+    return res.status(200).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -253,4 +313,11 @@ module.exports = {
   sendRemedy,
   cancelBooking,
   getPatientBookingHistory,
+  // [Phase B]
+  getAllDoctors,
+  updateMedicalInfo,
+  getDoctorOwnProfile,
+  updateDoctorOwnProfile,
+  getDoctorRevenue,
 };
+

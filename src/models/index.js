@@ -206,6 +206,41 @@ db.Review.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'bookingData' });
 db.User.hasMany(db.Token, { foreignKey: 'userId', as: 'userTokens' });
 db.Token.belongsTo(db.User, { foreignKey: 'userId', as: 'tokenUserData' });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase A] Booking ↔ Medicine (N:M) — Đơn thuốc
+// ─────────────────────────────────────────────────────
+db.Booking.belongsToMany(db.Medicine, {
+  through: db.BookingMedicine,
+  as: 'prescribedMedicines',
+  foreignKey: 'bookingId',
+  otherKey: 'medicineId',
+});
+db.Medicine.belongsToMany(db.Booking, {
+  through: db.BookingMedicine,
+  as: 'medicineBookings',
+  foreignKey: 'medicineId',
+  otherKey: 'bookingId',
+});
+db.Booking.hasMany(db.BookingMedicine, { foreignKey: 'bookingId', as: 'bookingMedicines' });
+db.BookingMedicine.belongsTo(db.Booking,  { foreignKey: 'bookingId' });
+db.BookingMedicine.belongsTo(db.Medicine, { foreignKey: 'medicineId', as: 'medicineData' });
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase A] Booking ↔ MedicalCatalog (N:M) — Chỉ định y khoa
+// ─────────────────────────────────────────────────────
+db.Booking.belongsToMany(db.MedicalCatalog, {
+  through: 'BookingCatalogs',
+  as: 'prescribedCatalogs',
+  foreignKey: 'bookingId',
+  otherKey: 'catalogId',
+});
+db.MedicalCatalog.belongsToMany(db.Booking, {
+  through: 'BookingCatalogs',
+  as: 'catalogBookings',
+  foreignKey: 'catalogId',
+  otherKey: 'bookingId',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

@@ -511,6 +511,12 @@ const getPatientBookings = async (patientId, query) => {
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         // Review: kiểm tra đã đánh giá chưa (chỉ cần id)
         { model: db.Review, as: 'reviewData', attributes: ['id'] },
+        // [Phase D.4] Chi tiết đơn thuốc
+        {
+          model: db.BookingMedicine,
+          as: 'bookingMedicines',
+          include: [{ model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'unit'] }],
+        },
       ],
     });
 

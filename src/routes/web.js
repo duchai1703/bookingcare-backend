@@ -168,7 +168,54 @@ const routes = (app) => {
     // 3. XỬ LÝ CỐT LÕI
     require('../controllers/aiController').streamChat
   );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase B] CATALOG ROUTES — MedicalCatalog / Medicine / SystemSettings
+  // ═══════════════════════════════════════════════════════════════════════
+  const catalogController = require('../controllers/catalogController');
+
+  // Public reads (bác sĩ và bệnh nhân cần đọc để hiển thị danh mục + chính sách hoàn tiền)
+  app.get('/api/v1/medical-catalogs',          catalogController.getAllMedicalCatalogs);
+  app.get('/api/v1/medicines',                 catalogController.getAllMedicines);
+  app.get('/api/v1/system-settings',           catalogController.getSystemSettings);
+
+  // Admin CRUD — MedicalCatalog
+  app.post('/api/v1/medical-catalogs',         verifyToken, checkAdminRole, catalogController.createMedicalCatalog);
+  app.put('/api/v1/medical-catalogs/:id',      verifyToken, checkAdminRole, catalogController.editMedicalCatalog);
+  app.delete('/api/v1/medical-catalogs/:id',   verifyToken, checkAdminRole, catalogController.deleteMedicalCatalog);
+
+  // Admin CRUD — Medicine
+  app.post('/api/v1/medicines',                verifyToken, checkAdminRole, catalogController.createMedicine);
+  app.put('/api/v1/medicines/:id',             verifyToken, checkAdminRole, catalogController.editMedicine);
+  app.delete('/api/v1/medicines/:id',          verifyToken, checkAdminRole, catalogController.deleteMedicine);
+
+  // Admin — SystemSettings
+  app.put('/api/v1/system-settings/:key',      verifyToken, checkAdminRole, catalogController.updateSystemSetting);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase B] DOCTOR (Public) — GET /api/v1/doctors?clinicId=&specialtyId=
+  // ⚠️ Phải đặt TRƯỚC /api/v1/doctors/:id để tránh conflict route
+  // ═══════════════════════════════════════════════════════════════════════
+  // Route này được thêm vào Public section trong web.js (đã register sau /doctors/top)
+  app.get('/api/v1/doctors/list',              doctorController.getAllDoctors); // /doctors/list?clinicId=&specialtyId=
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase B] DOCTOR ROUTES mới — R2 only
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/doctor/profile',            verifyToken, checkDoctorRole, doctorController.getDoctorOwnProfile);
+  app.put('/api/v1/doctor/profile',            verifyToken, checkDoctorRole, doctorController.updateDoctorOwnProfile);
+  app.get('/api/v1/doctor/revenue',            verifyToken, checkDoctorRole, doctorController.getDoctorRevenue);
+  app.put('/api/v1/bookings/:bookingId/medical-info', verifyToken, checkDoctorRole, doctorController.updateMedicalInfo);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase B] STATISTICS mở rộng — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/statistics/monthly-revenue',       verifyToken, checkAdminRole, statisticController.getMonthlyRevenue);
+  app.get('/api/v1/statistics/revenue-by-doctor',     verifyToken, checkAdminRole, statisticController.getRevenueByDoctor);
+  app.get('/api/v1/statistics/revenue-by-clinic',     verifyToken, checkAdminRole, statisticController.getRevenueByClinic);
+  app.get('/api/v1/statistics/revenue-by-specialty',  verifyToken, checkAdminRole, statisticController.getRevenueBySpecialty);
 };
 
 module.exports = routes;
+
 
