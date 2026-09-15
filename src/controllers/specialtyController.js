@@ -64,4 +64,16 @@ const deleteSpecialty = async (req, res) => {
   }
 };
 
-module.exports = { createSpecialty, getAllSpecialty, getDetailSpecialtyById, editSpecialty, deleteSpecialty };
+const getSpecialtyClinics = async (req, res) => {
+  try {
+    const id = req.params.id || req.query.id;
+    const result = await specialtyService.getSpecialtyClinics(id);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> getSpecialtyClinics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+module.exports = { createSpecialty, getAllSpecialty, getDetailSpecialtyById, getSpecialtyClinics, editSpecialty, deleteSpecialty };

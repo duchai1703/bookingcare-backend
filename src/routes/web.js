@@ -64,10 +64,12 @@ const routes = (app) => {
 
   // Specialties – Public
   app.get('/api/v1/specialties', specialtyController.getAllSpecialty);
+  app.get('/api/v1/specialties/:id/clinics', specialtyController.getSpecialtyClinics);
   app.get('/api/v1/specialties/:id', specialtyController.getDetailSpecialtyById);
 
   // Clinics – Public
   app.get('/api/v1/clinics', clinicController.getAllClinic);
+  app.get('/api/v1/clinics/:id/specialties', clinicController.getClinicSpecialties);
   app.get('/api/v1/clinics/:id', clinicController.getDetailClinicById);
 
   // Allcode & Search – Public

@@ -80,18 +80,41 @@ const getDetailSpecialtyById = async (id, location) => {
             { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
-        { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
-        { model: db.Clinic, as: 'clinicData', attributes: ['name', 'address'] },
+        { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address', 'image'] },
       ],
       raw: false,
       nest: true,
     });
+
+    const clinicsMap = new Map();
     // Chuyển đổi từ Doctor_Info → User object (frontend cần format doctor object)
     const doctorList = doctorInfos.map(info => {
       const user = info.doctorData;
       if (user && user.image) {
         user.setDataValue('image', convertBlobToBase64(user.image));
       }
+
+      // Tổng hợp các cơ sở y tế tiếp nhận chuyên khoa này
+      const cl = info.clinicData;
+      if (cl && cl.id) {
+        if (!clinicsMap.has(cl.id)) {
+          let clImg = cl.image;
+          if (clImg) {
+            clImg = convertBlobToBase64(clImg);
+          }
+          clinicsMap.set(cl.id, {
+            id: cl.id,
+            name: cl.name,
+            address: cl.address || '',
+            image: clImg || '',
+            doctorCount: 1,
+          });
+        } else {
+          clinicsMap.get(cl.id).doctorCount += 1;
+        }
+      }
+
       return {
         id: user?.id,
         firstName: user?.firstName,
@@ -99,19 +122,75 @@ const getDetailSpecialtyById = async (id, location) => {
         image: user?.getDataValue('image') || '',
         positionData: user?.positionData || {},
         Doctor_Info: {
+          specialtyId: info.specialtyId,
+          clinicId: info.clinicId,
           specialtyData: info.specialtyData || {},
-          clinicData: info.clinicData || {},
+          clinicData: info.clinicData ? {
+            id: info.clinicData.id,
+            name: info.clinicData.name,
+            address: info.clinicData.address,
+          } : {},
           description: info.description || '',
           provinceId: info.provinceId || '',
         },
       };
     });
+
+    const clinics = Array.from(clinicsMap.values());
+
     return {
       errCode: 0,
-      data: { specialty, doctorList },
+      data: { specialty, doctorList, clinics },
     };
   } catch (err) {
     console.error('>>> getDetailSpecialtyById error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const getSpecialtyClinics = async (specialtyId) => {
+  try {
+    if (!specialtyId) {
+      return { errCode: 1, message: 'Thiếu specialtyId!' };
+    }
+    const doctorInfos = await db.Doctor_Info.findAll({
+      where: { specialtyId },
+      attributes: ['clinicId'],
+      include: [
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address', 'image'] },
+      ],
+      raw: false,
+      nest: true,
+    });
+
+    const clinicsMap = new Map();
+    doctorInfos.forEach(info => {
+      const cl = info.clinicData;
+      if (cl && cl.id) {
+        if (!clinicsMap.has(cl.id)) {
+          let clImg = cl.image;
+          if (clImg) {
+            clImg = convertBlobToBase64(clImg);
+          }
+          clinicsMap.set(cl.id, {
+            id: cl.id,
+            name: cl.name,
+            address: cl.address || '',
+            image: clImg || '',
+            doctorCount: 1,
+          });
+        } else {
+          clinicsMap.get(cl.id).doctorCount += 1;
+        }
+      }
+    });
+
+    return {
+      errCode: 0,
+      data: Array.from(clinicsMap.values()),
+    };
+  } catch (err) {
+    console.error('>>> getSpecialtyClinics error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
@@ -165,4 +244,4 @@ const deleteSpecialty = async (id) => {
   }
 };
 
-module.exports = { createSpecialty, getAllSpecialty, getDetailSpecialtyById, editSpecialty, deleteSpecialty };
+module.exports = { createSpecialty, getAllSpecialty, getDetailSpecialtyById, getSpecialtyClinics, editSpecialty, deleteSpecialty };

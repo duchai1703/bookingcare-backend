@@ -577,37 +577,60 @@ const getDoctorOwnProfile = async (doctorId) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// [Phase B] updateDoctorOwnProfile — Bác sĩ tự cập nhật hồ sơ
+// [Phase B extended] updateDoctorOwnProfile — Bác sĩ tự cập nhật hồ sơ
 // PUT /api/v1/doctor/profile
-// Chỉ cho sửa: firstName, lastName, address, phoneNumber, image, contentHTML, contentMarkdown, description
-// KHÔNG cho sửa: email, roleId, positionId, specialtyId, clinicId (Admin quản lý)
+// Được phép sửa: firstName, lastName, address, phoneNumber, image,
+//   contentHTML, contentMarkdown, description,
+//   specialtyId, clinicId, priceId, provinceId, paymentId, note
+// KHÔNG cho sửa: email, roleId, positionId (Admin quản lý)
+// SECURITY: doctorId luôn lấy từ JWT (req.user.id) — IDOR safe
 // ═══════════════════════════════════════════════════════════════════════
 const updateDoctorOwnProfile = async (doctorId, data) => {
   try {
+    // [SECURITY] doctorId always from JWT (req.user.id) — IDOR safe
+    // Update basic user info fields
     const userFields = {};
-    if (data.firstName)   userFields.firstName   = data.firstName;
-    if (data.lastName)    userFields.lastName     = data.lastName;
-    if (data.address)     userFields.address      = data.address;
-    if (data.phoneNumber) userFields.phoneNumber  = data.phoneNumber;
+    if (data.firstName !== undefined)   userFields.firstName   = data.firstName;
+    if (data.lastName  !== undefined)   userFields.lastName    = data.lastName;
+    if (data.address   !== undefined)   userFields.address     = data.address;
+    if (data.phoneNumber !== undefined) userFields.phoneNumber = data.phoneNumber;
     if (data.image) {
-      userFields.image = Buffer.from(stripBase64Prefix(data.image), 'base64');
+      // ✅ [FIX-IMAGE] Lưu pure base64 TEXT string (không phải binary buffer)
+      // Convention: BLOB chứa UTF-8 bytes của base64 text → đọc bằng toString('utf8')
+      // Buffer.from(str, 'base64') tạo binary → toString('utf8') cho ra garbage!
+      userFields.image = stripBase64Prefix(data.image);
     }
     if (Object.keys(userFields).length > 0) {
       await db.User.update(userFields, { where: { id: doctorId } });
     }
 
+    // Update professional doctor info fields (upsert pattern)
     const infoFields = {};
-    if (data.contentHTML)     infoFields.contentHTML     = sanitizeContent(data.contentHTML);
-    if (data.contentMarkdown) infoFields.contentMarkdown = data.contentMarkdown;
-    if (data.description)     infoFields.description     = data.description;
+    if (data.contentHTML     !== undefined) infoFields.contentHTML     = sanitizeContent(data.contentHTML);
+    if (data.contentMarkdown !== undefined) infoFields.contentMarkdown = data.contentMarkdown;
+    if (data.description     !== undefined) infoFields.description     = data.description;
+    // [NEW] Professional fields — doctor can now manage these themselves
+    if (data.specialtyId !== undefined) infoFields.specialtyId = data.specialtyId || null;
+    if (data.clinicId    !== undefined) infoFields.clinicId    = data.clinicId    || null;
+    if (data.priceId     !== undefined) infoFields.priceId     = data.priceId     || null;
+    if (data.provinceId  !== undefined) infoFields.provinceId  = data.provinceId  || null;
+    if (data.paymentId   !== undefined) infoFields.paymentId   = data.paymentId   || null;
+    if (data.note        !== undefined) infoFields.note        = data.note        || '';
+
     if (Object.keys(infoFields).length > 0) {
-      await db.Doctor_Info.update(infoFields, { where: { doctorId } });
+      // Upsert: create Doctor_Info row if not exists yet
+      const existing = await db.Doctor_Info.findOne({ where: { doctorId } });
+      if (existing) {
+        await db.Doctor_Info.update(infoFields, { where: { doctorId } });
+      } else {
+        await db.Doctor_Info.create({ doctorId, ...infoFields });
+      }
     }
 
-    return { errCode: 0, message: 'Profile updated successfully' };
+    return { errCode: 0, message: 'Cap nhat ho so thanh cong!' };
   } catch (err) {
     console.error('>>> updateDoctorOwnProfile error:', err);
-    return { errCode: -1, message: 'Lỗi server!' };
+    return { errCode: -1, message: 'Loi server!' };
   }
 };
 

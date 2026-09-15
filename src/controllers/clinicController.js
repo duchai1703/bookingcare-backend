@@ -63,4 +63,16 @@ const deleteClinic = async (req, res) => {
   }
 };
 
-module.exports = { createClinic, getAllClinic, getDetailClinicById, editClinic, deleteClinic };
+const getClinicSpecialties = async (req, res) => {
+  try {
+    const id = req.params.id || req.query.id;
+    const result = await clinicService.getClinicSpecialties(id);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> getClinicSpecialties error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+module.exports = { createClinic, getAllClinic, getDetailClinicById, getClinicSpecialties, editClinic, deleteClinic };
