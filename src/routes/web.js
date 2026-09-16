@@ -192,6 +192,8 @@ const routes = (app) => {
   app.delete('/api/v1/medicines/:id',          verifyToken, checkAdminRole, catalogController.deleteMedicine);
 
   // Admin — SystemSettings
+  app.post('/api/v1/system-settings/bulk',     verifyToken, checkAdminRole, catalogController.updateBulkSystemSettings);
+  app.post('/api/v1/system-settings/reset',    verifyToken, checkAdminRole, catalogController.resetSystemSettings);
   app.put('/api/v1/system-settings/:key',      verifyToken, checkAdminRole, catalogController.updateSystemSetting);
 
   // ═══════════════════════════════════════════════════════════════════════

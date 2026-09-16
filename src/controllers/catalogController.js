@@ -97,3 +97,23 @@ exports.updateSystemSetting = async (req, res) => {
     return res.status(500).json({ errCode: 1, message: e.message });
   }
 };
+
+exports.updateBulkSystemSettings = async (req, res) => {
+  try {
+    const { settings } = req.body;
+    const result = await catalogService.updateBulkSystemSettings(settings);
+    return res.status(200).json(result);
+  } catch (e) {
+    return res.status(500).json({ errCode: 1, message: e.message });
+  }
+};
+
+exports.resetSystemSettings = async (req, res) => {
+  try {
+    const result = await catalogService.resetSystemSettings();
+    return res.status(200).json(result);
+  } catch (e) {
+    return res.status(500).json({ errCode: 1, message: e.message });
+  }
+};
+
