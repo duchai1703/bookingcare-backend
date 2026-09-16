@@ -496,13 +496,22 @@ const getPatientBookings = async (patientId, query) => {
       raw: false,
       nest: true,
       include: [
-        // Thông tin bác sĩ (tên, ảnh, chức danh)
+        // Thông tin bác sĩ (tên, ảnh, chức danh, chuyên khoa, cơ sở y tế)
         {
           model: db.User,
           as: 'doctorBookingData',
           attributes: ['id', 'firstName', 'lastName', 'image'],
           include: [
             { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              attributes: ['specialtyId', 'clinicId'],
+              include: [
+                { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name', 'image'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address', 'image'] },
+              ],
+            },
           ],
         },
         // Allcode: trạng thái booking (Chờ xác nhận, Đã xác nhận, Đã khám, Đã hủy)
