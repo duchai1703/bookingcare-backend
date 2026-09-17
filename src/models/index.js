@@ -406,6 +406,45 @@ db.User.hasMany(db.Financial_Policy, {
   as: 'createdPolicies',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 Doctor_Onboarding_Request Associations
+// Quản lý quy trình đăng ký & thẩm định Bác sĩ tự phục vụ
+// ─────────────────────────────────────────────────────
+db.Doctor_Onboarding_Request.belongsTo(db.Specialty, {
+  foreignKey: 'specialtyId',
+  as: 'specialtyData',
+});
+db.Specialty.hasMany(db.Doctor_Onboarding_Request, {
+  foreignKey: 'specialtyId',
+  as: 'onboardingRequests',
+});
+
+db.Doctor_Onboarding_Request.belongsTo(db.Clinic, {
+  foreignKey: 'clinicId',
+  as: 'clinicData',
+});
+db.Clinic.hasMany(db.Doctor_Onboarding_Request, {
+  foreignKey: 'clinicId',
+  as: 'onboardingRequests',
+});
+
+db.Doctor_Onboarding_Request.belongsTo(db.User, {
+  foreignKey: 'approvedDoctorId',
+  as: 'approvedDoctorData',
+});
+
+db.Doctor_Onboarding_Request.belongsTo(db.User, {
+  foreignKey: 'reviewedBy',
+  as: 'reviewerData',
+});
+
+db.Doctor_Onboarding_Request.belongsTo(db.Allcode, {
+  foreignKey: 'priceId',
+  targetKey: 'keyMap',
+  as: 'priceTypeData',
+  constraints: false,
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

@@ -303,6 +303,20 @@ const routes = (app) => {
   app.post('/api/v1/admin/policies/:id/new-version',verifyToken, checkAdminRole, policyController.createPolicyVersion);
   app.put('/api/v1/admin/policies/:id',             verifyToken, checkAdminRole, policyController.updatePolicyDraft);
   app.post('/api/v1/admin/policies/seed-defaults',  verifyToken, checkAdminRole, policyController.seedDefaultPolicies);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor Self-Onboarding & Verification Center]
+  // Public: Bác sĩ nộp hồ sơ & tra cứu tiến trình
+  // Admin R1: Hàng đợi thẩm định hồ sơ, yêu cầu sửa đổi, từ chối, phê duyệt
+  // ═══════════════════════════════════════════════════════════════════════
+  const doctorOnboardingController = require('../controllers/doctorOnboardingController');
+  app.post('/api/v1/doctor-onboarding/submit',                       doctorOnboardingController.submitOnboarding);
+  app.get('/api/v1/doctor-onboarding/status/:identifier',            doctorOnboardingController.getOnboardingStatus);
+  app.get('/api/v1/admin/doctor-onboarding/queue',                   verifyToken, checkAdminRole, doctorOnboardingController.getVerificationQueue);
+  app.get('/api/v1/admin/doctor-onboarding/:id',                     verifyToken, checkAdminRole, doctorOnboardingController.getOnboardingDetail);
+  app.post('/api/v1/admin/doctor-onboarding/:id/request-changes',    verifyToken, checkAdminRole, doctorOnboardingController.requestChanges);
+  app.post('/api/v1/admin/doctor-onboarding/:id/reject',             verifyToken, checkAdminRole, doctorOnboardingController.rejectOnboarding);
+  app.post('/api/v1/admin/doctor-onboarding/:id/approve',            verifyToken, checkAdminRole, doctorOnboardingController.approveOnboarding);
 };
 
 module.exports = routes;
