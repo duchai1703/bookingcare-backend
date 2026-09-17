@@ -118,23 +118,34 @@ const normalizeGender = (gender) => {
  */
 const submitOnboarding = async (data) => {
   try {
+    const isDraft = data.isDraft === true;
+
     if (!data.email || !data.phoneNumber || !data.firstName || !data.lastName) {
       return {
         errCode: 1,
         message: 'Thiếu các thông tin bắt buộc: Họ tên, Email, Số điện thoại!',
       };
     }
-    if (!data.specialtyId || !data.clinicId) {
-      return {
-        errCode: 1,
-        message: 'Vui lòng chọn Chuyên khoa chính và Cơ sở y tế làm việc từ danh mục hệ thống!',
-      };
-    }
-    if (!data.licenseNumber) {
-      return {
-        errCode: 1,
-        message: 'Vui lòng cung cấp số Giấy phép hành nghề / Chứng chỉ hành nghề y tế (CCHN)!',
-      };
+
+    if (!isDraft) {
+      if (!data.specialtyId) {
+        return {
+          errCode: 1,
+          message: 'Vui lòng chọn Chuyên khoa chính từ danh mục Master hệ thống!',
+        };
+      }
+      if (!data.isIndependentDoctor && !data.clinicId) {
+        return {
+          errCode: 1,
+          message: 'Vui lòng chọn Cơ sở y tế công tác hoặc đánh dấu Bác sĩ độc lập!',
+        };
+      }
+      if (!data.licenseNumber) {
+        return {
+          errCode: 1,
+          message: 'Vui lòng cung cấp số Giấy phép hành nghề / Chứng chỉ hành nghề y tế (CCHN)!',
+        };
+      }
     }
 
     // Kiểm tra xem email đã được kích hoạt làm Bác sĩ chính thức chưa
@@ -163,6 +174,8 @@ const submitOnboarding = async (data) => {
       where: { email: data.email }
     });
 
+    const targetClinicId = data.isIndependentDoctor ? null : (data.clinicId ? Number(data.clinicId) : null);
+
     const payload = {
       email: data.email,
       phoneNumber: data.phoneNumber,
@@ -174,16 +187,16 @@ const submitOnboarding = async (data) => {
       address: data.address || null,
       nationalId: data.nationalId || null,
       avatar: data.avatar || null,
-      specialtyId: Number(data.specialtyId),
+      specialtyId: data.specialtyId ? Number(data.specialtyId) : null,
       subSpecialtyIds: Array.isArray(data.subSpecialtyIds) ? data.subSpecialtyIds : [],
-      licenseNumber: data.licenseNumber,
+      licenseNumber: data.licenseNumber || null,
       licenseIssueDate: data.licenseIssueDate || null,
       licenseIssuePlace: data.licenseIssuePlace || null,
       licenseImages: Array.isArray(data.licenseImages) ? data.licenseImages : [],
       qualificationDegree: data.qualificationDegree || 'Bác sĩ đa khoa',
       experienceYears: Number(data.experienceYears) || 0,
       bioDescription: data.bioDescription || null,
-      clinicId: Number(data.clinicId),
+      clinicId: targetClinicId,
       proposedRoom: data.proposedRoom || null,
       priceId: data.priceId || 'PRI1',
       bankAccountNumber: data.bankAccountNumber || null,
@@ -191,7 +204,7 @@ const submitOnboarding = async (data) => {
       bankAccountName: data.bankAccountName || null,
       completenessScore,
       riskFlags,
-      status: 'SUBMITTED', // Gửi thẩm định
+      status: isDraft ? 'DRAFT' : 'SUBMITTED', // 'DRAFT' hoặc 'SUBMITTED'
       adminFeedback: null,
       requiredFields: [],
     };
@@ -537,54 +550,56 @@ const approveOnboarding = async (id, adminId) => {
       }, { transaction });
     }
 
-    // 3. Đảm bảo cấu trúc Clinic_Specialty tồn tại
-    let clinicSpecialty = null;
-    if (db.Clinic_Specialty) {
-      const [cs] = await db.Clinic_Specialty.findOrCreate({
-        where: {
-          clinicId: request.clinicId,
-          specialtyId: request.specialtyId,
-        },
-        defaults: {
-          clinicId: request.clinicId,
-          specialtyId: request.specialtyId,
-          status: 'active',
-          description: `Chuyên khoa triển khai tại cơ sở y tế`,
-        },
-        transaction,
-      });
-      clinicSpecialty = cs;
-    }
+    // 3. Đảm bảo cấu trúc Clinic_Specialty và Doctor_Assignment (nếu có chọn cơ sở)
+    if (request.clinicId && request.specialtyId) {
+      let clinicSpecialty = null;
+      if (db.Clinic_Specialty) {
+        const [cs] = await db.Clinic_Specialty.findOrCreate({
+          where: {
+            clinicId: request.clinicId,
+            specialtyId: request.specialtyId,
+          },
+          defaults: {
+            clinicId: request.clinicId,
+            specialtyId: request.specialtyId,
+            status: 'active',
+            description: `Chuyên khoa triển khai tại cơ sở y tế`,
+          },
+          transaction,
+        });
+        clinicSpecialty = cs;
+      }
 
-    // 4. Tạo hoặc liên kết phân bổ cơ sở làm việc Doctor_Assignment
-    if (db.Doctor_Assignment) {
-      const [assignment] = await db.Doctor_Assignment.findOrCreate({
-        where: {
-          doctorId: user.id,
-          clinicId: request.clinicId,
-          specialtyId: request.specialtyId,
-        },
-        defaults: {
-          doctorId: user.id,
-          clinicId: request.clinicId,
-          specialtyId: request.specialtyId,
-          clinicSpecialtyId: clinicSpecialty ? clinicSpecialty.id : null,
-          roomNumber: request.proposedRoom || 'Phòng khám đa khoa',
-          priceId: request.priceId || 'PRI1',
-          commissionRate: 15.00,
-          workingStatus: 'active',
-          isPrimary: true,
-        },
-        transaction,
-      });
+      // 4. Tạo hoặc liên kết phân bổ cơ sở làm việc Doctor_Assignment
+      if (db.Doctor_Assignment) {
+        const [assignment] = await db.Doctor_Assignment.findOrCreate({
+          where: {
+            doctorId: user.id,
+            clinicId: request.clinicId,
+            specialtyId: request.specialtyId,
+          },
+          defaults: {
+            doctorId: user.id,
+            clinicId: request.clinicId,
+            specialtyId: request.specialtyId,
+            clinicSpecialtyId: clinicSpecialty ? clinicSpecialty.id : null,
+            roomNumber: request.proposedRoom || 'Phòng khám đa khoa',
+            priceId: request.priceId || 'PRI1',
+            commissionRate: 15.00,
+            workingStatus: 'active',
+            isPrimary: true,
+          },
+          transaction,
+        });
 
-      if (assignment) {
-        await assignment.update({
-          roomNumber: request.proposedRoom || assignment.roomNumber,
-          priceId: request.priceId || assignment.priceId,
-          workingStatus: 'active',
-          isPrimary: true,
-        }, { transaction });
+        if (assignment) {
+          await assignment.update({
+            roomNumber: request.proposedRoom || assignment.roomNumber,
+            priceId: request.priceId || assignment.priceId,
+            workingStatus: 'active',
+            isPrimary: true,
+          }, { transaction });
+        }
       }
     }
 

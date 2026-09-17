@@ -86,7 +86,7 @@ module.exports = (sequelize, DataTypes) => {
     // Cơ sở công tác & Kinh tế
     clinicId: {
       type: DataTypes.INTEGER,
-      allowNull: false, // Cơ sở y tế chính muốn công tác
+      allowNull: true, // Cơ sở y tế công tác (cho phép null nếu là Bác sĩ độc lập)
     },
     proposedRoom: {
       type: DataTypes.STRING(100),
