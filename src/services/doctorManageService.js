@@ -3,6 +3,7 @@
 const db = require('../models');
 const { Op } = require('sequelize');
 const moment = require('moment');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. MASTER: Lấy danh sách bác sĩ kèm các chỉ số vận hành, tài chính & bộ lọc
@@ -113,9 +114,12 @@ const getAdminDoctorsList = async ({
       // Base64 image
       let avatarBase64 = null;
       if (u.image) {
-        avatarBase64 = Buffer.isBuffer(u.image)
-          ? Buffer.from(u.image).toString('binary')
-          : u.image;
+        const rawBase64 = convertBlobToBase64(u.image);
+        if (rawBase64) {
+          avatarBase64 = rawBase64.startsWith('data:image')
+            ? rawBase64
+            : `data:image/jpeg;base64,${rawBase64}`;
+        }
       }
 
       return {
@@ -414,9 +418,12 @@ const getAdminDoctorWorkspace = async (doctorId) => {
     // h. Format avatar
     let avatarBase64 = null;
     if (doctor.image) {
-      avatarBase64 = Buffer.isBuffer(doctor.image)
-        ? Buffer.from(doctor.image).toString('binary')
-        : doctor.image;
+      const rawBase64 = convertBlobToBase64(doctor.image);
+      if (rawBase64) {
+        avatarBase64 = rawBase64.startsWith('data:image')
+          ? rawBase64
+          : `data:image/jpeg;base64,${rawBase64}`;
+      }
     }
 
     return {
