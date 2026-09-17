@@ -6,6 +6,8 @@ module.exports = (sequelize, DataTypes) => {
     image:               { type: DataTypes.BLOB('long'), allowNull: true },
     descriptionHTML:     { type: DataTypes.TEXT, allowNull: true },
     descriptionMarkdown: { type: DataTypes.TEXT, allowNull: true },
+    status:              { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'active' },
+    targetCapacity:      { type: DataTypes.INTEGER, allowNull: false, defaultValue: 50 },
   });
   return Specialty;
 };

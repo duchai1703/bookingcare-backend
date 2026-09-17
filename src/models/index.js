@@ -298,10 +298,136 @@ db.Doctor_Commission_Log.belongsTo(db.User, {
   as: 'doctorData',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Enterprise Hierarchy] Clinic ↔ Specialty (N:M qua Clinic_Specialty)
+// ─────────────────────────────────────────────────────
+db.Clinic.hasMany(db.Clinic_Specialty, {
+  foreignKey: 'clinicId',
+  as: 'clinicSpecialties',
+  onDelete: 'CASCADE',
+});
+db.Clinic_Specialty.belongsTo(db.Clinic, {
+  foreignKey: 'clinicId',
+  as: 'clinicData',
+});
+
+db.Specialty.hasMany(db.Clinic_Specialty, {
+  foreignKey: 'specialtyId',
+  as: 'specialtyClinics',
+  onDelete: 'CASCADE',
+});
+db.Clinic_Specialty.belongsTo(db.Specialty, {
+  foreignKey: 'specialtyId',
+  as: 'specialtyData',
+});
+
+db.Clinic_Specialty.belongsTo(db.User, {
+  foreignKey: 'headDoctorId',
+  as: 'headDoctorData',
+});
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Enterprise Hierarchy] Doctor_Assignment (Phân bổ bác sĩ đa cơ sở)
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.Doctor_Assignment, {
+  foreignKey: 'doctorId',
+  as: 'doctorAssignments',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Assignment.belongsTo(db.User, {
+  foreignKey: 'doctorId',
+  as: 'doctorData',
+});
+
+db.Clinic.hasMany(db.Doctor_Assignment, {
+  foreignKey: 'clinicId',
+  as: 'clinicAssignments',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Assignment.belongsTo(db.Clinic, {
+  foreignKey: 'clinicId',
+  as: 'clinicData',
+});
+
+db.Specialty.hasMany(db.Doctor_Assignment, {
+  foreignKey: 'specialtyId',
+  as: 'specialtyAssignments',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Assignment.belongsTo(db.Specialty, {
+  foreignKey: 'specialtyId',
+  as: 'specialtyData',
+});
+
+db.Clinic_Specialty.hasMany(db.Doctor_Assignment, {
+  foreignKey: 'clinicSpecialtyId',
+  as: 'assignments',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Assignment.belongsTo(db.Clinic_Specialty, {
+  foreignKey: 'clinicSpecialtyId',
+  as: 'clinicSpecialtyData',
+});
+
+db.Doctor_Assignment.belongsTo(db.Allcode, {
+  foreignKey: 'priceId',
+  targetKey: 'keyMap',
+  as: 'priceTypeData',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 
 // ✅ [Fix B5] Quản lý sync policy tập trung — server.js gọi db.syncSchema()
 db.syncSchema = () => sequelize.sync({ alter: true });
 
+// ✅ Tự động backfill dữ liệu phân cấp từ Doctor_Info hiện hữu
+db.backfillHierarchy = async () => {
+  try {
+    const doctorInfos = await db.Doctor_Info.findAll();
+
+    for (const info of doctorInfos) {
+      if (!info.clinicId || !info.specialtyId) continue;
+
+      // 1. Khởi tạo Clinic_Specialty nếu chưa có
+      const [cs] = await db.Clinic_Specialty.findOrCreate({
+        where: { clinicId: info.clinicId, specialtyId: info.specialtyId },
+        defaults: {
+          clinicId: info.clinicId,
+          specialtyId: info.specialtyId,
+          status: 'active',
+          description: `Chuyên khoa triển khai tại cơ sở y tế`,
+          headDoctorId: info.doctorId,
+          targetCapacity: 50,
+        },
+      });
+
+      // 2. Khởi tạo Doctor_Assignment nếu chưa có
+      await db.Doctor_Assignment.findOrCreate({
+        where: {
+          doctorId: info.doctorId,
+          clinicId: info.clinicId,
+          specialtyId: info.specialtyId,
+        },
+        defaults: {
+          doctorId: info.doctorId,
+          clinicId: info.clinicId,
+          specialtyId: info.specialtyId,
+          clinicSpecialtyId: cs.id,
+          roomNumber: `Phòng ${101 + (info.doctorId % 40)}`,
+          priceId: info.priceId || 'PRI1',
+          commissionRate: info.commissionRate || 15.0,
+          workingStatus: info.workingStatus || 'active',
+          isPrimary: true,
+        },
+      });
+    }
+    return { success: true };
+  } catch (err) {
+    console.error('Error in backfillHierarchy:', err);
+    return { success: false, error: err.message };
+  }
+};
+
 module.exports = db;
+

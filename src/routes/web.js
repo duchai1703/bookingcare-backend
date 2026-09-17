@@ -9,6 +9,8 @@ const statisticController = require('../controllers/statisticController');
 const paymentController = require('../controllers/paymentController'); // [NEW LOGIC VNPAY-MAIL]
 const patientManageController = require('../controllers/patientManageController'); // [Phase F] Patient Workspace & Refund Flow
 const doctorManageController = require('../controllers/doctorManageController'); // [Doctor Operations Center]
+const clinicManageController = require('../controllers/clinicManageController'); // [Clinic Control Center]
+const specialtyManageController = require('../controllers/specialtyManageController'); // [Specialty Intelligence Hub]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -259,9 +261,39 @@ const routes = (app) => {
   app.post('/api/v1/admin/doctors/:id/status',       verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorWorkingStatus);
   app.post('/api/v1/admin/doctors/:id/payout',       verifyToken, checkAdminRole, doctorManageController.handleCreateDoctorPayout);
   app.post('/api/v1/admin/doctors/:id/schedules',    verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorScheduleSlots);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Clinic Operations] HEALTHCARE FACILITY CONTROL CENTER — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/clinics-manage',                    verifyToken, checkAdminRole, clinicManageController.handleGetAdminClinicsList);
+  app.get('/api/v1/admin/clinics-manage/:id/control-center', verifyToken, checkAdminRole, clinicManageController.handleGetAdminClinicControlCenter);
+  app.post('/api/v1/admin/clinics-manage/:id/status',        verifyToken, checkAdminRole, clinicManageController.handleUpdateClinicWorkingStatus);
+  app.post('/api/v1/admin/clinics-manage/:id/commission',    verifyToken, checkAdminRole, clinicManageController.handleUpdateClinicCommission);
+  app.post('/api/v1/admin/clinics-manage/:id/assign-doctor', verifyToken, checkAdminRole, clinicManageController.handleAssignDoctorToClinic);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Specialty Operations] MEDICAL DISCIPLINES & INTELLIGENCE HUB — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/specialties-manage',                verifyToken, checkAdminRole, specialtyManageController.handleGetAdminSpecialtiesList);
+  app.get('/api/v1/admin/specialties-manage/:id/workspace',  verifyToken, checkAdminRole, specialtyManageController.handleGetAdminSpecialtyWorkspace);
+  app.post('/api/v1/admin/specialties-manage/:id/status',    verifyToken, checkAdminRole, specialtyManageController.handleUpdateSpecialtyWorkingStatus);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Enterprise Hierarchy] CONTEXTUAL MANAGEMENT: CLINIC -> SPECIALTY -> DOCTOR — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  const clinicHierarchyController = require('../controllers/clinicHierarchyController');
+  app.get('/api/v1/admin/clinics/:clinicId/specialties',                         verifyToken, checkAdminRole, clinicHierarchyController.handleGetClinicSpecialties);
+  app.post('/api/v1/admin/clinics/:clinicId/specialties/assign',                 verifyToken, checkAdminRole, clinicHierarchyController.handleAssignSpecialtyToClinic);
+  app.post('/api/v1/admin/clinics/:clinicId/specialties/unassign',               verifyToken, checkAdminRole, clinicHierarchyController.handleUnassignSpecialtyFromClinic);
+  app.get('/api/v1/admin/clinics/:clinicId/specialties/:specialtyId/workspace',   verifyToken, checkAdminRole, clinicHierarchyController.handleGetClinicSpecialtyWorkspace);
+  app.post('/api/v1/admin/clinics/:clinicId/specialties/:specialtyId/assign-doctor', verifyToken, checkAdminRole, clinicHierarchyController.handleAssignDoctorToClinicSpecialty);
+  app.put('/api/v1/admin/doctor-assignments/:assignmentId',                      verifyToken, checkAdminRole, clinicHierarchyController.handleUpdateDoctorAssignment);
+  app.delete('/api/v1/admin/doctor-assignments/:assignmentId',                   verifyToken, checkAdminRole, clinicHierarchyController.handleUnassignDoctorFromClinicSpecialty);
+  app.get('/api/v1/admin/doctors/:doctorId/assignments',                         verifyToken, checkAdminRole, clinicHierarchyController.handleGetDoctorAssignments);
 };
 
 module.exports = routes;
+
 
 
 
