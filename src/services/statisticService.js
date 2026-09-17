@@ -224,6 +224,431 @@ const getRevenueBySpecialty = async (from, to) => {
   };
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase E] Executive Master Dashboard & Detail Analytics Engine
+// ═══════════════════════════════════════════════════════════════════════
+
+const pctDiff = (curr, prev) => {
+  if (!prev || prev === 0) return curr > 0 ? 100 : 0;
+  return Number((((curr - prev) / prev) * 100).toFixed(1));
+};
+
+// 1. Executive Master Dashboard Aggregation
+const getExecutiveMaster = async (from, to, cmpFrom, cmpTo) => {
+  const fromStr = String(from);
+  const toStr = String(to);
+  const duration = Number(to) - Number(from);
+  const compareFromStr = String(cmpFrom || (Number(from) - duration));
+  const compareToStr = String(cmpTo || from);
+
+  // 1.1 Primary KPIs (Current Period)
+  const [currMetrics] = await db.sequelize.query(
+    `SELECT 
+       COUNT(*) AS "totalBookings",
+       COUNT(CASE WHEN "statusId" = 'S3' THEN 1 END) AS "completedBookings",
+       COUNT(CASE WHEN "statusId" = 'S4' THEN 1 END) AS "cancelledBookings",
+       COUNT(CASE WHEN "statusId" IN ('S1', 'S1.5') THEN 1 END) AS "pendingBookings",
+       COUNT(CASE WHEN "statusId" = 'S2' THEN 1 END) AS "confirmedBookings",
+       COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0) AS "grossRevenue",
+       COALESCE(SUM("refundAmount"), 0) AS "refundAmount"
+     FROM "Bookings"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  // 1.2 Comparison KPIs (Previous Period)
+  const [prevMetrics] = await db.sequelize.query(
+    `SELECT 
+       COUNT(*) AS "totalBookings",
+       COUNT(CASE WHEN "statusId" = 'S3' THEN 1 END) AS "completedBookings",
+       COUNT(CASE WHEN "statusId" = 'S4' THEN 1 END) AS "cancelledBookings",
+       COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0) AS "grossRevenue",
+       COALESCE(SUM("refundAmount"), 0) AS "refundAmount"
+     FROM "Bookings"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to`,
+    { replacements: { from: compareFromStr, to: compareToStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const totalBookings = parseInt(currMetrics?.totalBookings || 0, 10);
+  const prevTotalBookings = parseInt(prevMetrics?.totalBookings || 0, 10);
+  const completedBookings = parseInt(currMetrics?.completedBookings || 0, 10);
+  const prevCompletedBookings = parseInt(prevMetrics?.completedBookings || 0, 10);
+  const cancelledBookings = parseInt(currMetrics?.cancelledBookings || 0, 10);
+  const prevCancelledBookings = parseInt(prevMetrics?.cancelledBookings || 0, 10);
+
+  const grossRevenue = parseFloat(currMetrics?.grossRevenue || 0);
+  const prevGrossRevenue = parseFloat(prevMetrics?.grossRevenue || 0);
+  const refundAmount = parseFloat(currMetrics?.refundAmount || 0);
+  const prevRefundAmount = parseFloat(prevMetrics?.refundAmount || 0);
+  const netRevenue = Math.max(0, grossRevenue - refundAmount);
+  const prevNetRevenue = Math.max(0, prevGrossRevenue - prevRefundAmount);
+
+  const completionRate = totalBookings > 0 ? Number(((completedBookings / totalBookings) * 100).toFixed(1)) : 0;
+  const prevCompletionRate = prevTotalBookings > 0 ? Number(((prevCompletedBookings / prevTotalBookings) * 100).toFixed(1)) : 0;
+  const cancellationRate = totalBookings > 0 ? Number(((cancelledBookings / totalBookings) * 100).toFixed(1)) : 0;
+  const prevCancellationRate = prevTotalBookings > 0 ? Number(((prevCancelledBookings / prevTotalBookings) * 100).toFixed(1)) : 0;
+
+  // 1.3 Patient Intel (New vs Returning)
+  const [patientStats] = await db.sequelize.query(
+    `SELECT 
+       COUNT(DISTINCT "patientId") AS "totalPatients",
+       COUNT(DISTINCT CASE WHEN prior.id IS NULL THEN b."patientId" END) AS "newPatients",
+       COUNT(DISTINCT CASE WHEN prior.id IS NOT NULL THEN b."patientId" END) AS "returningPatients"
+     FROM "Bookings" b
+     LEFT JOIN LATERAL (
+       SELECT id FROM "Bookings" p 
+       WHERE p."patientId" = b."patientId" AND CAST(p.date AS BIGINT) < :from 
+       LIMIT 1
+     ) prior ON true
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const newPatients = parseInt(patientStats?.newPatients || 0, 10);
+  const returningPatients = parseInt(patientStats?.returningPatients || 0, 10);
+  const totalPatients = parseInt(patientStats?.totalPatients || 0, 10);
+
+  // 1.4 Doctor Capacity & Utilization
+  const [capacityStats] = await db.sequelize.query(
+    `SELECT 
+       COALESCE(SUM("maxNumber"), 0) AS "totalCapacitySlots",
+       COALESCE(SUM("currentNumber"), 0) AS "totalOccupiedSlots",
+       COUNT(DISTINCT "doctorId") AS "activeDoctors"
+     FROM "Schedules"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const totalCapacitySlots = parseInt(capacityStats?.totalCapacitySlots || 0, 10);
+  const totalOccupiedSlots = parseInt(capacityStats?.totalOccupiedSlots || 0, 10);
+  const utilizationRate = totalCapacitySlots > 0 ? Number(((totalOccupiedSlots / totalCapacitySlots) * 100).toFixed(1)) : 0;
+
+  // 1.5 Booking Funnel
+  const funnel = [
+    { step: 'S1_CREATED', label: 'Tạo ca hẹn', count: totalBookings, percentage: 100 },
+    { step: 'S2_CONFIRMED', label: 'Đã xác nhận / Đặt cọc', count: parseInt(currMetrics?.confirmedBookings || 0, 10) + completedBookings, percentage: totalBookings > 0 ? Number((((parseInt(currMetrics?.confirmedBookings || 0, 10) + completedBookings) / totalBookings) * 100).toFixed(1)) : 0 },
+    { step: 'S3_COMPLETED', label: 'Đã khám hoàn tất', count: completedBookings, percentage: completionRate },
+    { step: 'S4_CANCELLED', label: 'Hủy hẹn / Hoàn tiền', count: cancelledBookings, percentage: cancellationRate },
+  ];
+
+  // 1.6 Attention Engine (Cảnh báo vận hành tự động)
+  const attentionAlerts = [];
+  if (cancellationRate > 8) {
+    attentionAlerts.push({
+      id: 'alert-cancel',
+      type: 'warning',
+      title: `Tỷ lệ hủy lịch chạm mức ${cancellationRate}%`,
+      description: `Có ${cancelledBookings} ca khám đã bị hủy trong kỳ này. Cần kiểm tra nguyên nhân và đối soát hoàn tiền.`,
+      actionText: 'Xem báo cáo hủy lịch',
+      actionUrl: '/system/analytics/bookings?tab=cancellation',
+    });
+  }
+
+  // Check doctors with low utilization (< 40%)
+  const lowUtilDoctors = await db.sequelize.query(
+    `SELECT u."id", u."lastName", u."firstName", 
+            SUM(s."currentNumber") AS booked, 
+            SUM(s."maxNumber") AS total,
+            ROUND((SUM(s."currentNumber")::DECIMAL / NULLIF(SUM(s."maxNumber"), 0)) * 100, 1) AS "utilRate"
+     FROM "Schedules" s
+     JOIN "Users" u ON s."doctorId" = u.id
+     WHERE CAST(s.date AS BIGINT) >= :from AND CAST(s.date AS BIGINT) <= :to
+     GROUP BY u.id, u."lastName", u."firstName"
+     HAVING SUM(s."maxNumber") >= 5 AND (SUM(s."currentNumber")::DECIMAL / SUM(s."maxNumber")) < 0.4
+     LIMIT 5`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  if (lowUtilDoctors.length > 0) {
+    attentionAlerts.push({
+      id: 'alert-doctor-capacity',
+      type: 'warning',
+      title: `${lowUtilDoctors.length} Bác sĩ có tỷ lệ lấp đầy dưới 40%`,
+      description: `Bác sĩ ${lowUtilDoctors.map(d => `${d.lastName} ${d.firstName} (${d.utilRate}%)`).slice(0, 2).join(', ')} còn nhiều khung giờ trống.`,
+      actionText: 'Xem công suất bác sĩ',
+      actionUrl: '/system/analytics/doctors?filter=low_capacity',
+    });
+  }
+
+  const pendingCount = parseInt(currMetrics?.pendingBookings || 0, 10);
+  if (pendingCount > 0) {
+    attentionAlerts.push({
+      id: 'alert-pending',
+      type: 'info',
+      title: `${pendingCount} ca hẹn đang chờ xử lý / tiếp nhận`,
+      description: `Hồ sơ đặt khám mới đang chờ xác nhận hoặc quá hạn thanh toán đặt trước.`,
+      actionText: 'Xử lý lịch khám',
+      actionUrl: '/system/schedule-manage',
+    });
+  }
+
+  // 1.7 Booking Heatmap (Day of Week 0..6 x timeType)
+  const heatmapRows = await db.sequelize.query(
+    `SELECT 
+       EXTRACT(DOW FROM TO_TIMESTAMP(CAST(date AS BIGINT) / 1000) AT TIME ZONE 'Asia/Ho_Chi_Minh')::INT AS "dayOfWeek",
+       "timeType",
+       COUNT(*) AS count
+     FROM "Bookings"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to
+     GROUP BY "dayOfWeek", "timeType"`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  // 1.8 Daily Trend (Total, Completed, Cancelled)
+  const dailyTrend = await db.sequelize.query(
+    `SELECT 
+       DATE(TO_TIMESTAMP(CAST(date AS BIGINT) / 1000) AT TIME ZONE 'Asia/Ho_Chi_Minh') AS "date",
+       COUNT(*) AS "total",
+       COUNT(CASE WHEN "statusId" = 'S3' THEN 1 END) AS "completed",
+       COUNT(CASE WHEN "statusId" = 'S4' THEN 1 END) AS "cancelled"
+     FROM "Bookings"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to
+     GROUP BY "date"
+     ORDER BY "date" ASC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  // 1.9 Revenue by Top Specialties
+  const revenueBySpecialty = await db.sequelize.query(
+    `SELECT 
+       s.id, s.name, 
+       COALESCE(SUM(b."bookingPrice"), 0) AS revenue,
+       COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Doctor_Infos" di ON b."doctorId" = di."doctorId"
+     INNER JOIN "Specialties" s ON di."specialtyId" = s.id
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+       AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
+     GROUP BY s.id, s.name
+     ORDER BY revenue DESC
+     LIMIT 6`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const formattedSpecialties = revenueBySpecialty.map(r => ({
+    specialtyId: r.id,
+    specialtyName: r.name,
+    revenue: parseFloat(r.revenue) || 0,
+    count: parseInt(r.count, 10) || 0
+  }));
+
+  const formattedDailyTrend = dailyTrend.map(r => {
+    const dStr = r.date ? moment(r.date).format('DD/MM') : '';
+    return {
+      date: r.date,
+      dateStr: dStr,
+      bookings: parseInt(r.total, 10) || 0,
+      completed: parseInt(r.completed, 10) || 0,
+      cancelled: parseInt(r.cancelled, 10) || 0
+    };
+  });
+
+  return {
+    kpis: {
+      totalBookings,
+      totalBookingsDelta: pctDiff(totalBookings, prevTotalBookings),
+      completedBookings,
+      completionRate,
+      completionRateDelta: Number((completionRate - prevCompletionRate).toFixed(1)),
+      cancelledBookings,
+      cancellationRate,
+      cancellationRateDelta: Number((cancellationRate - prevCancellationRate).toFixed(1)),
+      grossRevenue,
+      grossRevenueDelta: pctDiff(grossRevenue, prevGrossRevenue),
+      refundAmount,
+      netRevenue,
+      netRevenueDelta: pctDiff(netRevenue, prevNetRevenue),
+      totalPatients,
+      newPatients,
+      returningPatients,
+      returningRate: totalPatients > 0 ? Number(((returningPatients / totalPatients) * 100).toFixed(1)) : 0,
+      totalCapacitySlots,
+      totalOccupiedSlots,
+      activeDoctors: parseInt(capacityStats?.activeDoctors || 0, 10),
+      utilizationRate,
+    },
+    funnel,
+    attentionAlerts,
+    heatmap: heatmapRows.map(r => ({
+      dayOfWeek: parseInt(r.dayOfWeek, 10),
+      timeType: r.timeType,
+      count: parseInt(r.count, 10) || 0
+    })),
+    dailyTrend: formattedDailyTrend,
+    topSpecialties: formattedSpecialties,
+    revenueBySpecialty: formattedSpecialties,
+  };
+};
+
+// 2. Booking Analytics Detail
+const getBookingAnalyticsDetail = async (from, to) => {
+  const fromStr = String(from);
+  const toStr = String(to);
+
+  const statusBreakdown = await db.sequelize.query(
+    `SELECT b."statusId", a."valueVi" AS "statusNameVi", a."valueEn" AS "statusNameEn", COUNT(*) AS count
+     FROM "Bookings" b
+     LEFT JOIN "Allcodes" a ON b."statusId" = a."keyMap" AND a.type = 'STATUS'
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+     GROUP BY b."statusId", a."valueVi", a."valueEn"
+     ORDER BY count DESC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const timeTypeBreakdown = await db.sequelize.query(
+    `SELECT b."timeType", a."valueVi" AS "timeNameVi", COUNT(*) AS count
+     FROM "Bookings" b
+     LEFT JOIN "Allcodes" a ON b."timeType" = a."keyMap" AND a.type = 'TIME'
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+     GROUP BY b."timeType", a."valueVi"
+     ORDER BY b."timeType" ASC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const cancellationDetails = await db.sequelize.query(
+    `SELECT 
+       DATE(COALESCE(b."cancelledAt", TO_TIMESTAMP(CAST(b.date AS BIGINT)/1000))) AS "cancelledDate",
+       b."refundStatus",
+       COUNT(*) AS count,
+       SUM(COALESCE(b."refundAmount", 0)) AS "totalRefund"
+     FROM "Bookings" b
+     WHERE b."statusId" = 'S4'
+       AND CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+     GROUP BY "cancelledDate", b."refundStatus"
+     ORDER BY "cancelledDate" ASC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  return {
+    statusBreakdown,
+    timeTypeBreakdown,
+    cancellationDetails: cancellationDetails.map(r => ({ ...r, count: parseInt(r.count, 10) || 0, totalRefund: parseFloat(r.totalRefund) || 0 })),
+  };
+};
+
+// 3. Revenue Analytics Detail
+const getRevenueAnalyticsDetail = async (from, to) => {
+  const fromStr = String(from);
+  const toStr = String(to);
+
+  const [summary] = await db.sequelize.query(
+    `SELECT 
+       COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0) AS "grossRevenue",
+       COALESCE(SUM("refundAmount"), 0) AS "totalRefund",
+       COUNT(CASE WHEN "paymentStatus" = 'paid' THEN 1 END) AS "paidCount",
+       COUNT(CASE WHEN "paymentStatus" = 'unpaid' THEN 1 END) AS "unpaidCount"
+     FROM "Bookings"
+     WHERE CAST(date AS BIGINT) >= :from AND CAST(date AS BIGINT) <= :to`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const byClinic = await db.sequelize.query(
+    `SELECT c.id, c.name, 
+            COALESCE(SUM(b."bookingPrice"), 0) AS revenue,
+            COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Doctor_Infos" di ON b."doctorId" = di."doctorId"
+     INNER JOIN "Clinics" c ON di."clinicId" = c.id
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+       AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
+     GROUP BY c.id, c.name
+     ORDER BY revenue DESC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const byDoctor = await db.sequelize.query(
+    `SELECT u.id, CONCAT(u."lastName", ' ', u."firstName") AS "doctorName",
+            COALESCE(SUM(b."bookingPrice"), 0) AS revenue,
+            COUNT(*) AS count
+     FROM "Bookings" b
+     INNER JOIN "Users" u ON b."doctorId" = u.id
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+       AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
+     GROUP BY u.id, u."lastName", u."firstName"
+     ORDER BY revenue DESC
+     LIMIT 10`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  return {
+    summary: {
+      grossRevenue: parseFloat(summary?.grossRevenue || 0),
+      totalRefund: parseFloat(summary?.totalRefund || 0),
+      netRevenue: Math.max(0, parseFloat(summary?.grossRevenue || 0) - parseFloat(summary?.totalRefund || 0)),
+      paidCount: parseInt(summary?.paidCount || 0, 10),
+      unpaidCount: parseInt(summary?.unpaidCount || 0, 10),
+    },
+    byClinic: byClinic.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
+    byDoctor: byDoctor.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
+  };
+};
+
+// 4. Doctor Capacity & Utilization Detail
+const getDoctorCapacityDetail = async (from, to) => {
+  const fromStr = String(from);
+  const toStr = String(to);
+
+  const doctorList = await db.sequelize.query(
+    `SELECT 
+       u.id AS "doctorId", 
+       CONCAT(u."lastName", ' ', u."firstName") AS "doctorName",
+       sp.name AS "specialtyName",
+       cl.name AS "clinicName",
+       COALESCE(SUM(s."maxNumber"), 0) AS "totalSlots",
+       COALESCE(SUM(s."currentNumber"), 0) AS "bookedSlots",
+       COUNT(DISTINCT s.id) AS "schedulesCount",
+       ROUND((COALESCE(SUM(s."currentNumber"), 0)::DECIMAL / NULLIF(SUM(s."maxNumber"), 0)) * 100, 1) AS "utilizationRate"
+     FROM "Users" u
+     INNER JOIN "Schedules" s ON s."doctorId" = u.id AND CAST(s.date AS BIGINT) >= :from AND CAST(s.date AS BIGINT) <= :to
+     LEFT JOIN "Doctor_Infos" di ON di."doctorId" = u.id
+     LEFT JOIN "Specialties" sp ON di."specialtyId" = sp.id
+     LEFT JOIN "Clinics" cl ON di."clinicId" = cl.id
+     WHERE u."roleId" = 'R2'
+     GROUP BY u.id, u."lastName", u."firstName", sp.name, cl.name
+     ORDER BY "utilizationRate" DESC`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  return {
+    doctors: doctorList.map(d => ({
+      ...d,
+      totalSlots: parseInt(d.totalSlots, 10) || 0,
+      bookedSlots: parseInt(d.bookedSlots, 10) || 0,
+      schedulesCount: parseInt(d.schedulesCount, 10) || 0,
+      utilizationRate: parseFloat(d.utilizationRate) || 0,
+    })),
+  };
+};
+
+// 5. Patient Intelligence Detail
+const getPatientIntelligenceDetail = async (from, to) => {
+  const fromStr = String(from);
+  const toStr = String(to);
+
+  const genderDist = await db.sequelize.query(
+    `SELECT COALESCE(b."patientGender", 'OTHER') AS gender, COUNT(*) AS count
+     FROM "Bookings" b
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+     GROUP BY gender`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  const topPatients = await db.sequelize.query(
+    `SELECT b."patientId", b."patientName", b."patientPhoneNumber", COUNT(*) AS "bookingCount"
+     FROM "Bookings" b
+     WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
+     GROUP BY b."patientId", b."patientName", b."patientPhoneNumber"
+     ORDER BY "bookingCount" DESC
+     LIMIT 10`,
+    { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
+  );
+
+  return {
+    genderDistribution: genderDist,
+    topFrequentPatients: topPatients.map(p => ({ ...p, bookingCount: parseInt(p.bookingCount, 10) || 0 })),
+  };
+};
+
 module.exports = {
   getOverviewStatistics,
   getBookingsByDay,
@@ -235,4 +660,11 @@ module.exports = {
   getRevenueByDoctor,
   getRevenueByClinic,
   getRevenueBySpecialty,
+  // [Phase E] Executive Master & Detail Analytics
+  getExecutiveMaster,
+  getBookingAnalyticsDetail,
+  getRevenueAnalyticsDetail,
+  getDoctorCapacityDetail,
+  getPatientIntelligenceDetail,
 };
+
