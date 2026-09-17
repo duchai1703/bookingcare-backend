@@ -144,6 +144,8 @@ const postBookAppointment = async (data, patientId) => {
       paymentToken: crypto.randomUUID(),
       // [NEW LOGIC VNPAY-MAIL]: Lỗi 15 — bookingPrice luôn bằng VND
       bookingPrice: bookingPrice,
+      // [Phase B] QR Token cho Mobile Doctor check-in
+      qrToken: `BKQ-${resolvedPatientId || 'GUEST'}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
       reason: data.reason || '',
       patientName: data.fullName,
       patientPhoneNumber: data.phoneNumber,
@@ -526,6 +528,12 @@ const getPatientBookings = async (patientId, query) => {
           as: 'bookingMedicines',
           include: [{ model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'unit'] }],
         },
+        // [Phase B] Danh sách tài liệu đính kèm y tế
+        {
+          model: db.BookingAttachment,
+          as: 'attachments',
+          attributes: ['id', 'fileName', 'fileType', 'fileSize', 'createdAt'],
+        },
       ],
     });
 
@@ -665,6 +673,238 @@ const cancelBooking = async (data, patientId) => {
   }
 };
 
+// ─────────────────────────────────────────────────────
+// 6. ATTACHMENT SERVICES — Quản lý tài liệu đính kèm y tế
+// ─────────────────────────────────────────────────────
+const getBookingAttachments = async (bookingId, userId, userRole) => {
+  try {
+    if (!bookingId) return { errCode: 1, message: 'Thiếu ID lịch hẹn!' };
+
+    const booking = await db.Booking.findByPk(bookingId);
+    if (!booking) return { errCode: 2, message: 'Không tìm thấy lịch hẹn!' };
+
+    // Authorization: Bệnh nhân của lịch, Bác sĩ phụ trách, hoặc Admin
+    const isPatient = booking.patientId === userId;
+    const isDoctor = booking.doctorId === userId;
+    const isAdmin = userRole === 'R1';
+    if (!isPatient && !isDoctor && !isAdmin) {
+      return { errCode: 403, message: 'Bạn không có quyền xem tài liệu của lịch hẹn này!' };
+    }
+
+    const attachments = await db.BookingAttachment.findAll({
+      where: { bookingId },
+      attributes: ['id', 'bookingId', 'patientId', 'fileName', 'fileType', 'fileSize', 'createdAt'],
+      order: [['createdAt', 'DESC']],
+    });
+
+    return { errCode: 0, message: 'OK', data: attachments };
+  } catch (err) {
+    console.error('>>> getBookingAttachments error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const uploadBookingAttachment = async (bookingId, userId, filePayload) => {
+  try {
+    if (!bookingId || !filePayload) {
+      return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
+    }
+
+    const { fileName, fileType, fileSize, fileData } = filePayload;
+    if (!fileName || !fileType || !fileData) {
+      return { errCode: 1, message: 'Dữ liệu tệp không hợp lệ!' };
+    }
+
+    // Kiểm tra booking thuộc bệnh nhân
+    const booking = await db.Booking.findOne({
+      where: { id: bookingId, patientId: userId },
+    });
+    if (!booking) {
+      return { errCode: 404, message: 'Không tìm thấy lịch hẹn của bạn!' };
+    }
+
+    // Khóa tệp: nếu lịch khám đã hoàn thành (S3) hoặc đã hủy (S4) -> không cho upload
+    if (booking.statusId === 'S3') {
+      return { errCode: 3, message: 'Lịch khám đã hoàn tất, hồ sơ bệnh án đã được đóng băng!' };
+    }
+    if (booking.statusId === 'S4') {
+      return { errCode: 4, message: 'Lịch hẹn đã bị hủy, không thể bổ sung tệp đính kèm!' };
+    }
+
+    // Giới hạn dung lượng: tối đa 10 MB (10 * 1024 * 1024 bytes)
+    const MAX_SIZE = 10 * 1024 * 1024;
+    if (fileSize && fileSize > MAX_SIZE) {
+      return { errCode: 5, message: 'Dung lượng tệp vượt quá giới hạn cho phép (tối đa 10 MB)!' };
+    }
+
+    // Whitelist file type
+    const ALLOWED_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!ALLOWED_TYPES.includes(fileType.toLowerCase())) {
+      return { errCode: 6, message: 'Định dạng tệp không được hỗ trợ! Chỉ chấp nhận PDF, JPG, PNG, WEBP.' };
+    }
+
+    // Giới hạn số lượng tệp: tối đa 5 tệp cho mỗi lịch hẹn
+    const count = await db.BookingAttachment.count({ where: { bookingId } });
+    if (count >= 5) {
+      return { errCode: 7, message: 'Mỗi lịch khám chỉ được đính kèm tối đa 5 tệp!' };
+    }
+
+    // Tạo bản ghi tệp đính kèm
+    const newAttachment = await db.BookingAttachment.create({
+      bookingId,
+      patientId: userId,
+      fileName: fileName.substring(0, 255),
+      fileType,
+      fileSize: fileSize || 0,
+      fileData,
+    });
+
+    return {
+      errCode: 0,
+      message: 'Tải lên tài liệu thành công!',
+      data: {
+        id: newAttachment.id,
+        bookingId: newAttachment.bookingId,
+        fileName: newAttachment.fileName,
+        fileType: newAttachment.fileType,
+        fileSize: newAttachment.fileSize,
+        createdAt: newAttachment.createdAt,
+      },
+    };
+  } catch (err) {
+    console.error('>>> uploadBookingAttachment error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const downloadBookingAttachment = async (bookingId, attachmentId, userId, userRole) => {
+  try {
+    if (!bookingId || !attachmentId) {
+      return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
+    }
+
+    const booking = await db.Booking.findByPk(bookingId);
+    if (!booking) return { errCode: 2, message: 'Không tìm thấy lịch hẹn!' };
+
+    // Authorization
+    const isPatient = booking.patientId === userId;
+    const isDoctor = booking.doctorId === userId;
+    const isAdmin = userRole === 'R1';
+    if (!isPatient && !isDoctor && !isAdmin) {
+      return { errCode: 403, message: 'Bạn không có quyền truy cập tệp này!' };
+    }
+
+    const attachment = await db.BookingAttachment.findOne({
+      where: { id: attachmentId, bookingId },
+    });
+    if (!attachment) {
+      return { errCode: 404, message: 'Không tìm thấy tệp đính kèm!' };
+    }
+
+    return { errCode: 0, message: 'OK', data: attachment };
+  } catch (err) {
+    console.error('>>> downloadBookingAttachment error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const deleteBookingAttachment = async (bookingId, attachmentId, userId) => {
+  try {
+    if (!bookingId || !attachmentId) {
+      return { errCode: 1, message: 'Thiếu tham số!' };
+    }
+
+    const booking = await db.Booking.findOne({
+      where: { id: bookingId, patientId: userId },
+    });
+    if (!booking) {
+      return { errCode: 404, message: 'Không tìm thấy lịch hẹn của bạn!' };
+    }
+
+    if (booking.statusId === 'S3') {
+      return { errCode: 3, message: 'Lịch khám đã hoàn tất, không thể xóa tệp bệnh án!' };
+    }
+
+    const attachment = await db.BookingAttachment.findOne({
+      where: { id: attachmentId, bookingId, patientId: userId },
+    });
+    if (!attachment) {
+      return { errCode: 404, message: 'Không tìm thấy tệp đính kèm!' };
+    }
+
+    await attachment.destroy();
+    return { errCode: 0, message: 'Xóa tệp đính kèm thành công!' };
+  } catch (err) {
+    console.error('>>> deleteBookingAttachment error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ─────────────────────────────────────────────────────
+// 7. DOCTOR QR CHECK-IN SERVICE (Mobile Doctor App)
+// ─────────────────────────────────────────────────────
+const verifyDoctorCheckin = async (qrToken, doctorId) => {
+  try {
+    if (!qrToken) return { errCode: 1, message: 'Thiếu mã QR check-in!' };
+
+    const booking = await db.Booking.findOne({
+      where: { qrToken },
+      include: [
+        { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName', 'email', 'phonenumber', 'address', 'gender'] },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        {
+          model: db.BookingAttachment,
+          as: 'attachments',
+          attributes: ['id', 'fileName', 'fileType', 'fileSize', 'createdAt'],
+        },
+      ],
+    });
+
+    if (!booking) {
+      return { errCode: 404, message: 'Mã QR không hợp lệ hoặc không tồn tại trên hệ thống!' };
+    }
+
+    // Kiểm tra đúng bác sĩ phụ trách
+    if (booking.doctorId !== doctorId) {
+      return {
+        errCode: 2,
+        message: 'Lịch khám này thuộc về bác sĩ khác!',
+        data: {
+          bookingId: booking.id,
+          doctorId: booking.doctorId,
+        },
+      };
+    }
+
+    // Kiểm tra trạng thái
+    if (booking.statusId === 'S4') {
+      return {
+        errCode: 3,
+        message: 'Lịch hẹn này đã bị hủy, không thể tiếp nhận khám!',
+        data: { bookingId: booking.id, statusId: booking.statusId },
+      };
+    }
+
+    if (booking.statusId === 'S3') {
+      return {
+        errCode: 4,
+        message: 'Lịch hẹn này đã hoàn tất khám trước đó!',
+        data: { bookingId: booking.id, statusId: booking.statusId },
+      };
+    }
+
+    return {
+      errCode: 0,
+      message: 'Xác thực mã QR thành công! Bác sĩ có thể tiếp nhận bệnh nhân.',
+      data: booking,
+    };
+  } catch (err) {
+    console.error('>>> verifyDoctorCheckin error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -673,5 +913,10 @@ module.exports = {
   changePassword,
   getPatientBookings,
   cancelBooking,
+  getBookingAttachments,
+  uploadBookingAttachment,
+  downloadBookingAttachment,
+  deleteBookingAttachment,
+  verifyDoctorCheckin,
 };
 

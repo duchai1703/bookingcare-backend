@@ -128,6 +128,7 @@ const routes = (app) => {
   app.post('/api/v1/bookings/:bookingId/remedy', verifyToken, checkDoctorRole, doctorController.sendRemedy);
   app.patch('/api/v1/bookings/:bookingId/cancel', verifyToken, checkDoctorRole, doctorController.cancelBooking);        // REQ-DR-004
   app.get('/api/v1/patients/:patientId/bookings', verifyToken, checkDoctorRole, doctorController.getPatientBookingHistory); // REQ-DR-007
+  app.get('/api/v1/doctor/checkin/:qrToken', verifyToken, checkDoctorRole, doctorController.verifyDoctorCheckin); // [Phase B] Doctor QR check-in
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase 9.2] PATIENT ROUTES – Yêu cầu role R3 (verifyToken + checkPatientRole)
@@ -146,6 +147,12 @@ const routes = (app) => {
   app.post('/api/v1/bookings',                    verifyToken, checkPatientRole, patientController.postBookAppointment);
   app.get('/api/v1/patient/bookings',             verifyToken, checkPatientRole, patientController.getPatientBookings);
   app.put('/api/v1/patient/bookings/:id/cancel',  verifyToken, checkPatientRole, patientController.handleCancelBooking);
+
+  // [Phase B] Medical Attachments (Tài liệu đính kèm y tế)
+  app.post('/api/v1/patient/bookings/:bookingId/attachments', verifyToken, checkPatientRole, patientController.handleUploadAttachment);
+  app.get('/api/v1/patient/bookings/:bookingId/attachments', verifyToken, patientController.handleGetAttachments);
+  app.get('/api/v1/patient/bookings/:bookingId/attachments/:attachmentId/download', verifyToken, patientController.handleDownloadAttachment);
+  app.delete('/api/v1/patient/bookings/:bookingId/attachments/:attachmentId', verifyToken, checkPatientRole, patientController.handleDeleteAttachment);
 
   // Review API (Design Doc v3.0, Mục 4.1.3) — Protected, R3 only
   app.post('/api/v1/reviews', verifyToken, checkPatientRole, reviewController.submitReview);

@@ -47,6 +47,11 @@ module.exports = (sequelize, DataTypes) => {
     diagnosis:         { type: DataTypes.TEXT, allowNull: true },          // Chẩn đoán
     followUpDate:      { type: DataTypes.STRING(20), allowNull: true },    // Ngày tái khám "YYYY-MM-DD"
     careInstructions:  { type: DataTypes.TEXT, allowNull: true },          // Hướng dẫn chăm sóc tại nhà
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase B] Mã QR khám bệnh bảo mật (Check-in Doctor Mobile App)
+    // ═══════════════════════════════════════════════════════════════════════
+    qrToken:           { type: DataTypes.STRING(100), allowNull: true, unique: true },
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [
@@ -56,6 +61,7 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['doctorId', 'date'], name: 'idx_bookings_doctor_date' },  // getListPatientForDoctor
       // [NEW LOGIC VNPAY-MAIL]: Composite Index cho Cronjob cleanupS1 (Lỗi 24 — chống Full Table Scan)
       { fields: ['statusId', 'paymentStatus'], name: 'idx_bookings_status_payment' },
+      { fields: ['qrToken'], name: 'idx_bookings_qrToken' },
     ],
   });
   return Booking;

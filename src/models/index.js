@@ -241,6 +241,27 @@ db.MedicalCatalog.belongsToMany(db.Booking, {
   otherKey: 'bookingId',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase B] Booking ↔ BookingAttachment (1:N) — Tài liệu y tế đính kèm
+// ─────────────────────────────────────────────────────
+db.Booking.hasMany(db.BookingAttachment, {
+  foreignKey: 'bookingId',
+  as: 'attachments',
+  onDelete: 'CASCADE',
+});
+db.BookingAttachment.belongsTo(db.Booking, {
+  foreignKey: 'bookingId',
+  as: 'bookingData',
+});
+db.User.hasMany(db.BookingAttachment, {
+  foreignKey: 'patientId',
+  as: 'patientAttachments',
+});
+db.BookingAttachment.belongsTo(db.User, {
+  foreignKey: 'patientId',
+  as: 'patientData',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

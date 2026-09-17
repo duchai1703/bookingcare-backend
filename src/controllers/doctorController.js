@@ -1,5 +1,6 @@
 // src/controllers/doctorController.js
 const doctorService = require('../services/doctorService');
+const patientService = require('../services/patientService');
 
 const getTopDoctorHome = async (req, res) => {
   try {
@@ -300,6 +301,25 @@ const getDoctorRevenue = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] verifyDoctorCheckin — GET /api/v1/doctor/checkin/:qrToken
+// ═══════════════════════════════════════════════════════════════════════
+const verifyDoctorCheckin = async (req, res) => {
+  try {
+    const qrToken = req.params.qrToken;
+    if (!qrToken) {
+      return res.status(400).json({ errCode: 1, message: 'Thiếu mã QR check-in!' });
+    }
+    const result = await patientService.verifyDoctorCheckin(qrToken, req.user.id);
+    const statusMap = { 0: 200, 1: 400, 2: 403, 3: 400, 4: 400, 404: 404 };
+    const httpStatus = statusMap[result.errCode] || 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> verifyDoctorCheckin error:', err);
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -319,5 +339,6 @@ module.exports = {
   getDoctorOwnProfile,
   updateDoctorOwnProfile,
   getDoctorRevenue,
+  verifyDoctorCheckin,
 };
 
