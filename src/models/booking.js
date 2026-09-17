@@ -19,7 +19,7 @@ module.exports = (sequelize, DataTypes) => {
     // [Phase 11] VNPay Payment Integration — 9 cột mới
     // ═══════════════════════════════════════════════════════════════════════
     paymentToken:         { type: DataTypes.STRING(255), allowNull: true, unique: true },
-    paymentStatus:        { type: DataTypes.STRING(10),  allowNull: true, defaultValue: 'unpaid' },
+    paymentStatus:        { type: DataTypes.STRING(30),  allowNull: true, defaultValue: 'unpaid' },
     bookingPrice:         { type: DataTypes.INTEGER,     allowNull: true, defaultValue: 0 },
     vnpayTransactionNo:   { type: DataTypes.STRING(50),  allowNull: true },
     vnp_PayDate:          { type: DataTypes.STRING(20),  allowNull: true },

@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const {
   pick, randInt, shuffle, uuidv4,
   specialtyNames, clinicPool, reviewComments, bookingReasons,
+  cancellationReasons, clinicalDiagnoses, bankList, PRICE_MAP,
   generateSpecialtyMarkdown, generateClinicMarkdown,
   generateRandomUser, generateDoctorInfo,
   generateSpecialtyImageBase64, generateClinicImageBase64,
@@ -18,10 +19,11 @@ const {
 // ══════════════════════════════════════════════════════════════
 const CONFIG = {
   DOCTOR_COUNT: 50,
-  PATIENT_COUNT: 100,
-  BOOKING_COUNT: 200,
-  SCHEDULE_DAYS: 7,
-  REVIEW_CHANCE_FOR_S3: 0.7, // 70% booking S3 sẽ có review
+  PATIENT_COUNT: 120,
+  BOOKING_COUNT: 450,
+  SCHEDULE_PAST_DAYS: 90,
+  SCHEDULE_FUTURE_DAYS: 14,
+  REVIEW_CHANCE_FOR_S3: 0.75, // 75% booking S3 sẽ có review
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -152,16 +154,25 @@ const seed = async () => {
     await db.Doctor_Info.bulkCreate(doctorInfoArray);
     console.log(`✅ Doctor_Info: ${doctorInfoArray.length} records`);
 
-    // ═══════════ 8. SCHEDULES (50 doctors × 7 days × 4-6 slots — bulkCreate) ═══════════
+    // Doctor Price Map for accurate bookingPrice
+    const doctorPriceMap = {};
+    for (const info of doctorInfoArray) {
+      doctorPriceMap[info.doctorId] = PRICE_MAP[info.priceId] || 300000;
+    }
+
+    // ═══════════ 8. SCHEDULES (Past 90 days to Future 14 days) ═══════════
     const timeSlots = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8'];
     const today = new Date();
     const scheduleArray = [];
+    const scheduleLookup = new Map();
 
     for (const doctor of doctorUsers) {
-      for (let dayOffset = 0; dayOffset < CONFIG.SCHEDULE_DAYS; dayOffset++) {
+      for (let dayOffset = -CONFIG.SCHEDULE_PAST_DAYS; dayOffset <= CONFIG.SCHEDULE_FUTURE_DAYS; dayOffset++) {
         const date = new Date(today);
         date.setDate(date.getDate() + dayOffset);
-        // TUYỆT ĐỐI giữ nguyên logic Date.UTC — đồng bộ múi giờ với Frontend
+        // Chủ nhật: 2/3 bác sĩ nghỉ
+        if (date.getDay() === 0 && doctor.id % 3 !== 0) continue;
+
         const utcStartOfDay = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
         const dateStr = utcStartOfDay.toString();
 
@@ -169,59 +180,198 @@ const seed = async () => {
         const selectedSlots = shuffle(timeSlots).slice(0, numSlots);
 
         for (const slot of selectedSlots) {
-          scheduleArray.push({
+          const item = {
             doctorId: doctor.id,
             date: dateStr,
             timeType: slot,
             maxNumber: 10,
-            currentNumber: randInt(0, 9),
-          });
+            currentNumber: 0,
+          };
+          scheduleArray.push(item);
+          scheduleLookup.set(`${doctor.id}_${dateStr}_${slot}`, item);
         }
       }
     }
-    await db.Schedule.bulkCreate(scheduleArray);
-    console.log(`✅ Schedules: ${scheduleArray.length} records (${CONFIG.SCHEDULE_DAYS} days × ${doctorUsers.length} doctors)`);
 
-    // ═══════════ 9. BOOKINGS (200) + REVIEWS (auto 70% cho S3) ═══════════
-    const statusPool = ['S1', 'S1.5', 'S2', 'S3', 'S4'];
-    const genders = ['G1', 'G2'];
+    // ═══════════ 9. BOOKINGS (450 records across 90 days) ═══════════
+    const frequentPatientUsers = patientUsers.slice(0, 20);
+    const regularPatientUsers = patientUsers.slice(20);
+
     const bookingArray = [];
     const pendingReviews = []; // { bookingIdx, doctorId, patientId }
+    const genders = ['G1', 'G2'];
+
+    // Phân bổ ngày: 230 ca (30 ngày gần đây), 140 ca (-90 đến -31), 50 ca (+1 đến +10), 30 ca (hôm nay)
+    const dateOffsets = [];
+    for (let i = 0; i < 230; i++) dateOffsets.push(randInt(-30, -1));
+    for (let i = 0; i < 140; i++) dateOffsets.push(randInt(-90, -31));
+    for (let i = 0; i < 50; i++) dateOffsets.push(randInt(1, 10));
+    for (let i = 0; i < 30; i++) dateOffsets.push(0);
+
+    const shuffledOffsets = shuffle(dateOffsets);
 
     for (let i = 0; i < CONFIG.BOOKING_COUNT; i++) {
       const doctor = pick(doctorUsers);
-      const patient = pick(patientUsers);
-      const statusId = pick(statusPool);
-      // Random ngày: từ -10 đến +7
-      const dayOffset = randInt(-10, 7);
+      const patient = Math.random() < 0.4 ? pick(frequentPatientUsers) : pick(regularPatientUsers);
+      const dayOffset = shuffledOffsets[i % shuffledOffsets.length];
+
       const date = new Date(today);
       date.setDate(date.getDate() + dayOffset);
       const utcStartOfDay = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
       const dateStr = utcStartOfDay.toString();
+      const timeType = pick(timeSlots);
+
+      let statusId = 'S3';
+      if (dayOffset > 0) {
+        const futureRand = Math.random();
+        if (futureRand < 0.45) statusId = 'S2';
+        else if (futureRand < 0.75) statusId = 'S1';
+        else if (futureRand < 0.85) statusId = 'S1.5';
+        else statusId = 'S4';
+      } else if (dayOffset === 0) {
+        const todayRand = Math.random();
+        if (todayRand < 0.40) statusId = 'S2';
+        else if (todayRand < 0.75) statusId = 'S3';
+        else if (todayRand < 0.90) statusId = 'S1';
+        else statusId = 'S4';
+      } else {
+        const pastRand = Math.random();
+        if (pastRand < 0.72) statusId = 'S3';
+        else if (pastRand < 0.90) statusId = 'S4';
+        else statusId = 'S2';
+      }
+
+      const bookingPrice = doctorPriceMap[doctor.id] || 300000;
+      let paymentStatus = 'unpaid';
+      let refundRate = null;
+      let refundAmount = null;
+      let refundStatus = 'none';
+      let cancelledAt = null;
+      let cancellationReason = null;
+      let bankAccountNumber = null;
+      let bankAccountName = null;
+      let bankName = null;
+      let symptoms = null;
+      let clinicalNotes = null;
+      let diagnosis = null;
+      let careInstructions = null;
+
+      if (statusId === 'S3') {
+        paymentStatus = 'paid';
+        const diag = pick(clinicalDiagnoses);
+        symptoms = diag.symptoms;
+        clinicalNotes = diag.clinicalNotes;
+        diagnosis = diag.diagnosis;
+        careInstructions = diag.careInstructions;
+      } else if (statusId === 'S4') {
+        cancellationReason = pick(cancellationReasons);
+        refundRate = pick([100, 75, 50]);
+        refundAmount = Math.round((bookingPrice * refundRate) / 100);
+        refundStatus = Math.random() < 0.65 ? 'done' : 'pending';
+        paymentStatus = refundStatus === 'done' ? 'refunded' : 'refund_pending';
+        const dateMs = parseInt(dateStr, 10);
+        cancelledAt = new Date(dateMs - randInt(2, 48) * 3600000);
+        const b = pick(bankList);
+        bankName = b.bankName;
+        bankAccountNumber = `${randInt(1000, 9999)}${randInt(100000, 999999)}`;
+        bankAccountName = `${patient.firstName} ${patient.lastName}`.toUpperCase();
+      } else if (statusId === 'S2') {
+        paymentStatus = Math.random() < 0.8 ? 'paid' : 'unpaid';
+      }
+
+      // Đồng bộ currentNumber với Schedule
+      const schedKey = `${doctor.id}_${dateStr}_${timeType}`;
+      let sched = scheduleLookup.get(schedKey);
+      if (!sched) {
+        sched = {
+          doctorId: doctor.id,
+          date: dateStr,
+          timeType: timeType,
+          maxNumber: 10,
+          currentNumber: 0,
+        };
+        scheduleArray.push(sched);
+        scheduleLookup.set(schedKey, sched);
+      }
+      if (statusId === 'S2' || statusId === 'S3') {
+        if (sched.currentNumber < sched.maxNumber) {
+          sched.currentNumber += 1;
+        }
+      }
 
       bookingArray.push({
         statusId,
         doctorId: doctor.id,
         patientId: patient.id,
         date: dateStr,
-        timeType: pick(timeSlots),
+        timeType,
         token: uuidv4(),
-        reason: pick(bookingReasons),
+        bookingPrice,
+        paymentStatus,
+        refundRate,
+        refundAmount,
+        refundStatus,
+        cancelledAt,
+        bankAccountNumber,
+        bankAccountName,
+        bankName,
+        symptoms,
+        clinicalNotes,
+        diagnosis,
+        careInstructions,
+        reason: cancellationReason ? cancellationReason : pick(bookingReasons),
         patientName: `${patient.firstName} ${patient.lastName}`,
         patientPhoneNumber: patient.phoneNumber,
-        patientAddress: patient.address || 'Địa chỉ',
+        patientAddress: patient.address || 'TP. Hồ Chí Minh',
         patientGender: pick(genders),
         patientBirthday: `${randInt(1960, 2005)}-${String(randInt(1, 12)).padStart(2, '0')}-${String(randInt(1, 28)).padStart(2, '0')}`,
       });
 
-      // 70% xác suất sinh Review nếu S3
       if (statusId === 'S3' && Math.random() < CONFIG.REVIEW_CHANCE_FOR_S3) {
         pendingReviews.push({ bookingIdx: i, doctorId: doctor.id, patientId: patient.id });
       }
     }
 
+    await db.Schedule.bulkCreate(scheduleArray);
+    console.log(`✅ Schedules: ${scheduleArray.length} records (Past 90d to Future 14d)`);
+
     const createdBookings = await db.Booking.bulkCreate(bookingArray);
-    console.log(`✅ Bookings: ${createdBookings.length} records`);
+    console.log(`✅ Bookings: ${createdBookings.length} records (with real prices, refunds & medical info)`);
+
+    // ═══════════ 10. PATIENT BANK ACCOUNTS ═══════════
+    const bankAccountArray = [];
+    const usedPatientBankIds = new Set();
+    for (const b of bookingArray) {
+      if (b.bankAccountNumber && !usedPatientBankIds.has(b.patientId)) {
+        usedPatientBankIds.add(b.patientId);
+        bankAccountArray.push({
+          patientId: b.patientId,
+          bankName: b.bankName,
+          accountNumber: b.bankAccountNumber,
+          accountHolderName: b.bankAccountName,
+          isPrimary: true,
+        });
+      }
+    }
+    for (const p of frequentPatientUsers) {
+      if (!usedPatientBankIds.has(p.id)) {
+        usedPatientBankIds.add(p.id);
+        const b = pick(bankList);
+        bankAccountArray.push({
+          patientId: p.id,
+          bankName: b.bankName,
+          accountNumber: `${randInt(1000, 9999)}${randInt(100000, 999999)}`,
+          accountHolderName: `${p.firstName} ${p.lastName}`.toUpperCase(),
+          isPrimary: true,
+        });
+      }
+    }
+    if (bankAccountArray.length > 0) {
+      await db.PatientBankAccount.bulkCreate(bankAccountArray);
+      console.log(`✅ Patient_Bank_Accounts: ${bankAccountArray.length} records`);
+    }
+
+    // ═══════════ 11. REVIEWS (auto-generated from S3 bookings) ═══════════
 
     // Sinh Reviews cho các booking S3
     const reviewArray = [];
@@ -248,11 +398,11 @@ const seed = async () => {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
     const totalRecords = allcodeData.length + 1 + doctorUsers.length + patientUsers.length
       + specialties.length + clinics.length + doctorInfoArray.length
-      + scheduleArray.length + createdBookings.length + reviewArray.length;
+      + scheduleArray.length + createdBookings.length + reviewArray.length + bankAccountArray.length;
 
     console.log('');
     console.log('╔══════════════════════════════════════════════════╗');
-    console.log('║         🚀 SUPER SEEDER v3.0 — COMPLETE         ║');
+    console.log('║   🚀 SUPER SEEDER v4.5 (Analytics) — COMPLETE    ║');
     console.log('╠══════════════════════════════════════════════════╣');
     console.log(`║  Allcode       : ${String(allcodeData.length).padStart(6)} records              ║`);
     console.log(`║  Admin         :      1 account               ║`);
@@ -263,6 +413,7 @@ const seed = async () => {
     console.log(`║  Doctor_Info   : ${String(doctorInfoArray.length).padStart(6)} records              ║`);
     console.log(`║  Schedules     : ${String(scheduleArray.length).padStart(6)} records              ║`);
     console.log(`║  Bookings      : ${String(createdBookings.length).padStart(6)} records              ║`);
+    console.log(`║  Bank Accounts : ${String(bankAccountArray.length).padStart(6)} records              ║`);
     console.log(`║  Reviews       : ${String(reviewArray.length).padStart(6)} records              ║`);
     console.log('╠══════════════════════════════════════════════════╣');
     console.log(`║  📊 TỔNG CỘNG  : ${String(totalRecords).padStart(6)} records              ║`);

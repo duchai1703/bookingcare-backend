@@ -322,6 +322,7 @@ const sendRemedy = async (data) => {
           model: db.User,
           as: 'patientData',
           attributes: ['email', 'firstName', 'lastName'],
+          required: true,
         },
       ],
       raw: false,
@@ -353,16 +354,20 @@ const sendRemedy = async (data) => {
     // → Nhưng findOne sẽ trả NULL vì statusId đã = S3, không match S2
 
     // ===== 7. GỬI EMAIL SAU COMMIT — dùng email từ DB =====
-    await emailService.sendEmailRemedy({
-      email: patientEmail,           // ✅ Email từ DB, KHÔNG từ client
-      imageBase64: data.imageBase64,
-      doctorName: data.doctorName || 'Bác sĩ',
-      language: data.language || 'vi',
-    });
+    try {
+      await emailService.sendEmailRemedy({
+        email: patientEmail,           // ✅ Email từ DB, KHÔNG từ client
+        imageBase64: data.imageBase64,
+        doctorName: data.doctorName || 'Bác sĩ',
+        language: data.language || 'vi',
+      });
+    } catch (emailErr) {
+      console.warn('>>> [EMAIL_WARNING] Không gửi được email remedy:', emailErr.message);
+    }
 
     return { errCode: 0, message: 'Gửi kết quả khám thành công!' };
   } catch (err) {
-    await t.rollback();
+    if (!t.finished) await t.rollback();
     console.error('>>> sendRemedy error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }

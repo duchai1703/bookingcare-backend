@@ -372,12 +372,85 @@ function generateClinicImageBase64(index) {
 }
 
 // ══════════════════════════════════════════════════════════════
+// EXTENDED BUSINESS DATA POOLS (v4.5 - Analytics & Clinical Flow)
+// ══════════════════════════════════════════════════════════════
+const cancellationReasons = [
+  'Bận lịch công tác đột xuất',
+  'Tình trạng sức khỏe đã cải thiện, không cần khám thêm',
+  'Trùng lịch hẹn khám với chuyên khoa khác',
+  'Thay đổi kế hoạch gia đình không thể đến',
+  'Đã khám tại cơ sở y tế gần nhà hơn',
+  'Thời tiết bất lợi không tiện di chuyển',
+  'Có việc đột xuất tại cơ quan',
+  'Muốn chuyển sang ngày khám khác phù hợp hơn',
+];
+
+const clinicalDiagnoses = [
+  {
+    symptoms: 'Đau đầu âm ỉ kéo dài 1 tuần, chóng mặt khi thay đổi tư thế',
+    clinicalNotes: 'Huyết áp 125/80 mmHg, phản xạ gân xương đều 2 bên, không dấu thần kinh khu trú.',
+    diagnosis: 'Rối loạn tiền đình ngoại biên nhẹ do căng thẳng',
+    careInstructions: 'Uống nhiều nước (2 lít/ngày), ngủ đủ giấc, tránh thay đổi tư thế đột ngột.',
+  },
+  {
+    symptoms: 'Đau rát vùng thượng vị sau khi ăn, ợ chua nhiều',
+    clinicalNotes: 'Bụng mềm, ấn đau tức nhẹ vùng thượng vị, không có phản ứng thành bụng.',
+    diagnosis: 'Trào ngược dạ dày thực quản (GERD) độ A',
+    careInstructions: 'Kiêng thức ăn chua cay, nhiều dầu mỡ. Không nằm ngay sau khi ăn tối thiểu 2 giờ.',
+  },
+  {
+    symptoms: 'Đau khớp gối 2 bên khi lên xuống cầu thang, có tiếng lạo xạo',
+    clinicalNotes: 'Khớp gối lạo xạo nhẹ khi vận động, không sưng nóng đỏ, tầm vận động bình thường.',
+    diagnosis: 'Thoái hóa khớp gối nguyên phát độ 2',
+    careInstructions: 'Hạn chế leo cầu thang và ngồi xổm. Tập bài tập tăng cường cơ tứ đầu đùi.',
+  },
+  {
+    symptoms: 'Ho khan từng cơn, ngứa rát họng tăng nhiều về đêm',
+    clinicalNotes: 'Niêm mạc họng đỏ nhẹ, không có giả mạc, phổi phế âm rõ hai phế trường.',
+    diagnosis: 'Viêm họng cấp thể xuất tiết do dị ứng thời tiết',
+    careInstructions: 'Súc họng bằng nước muối sinh lý ấm 3 lần/ngày, giữ ấm vùng cổ, uống thuốc đúng giờ.',
+  },
+  {
+    symptoms: 'Mẩn đỏ ngứa rải rác vùng cẳng tay và lưng',
+    clinicalNotes: 'Sẩn phù kích thước 5-10mm, không mụn mủ, phân bố tương đối đối xứng.',
+    diagnosis: 'Mày đay cấp tính nghi do thời tiết',
+    careInstructions: 'Tránh tiếp xúc dị nguyên, tắm nước ấm vừa, không gãi chà xát gây tổn thương da.',
+  },
+  {
+    symptoms: 'Hồi hộp, tim đập nhanh khi lo âu hoặc gắng sức nhẹ',
+    clinicalNotes: 'Nhịp tim 92 bpm đều, tiếng tim T1, T2 rõ, không nghe tiếng thổi bệnh lý.',
+    diagnosis: 'Rối loạn thần kinh tim / Nhịp xoang nhanh cơ năng',
+    careInstructions: 'Thư giãn tâm lý, tập hít thở sâu, hạn chế tối đa cà phê và các chất kích thích.',
+  },
+];
+
+const bankList = [
+  { bankName: 'Ngân hàng TMCP Ngoại thương Việt Nam (Vietcombank)', bankShort: 'Vietcombank' },
+  { bankName: 'Ngân hàng TMCP Quân đội (MB Bank)', bankShort: 'MB Bank' },
+  { bankName: 'Ngân hàng TMCP Kỹ thương Việt Nam (Techcombank)', bankShort: 'Techcombank' },
+  { bankName: 'Ngân hàng TMCP Đầu tư và Phát triển Việt Nam (BIDV)', bankShort: 'BIDV' },
+  { bankName: 'Ngân hàng TMCP Công thương Việt Nam (VietinBank)', bankShort: 'VietinBank' },
+  { bankName: 'Ngân hàng TMCP Á Châu (ACB)', bankShort: 'ACB' },
+];
+
+const PRICE_MAP = {
+  PRI1: 100000,
+  PRI2: 200000,
+  PRI3: 300000,
+  PRI4: 500000,
+  PRI5: 1000000,
+  PRI6: 2000000,
+};
+
+// ══════════════════════════════════════════════════════════════
 // EXPORTS
 // ══════════════════════════════════════════════════════════════
 module.exports = {
   pick, randInt, shuffle, removeDiacritics, uuidv4,
   specialtyNames, clinicPool, reviewComments, bookingReasons,
+  cancellationReasons, clinicalDiagnoses, bankList, PRICE_MAP,
   generateSpecialtyMarkdown, generateClinicMarkdown,
   generateRandomUser, generateDoctorInfo,
   generateSpecialtyImageBase64, generateClinicImageBase64,
 };
+
