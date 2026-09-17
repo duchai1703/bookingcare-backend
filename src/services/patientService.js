@@ -9,6 +9,7 @@ const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
+const policyEngineService = require('./policyEngineService');
 
 // ===== BOOK APPOINTMENT (SRS 3.9, REQ-PT-012 → 023) =====
 // [Phase 9.3 FIX] Dual Mode: JWT (primary) + Guest Fallback (deprecated)
@@ -146,6 +147,26 @@ const postBookAppointment = async (data, patientId) => {
     const priceStr = doctorInfor.priceData?.valueVi || '0';
     const bookingPrice = parseInt(priceStr.replace(/[^0-9]/g, ''), 10) || 0;
 
+    // [Financial Policy Engine]: Đóng băng chính sách phân bổ doanh thu & quy định hoàn tiền
+    let financialData = {
+      revenuePolicyId: null,
+      refundPolicyId: null,
+      policySnapshot: null,
+      platformFee: 0,
+      doctorShare: bookingPrice,
+      clinicShare: 0,
+    };
+    try {
+      financialData = await policyEngineService.freezeBookingFinancials({
+        doctorId: data.doctorId,
+        clinicId: doctorInfor.clinicId,
+        totalAmount: bookingPrice,
+        bookingDate: data.date ? new Date(Number(data.date)) : new Date()
+      }, t);
+    } catch (fErr) {
+      console.error('>>> [PolicyEngine] Error freezing booking financials:', fErr);
+    }
+
     // REQ-PT-015: Lưu booking (statusId = 'S1' theo State Machine)
     await db.Booking.create({
       statusId: 'S1',
@@ -169,6 +190,13 @@ const postBookAppointment = async (data, patientId) => {
       bankAccountNumber: data.bankAccountNumber || '',
       bankAccountName: data.bankAccountName || '',
       bankName: data.bankName || '',
+      // [Financial Policy Engine Hybrid References & Frozen Amounts]
+      revenuePolicyId: financialData.revenuePolicyId,
+      refundPolicyId: financialData.refundPolicyId,
+      policySnapshot: financialData.policySnapshot,
+      platformFee: financialData.platformFee,
+      doctorShare: financialData.doctorShare,
+      clinicShare: financialData.clinicShare,
     }, { transaction: t }); // DS-05
 
     // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S1.5)
@@ -669,27 +697,14 @@ const cancelBooking = async (data, patientId) => {
       booking.statusId = 'S4';
 
       // ═══════════════════════════════════════════════════════════
-      // [Chính sách Hoàn tiền dựa trên thời gian từ lúc đặt tới lúc hủy]
+      // [Chính sách Hoàn tiền dựa trên Policy Snapshot Bất Biến]
       // ═══════════════════════════════════════════════════════════
       const now = new Date();
       booking.cancelledAt = now;
 
-      const createdAtTime = booking.createdAt ? new Date(booking.createdAt).getTime() : now.getTime();
-      const hoursSinceCreation = Math.max(0, (now.getTime() - createdAtTime) / (1000 * 60 * 60));
-
-      let calculatedRefundRate = 100;
-      if (hoursSinceCreation <= 24) {
-        calculatedRefundRate = 100;
-      } else if (hoursSinceCreation <= 72) {
-        calculatedRefundRate = 75;
-      } else {
-        calculatedRefundRate = 50;
-      }
-
-      booking.refundRate = calculatedRefundRate;
-      const price = parseInt(booking.bookingPrice, 10) || 0;
-      const calculatedRefundAmount = Math.round((price * calculatedRefundRate) / 100);
-      booking.refundAmount = calculatedRefundAmount;
+      const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
+      booking.refundRate = refundCalc.appliedRefundPercent;
+      booking.refundAmount = refundCalc.refundAmount;
 
       // ═══════════════════════════════════════════════════════════
       // [Gán paymentStatus & refundStatus phù hợp]

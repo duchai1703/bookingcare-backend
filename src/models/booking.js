@@ -53,6 +53,16 @@ module.exports = (sequelize, DataTypes) => {
     // [Phase B] Mã QR khám bệnh bảo mật (Check-in Doctor Mobile App)
     // ═══════════════════════════════════════════════════════════════════════
     qrToken:           { type: DataTypes.STRING(100), allowNull: true, unique: true },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Policy Engine] Snapshot Bất biến & Bóc tách Tài chính
+    // ═══════════════════════════════════════════════════════════════════════
+    revenuePolicyId:   { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách phân bổ áp dụng
+    refundPolicyId:    { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách hoàn tiền áp dụng
+    policySnapshot:    { type: DataTypes.TEXT, allowNull: true },          // Tham trị: JSON string snapshot toàn bộ rules lúc đặt
+    platformFee:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền App thu thực tế (VND)
+    doctorShare:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Bác sĩ nhận thực tế (VND)
+    clinicShare:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Cơ sở y tế nhận thực tế (nếu có)
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [

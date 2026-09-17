@@ -3,6 +3,7 @@
 const db = require('../models');
 const { Op } = require('sequelize');
 const moment = require('moment');
+const policyEngineService = require('./policyEngineService');
 
 // Format patient code: BN-000128
 const formatPatientCode = (id) => `BN-${String(id).padStart(6, '0')}`;
@@ -287,22 +288,14 @@ const getAdminPatientWorkspace = async (patientId) => {
       // Calculate policy estimate if cancelled and pending
       let policyEstimate = null;
       if (isCancelled) {
-        const createdMs = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        const cancelledMs = b.cancelledAt ? new Date(b.cancelledAt).getTime() : Date.now();
-        const diffHours = Math.max(0, (cancelledMs - createdMs) / (1000 * 60 * 60));
-        let suggestedRate = 100;
-        if (diffHours <= 24) suggestedRate = 100;
-        else if (diffHours <= 72) suggestedRate = 75;
-        else suggestedRate = 50;
-
-        const price = parseInt(b.bookingPrice, 10) || 0;
-        const suggestedAmount = Math.round((price * suggestedRate) / 100);
-
+        const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(b, b.cancelledAt || new Date());
         policyEstimate = {
-          hoursSinceCreation: Math.round(diffHours * 10) / 10,
-          suggestedRate,
-          suggestedAmount,
-          penaltyFee: Math.max(0, price - suggestedAmount),
+          hoursSinceCreation: refundCalc.hoursBefore,
+          suggestedRate: refundCalc.appliedRefundPercent,
+          suggestedAmount: refundCalc.refundAmount,
+          penaltyFee: refundCalc.deductionAmount,
+          isFrozenSnapshotUsed: refundCalc.isFrozenSnapshotUsed,
+          policyName: refundCalc.policyInfo?.name || 'Quy định chuẩn toàn hệ thống'
         };
       }
 

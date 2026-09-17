@@ -375,6 +375,37 @@ db.Doctor_Assignment.belongsTo(db.Allcode, {
   as: 'priceTypeData',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 Financial_Policy ↔ Booking (1:N) & User (Creator)
+// Quản lý chính sách phân bổ doanh thu & quy định hoàn tiền
+// ─────────────────────────────────────────────────────
+db.Financial_Policy.hasMany(db.Booking, {
+  foreignKey: 'revenuePolicyId',
+  as: 'revenueBookings',
+});
+db.Booking.belongsTo(db.Financial_Policy, {
+  foreignKey: 'revenuePolicyId',
+  as: 'revenuePolicyData',
+});
+
+db.Financial_Policy.hasMany(db.Booking, {
+  foreignKey: 'refundPolicyId',
+  as: 'refundBookings',
+});
+db.Booking.belongsTo(db.Financial_Policy, {
+  foreignKey: 'refundPolicyId',
+  as: 'refundPolicyData',
+});
+
+db.Financial_Policy.belongsTo(db.User, {
+  foreignKey: 'createdById',
+  as: 'creator',
+});
+db.User.hasMany(db.Financial_Policy, {
+  foreignKey: 'createdById',
+  as: 'createdPolicies',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

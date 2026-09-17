@@ -11,6 +11,7 @@ const patientManageController = require('../controllers/patientManageController'
 const doctorManageController = require('../controllers/doctorManageController'); // [Doctor Operations Center]
 const clinicManageController = require('../controllers/clinicManageController'); // [Clinic Control Center]
 const specialtyManageController = require('../controllers/specialtyManageController'); // [Specialty Intelligence Hub]
+const policyController = require('../controllers/policyController'); // [Financial Policy Engine]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -290,6 +291,16 @@ const routes = (app) => {
   app.put('/api/v1/admin/doctor-assignments/:assignmentId',                      verifyToken, checkAdminRole, clinicHierarchyController.handleUpdateDoctorAssignment);
   app.delete('/api/v1/admin/doctor-assignments/:assignmentId',                   verifyToken, checkAdminRole, clinicHierarchyController.handleUnassignDoctorFromClinicSpecialty);
   app.get('/api/v1/admin/doctors/:doctorId/assignments',                         verifyToken, checkAdminRole, clinicHierarchyController.handleGetDoctorAssignments);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Financial Policy Engine] CHÍNH SÁCH PHÍ & HOÀN TIỀN BẤT BIẾN — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/policies',                 verifyToken, checkAdminRole, policyController.getPoliciesList);
+  app.get('/api/v1/admin/policies/:id',             verifyToken, checkAdminRole, policyController.getPolicyDetail);
+  app.post('/api/v1/admin/policies',                verifyToken, checkAdminRole, policyController.createPolicy);
+  app.post('/api/v1/admin/policies/:id/new-version',verifyToken, checkAdminRole, policyController.createPolicyVersion);
+  app.put('/api/v1/admin/policies/:id',             verifyToken, checkAdminRole, policyController.updatePolicyDraft);
+  app.post('/api/v1/admin/policies/seed-defaults',  verifyToken, checkAdminRole, policyController.seedDefaultPolicies);
 };
 
 module.exports = routes;
