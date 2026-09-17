@@ -7,6 +7,7 @@ const specialtyController = require('../controllers/specialtyController');
 const clinicController = require('../controllers/clinicController');
 const statisticController = require('../controllers/statisticController');
 const paymentController = require('../controllers/paymentController'); // [NEW LOGIC VNPAY-MAIL]
+const patientManageController = require('../controllers/patientManageController'); // [Phase F] Patient Workspace & Refund Flow
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -231,6 +232,22 @@ const routes = (app) => {
   app.get('/api/v1/statistics/revenue-by-doctor',     verifyToken, checkAdminRole, statisticController.getRevenueByDoctor);
   app.get('/api/v1/statistics/revenue-by-clinic',     verifyToken, checkAdminRole, statisticController.getRevenueByClinic);
   app.get('/api/v1/statistics/revenue-by-specialty',  verifyToken, checkAdminRole, statisticController.getRevenueBySpecialty);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase E] EXECUTIVE MASTER & DETAIL ANALYTICS — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/statistics/executive-master',      verifyToken, checkAdminRole, statisticController.getExecutiveMaster);
+  app.get('/api/v1/statistics/analytics/bookings',   verifyToken, checkAdminRole, statisticController.getBookingAnalytics);
+  app.get('/api/v1/statistics/analytics/revenue',    verifyToken, checkAdminRole, statisticController.getRevenueAnalytics);
+  app.get('/api/v1/statistics/analytics/doctors',    verifyToken, checkAdminRole, statisticController.getDoctorCapacityAnalytics);
+  app.get('/api/v1/statistics/analytics/patients',   verifyToken, checkAdminRole, statisticController.getPatientAnalytics);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase F] PATIENT ENTERPRISE MANAGEMENT & REFUND FLOW — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/patients',                  verifyToken, checkAdminRole, patientManageController.handleGetPatientsList);
+  app.get('/api/v1/admin/patients/:id/workspace',    verifyToken, checkAdminRole, patientManageController.handleGetPatientWorkspace);
+  app.post('/api/v1/admin/patients/refund',          verifyToken, checkAdminRole, patientManageController.handleProcessRefund);
 };
 
 module.exports = routes;

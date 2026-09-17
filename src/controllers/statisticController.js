@@ -165,6 +165,73 @@ const getRevenueBySpecialty = async (req, res) => {
   }
 };
 
+// [Phase E] Executive Master Dashboard
+const getExecutiveMaster = async (req, res) => {
+  try {
+    const { from, to, compareFrom, compareTo } = req.query;
+    const fromVal = from || (Date.now() - 30 * 86400000);
+    const toVal = to || Date.now();
+    const result = await statisticService.getExecutiveMaster(fromVal, toVal, compareFrom, compareTo);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (err) {
+    console.error('>>> getExecutiveMaster controller error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// [Phase E] Detail Analytics Handlers
+const getBookingAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromVal = from || (Date.now() - 30 * 86400000);
+    const toVal = to || Date.now();
+    const result = await statisticService.getBookingAnalyticsDetail(fromVal, toVal);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (err) {
+    console.error('>>> getBookingAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+const getRevenueAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromVal = from || (Date.now() - 30 * 86400000);
+    const toVal = to || Date.now();
+    const result = await statisticService.getRevenueAnalyticsDetail(fromVal, toVal);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (err) {
+    console.error('>>> getRevenueAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+const getDoctorCapacityAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromVal = from || (Date.now() - 30 * 86400000);
+    const toVal = to || Date.now();
+    const result = await statisticService.getDoctorCapacityDetail(fromVal, toVal);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (err) {
+    console.error('>>> getDoctorCapacityAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+const getPatientAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromVal = from || (Date.now() - 30 * 86400000);
+    const toVal = to || Date.now();
+    const result = await statisticService.getPatientIntelligenceDetail(fromVal, toVal);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (err) {
+    console.error('>>> getPatientAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
 module.exports = {
   getOverviewStatistics,
   getBookingsByDay,
@@ -177,4 +244,10 @@ module.exports = {
   getRevenueByDoctor,
   getRevenueByClinic,
   getRevenueBySpecialty,
+  // [Phase E]
+  getExecutiveMaster,
+  getBookingAnalytics,
+  getRevenueAnalytics,
+  getDoctorCapacityAnalytics,
+  getPatientAnalytics,
 };
