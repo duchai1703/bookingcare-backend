@@ -373,6 +373,7 @@ const getAdminClinicControlCenter = async (clinicId) => {
           status: clinic.status || 'active',
           commissionRate: parseFloat(clinic.commissionRate || 15),
           image: formatDataUri(clinic.image),
+          photos: clinic.photos ? (typeof clinic.photos === 'string' ? (() => { try { return JSON.parse(clinic.photos); } catch { return []; } })() : clinic.photos) : [],
           descriptionHTML: clinic.descriptionHTML || '',
           descriptionMarkdown: clinic.descriptionMarkdown || '',
         },

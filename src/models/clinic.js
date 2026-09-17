@@ -11,6 +11,7 @@ module.exports = (sequelize, DataTypes) => {
     email:               { type: DataTypes.STRING(100), allowNull: true },
     status:              { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'active' },
     commissionRate:      { type: DataTypes.DECIMAL(5, 2), allowNull: false, defaultValue: 15.00 },
+    photos:              { type: DataTypes.TEXT, allowNull: true },
   });
   return Clinic;
 };

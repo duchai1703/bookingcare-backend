@@ -278,6 +278,7 @@ const getAdminSpecialtyWorkspace = async (specialtyId) => {
           status: specialty.status || 'active',
           targetCapacity: specialty.targetCapacity || 50,
           image: formatDataUri(specialty.image),
+          photos: specialty.photos ? (typeof specialty.photos === 'string' ? (() => { try { return JSON.parse(specialty.photos); } catch { return []; } })() : specialty.photos) : [],
           descriptionHTML: specialty.descriptionHTML || '',
           descriptionMarkdown: specialty.descriptionMarkdown || '',
         },

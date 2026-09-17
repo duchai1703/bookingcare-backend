@@ -8,6 +8,7 @@ module.exports = (sequelize, DataTypes) => {
     descriptionMarkdown: { type: DataTypes.TEXT, allowNull: true },
     status:              { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'active' },
     targetCapacity:      { type: DataTypes.INTEGER, allowNull: false, defaultValue: 50 },
+    photos:              { type: DataTypes.TEXT, allowNull: true },
   });
   return Specialty;
 };

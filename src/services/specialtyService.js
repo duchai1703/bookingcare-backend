@@ -19,16 +19,22 @@ const createSpecialty = async (data) => {
         return { errCode: 4, message: imgResult.error };
       }
     }
-    await db.Specialty.create({
+    let photosStr = null;
+    if (data.photos) {
+      photosStr = typeof data.photos === 'string' ? data.photos : JSON.stringify(data.photos);
+    }
+    const newSpecialty = await db.Specialty.create({
       name: data.name,
+      status: data.status || 'active',
+      targetCapacity: data.targetCapacity ? parseInt(data.targetCapacity, 10) : 50,
+      photos: photosStr,
       // ✅ [FIX-IMAGE] Strip prefix TRƯỚC khi lưu vào BLOB
-      // Thứ tự: validate (cần prefix) → strip (bỏ prefix) → save (pure base64)
       image: data.imageBase64 ? stripBase64Prefix(data.imageBase64) : '',
       // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
-      descriptionHTML: sanitizeContent(data.descriptionHTML),
+      descriptionHTML: sanitizeContent(data.descriptionHTML || ''),
       descriptionMarkdown: data.descriptionMarkdown || '',
     });
-    return { errCode: 0, message: 'Tạo chuyên khoa thành công!' };
+    return { errCode: 0, message: 'Tạo chuyên khoa thành công!', data: { id: newSpecialty.id } };
   } catch (err) {
     console.error('>>> createSpecialty error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
@@ -42,6 +48,15 @@ const getAllSpecialty = async () => {
     specialties.forEach((spec) => {
       if (spec.image) {
         spec.setDataValue('image', convertBlobToBase64(spec.image));
+      }
+      if (spec.photos) {
+        try {
+          spec.setDataValue('photos', typeof spec.photos === 'string' ? JSON.parse(spec.photos) : spec.photos);
+        } catch {
+          spec.setDataValue('photos', []);
+        }
+      } else {
+        spec.setDataValue('photos', []);
       }
     });
     return { errCode: 0, data: specialties };
@@ -63,6 +78,15 @@ const getDetailSpecialtyById = async (id, location) => {
     // ✅ [FIX-IMAGE] Convert BLOB → pure base64
     if (specialty.image) {
       specialty.setDataValue('image', convertBlobToBase64(specialty.image));
+    }
+    if (specialty.photos) {
+      try {
+        specialty.setDataValue('photos', typeof specialty.photos === 'string' ? JSON.parse(specialty.photos) : specialty.photos);
+      } catch {
+        specialty.setDataValue('photos', []);
+      }
+    } else {
+      specialty.setDataValue('photos', []);
     }
     let whereClause = { specialtyId: id };
     if (location && location !== 'ALL') {
@@ -206,6 +230,13 @@ const editSpecialty = async (data) => {
       return { errCode: 3, message: 'Không tìm thấy chuyên khoa!' };
     }
     specialty.name = data.name || specialty.name;
+    if (data.status !== undefined) specialty.status = data.status;
+    if (data.targetCapacity !== undefined && data.targetCapacity !== null) {
+      specialty.targetCapacity = parseInt(data.targetCapacity, 10);
+    }
+    if (data.photos !== undefined) {
+      specialty.photos = typeof data.photos === 'string' ? data.photos : JSON.stringify(data.photos);
+    }
     // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
     if (data.imageBase64) {
       const imgResult = validateBase64Image(data.imageBase64);
@@ -216,8 +247,12 @@ const editSpecialty = async (data) => {
       specialty.image = stripBase64Prefix(data.imageBase64);
     }
     // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
-    specialty.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : specialty.descriptionHTML;
-    specialty.descriptionMarkdown = data.descriptionMarkdown || specialty.descriptionMarkdown;
+    if (data.descriptionHTML !== undefined) {
+      specialty.descriptionHTML = sanitizeContent(data.descriptionHTML || '');
+    }
+    if (data.descriptionMarkdown !== undefined) {
+      specialty.descriptionMarkdown = data.descriptionMarkdown;
+    }
     await specialty.save();
     return { errCode: 0, message: 'Cập nhật chuyên khoa thành công!' };
   } catch (err) {

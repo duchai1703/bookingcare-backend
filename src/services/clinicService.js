@@ -19,16 +19,25 @@ const createClinic = async (data) => {
         return { errCode: 4, message: imgResult.error };
       }
     }
-    await db.Clinic.create({
+    let photosStr = null;
+    if (data.photos) {
+      photosStr = typeof data.photos === 'string' ? data.photos : JSON.stringify(data.photos);
+    }
+    const newClinic = await db.Clinic.create({
       name: data.name,
       address: data.address,
+      phone: data.phone || null,
+      email: data.email || null,
+      status: data.status || 'active',
+      commissionRate: data.commissionRate !== undefined && data.commissionRate !== null ? parseFloat(data.commissionRate) : 15.00,
+      photos: photosStr,
       // ✅ [FIX-IMAGE] Strip prefix TRƯỚC khi lưu vào BLOB
       image: data.imageBase64 ? stripBase64Prefix(data.imageBase64) : '',
       // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi lưu
-      descriptionHTML: sanitizeContent(data.descriptionHTML),
+      descriptionHTML: sanitizeContent(data.descriptionHTML || ''),
       descriptionMarkdown: data.descriptionMarkdown || '',
     });
-    return { errCode: 0, message: 'Tạo phòng khám thành công!' };
+    return { errCode: 0, message: 'Tạo phòng khám thành công!', data: { id: newClinic.id } };
   } catch (err) {
     console.error('>>> createClinic error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
@@ -42,6 +51,15 @@ const getAllClinic = async () => {
     clinics.forEach((clinic) => {
       if (clinic.image) {
         clinic.setDataValue('image', convertBlobToBase64(clinic.image));
+      }
+      if (clinic.photos) {
+        try {
+          clinic.setDataValue('photos', typeof clinic.photos === 'string' ? JSON.parse(clinic.photos) : clinic.photos);
+        } catch {
+          clinic.setDataValue('photos', []);
+        }
+      } else {
+        clinic.setDataValue('photos', []);
       }
     });
     return { errCode: 0, data: clinics };
@@ -63,6 +81,15 @@ const getDetailClinicById = async (id) => {
     // ✅ [FIX-IMAGE] Convert BLOB → pure base64
     if (clinic.image) {
       clinic.setDataValue('image', convertBlobToBase64(clinic.image));
+    }
+    if (clinic.photos) {
+      try {
+        clinic.setDataValue('photos', typeof clinic.photos === 'string' ? JSON.parse(clinic.photos) : clinic.photos);
+      } catch {
+        clinic.setDataValue('photos', []);
+      }
+    } else {
+      clinic.setDataValue('photos', []);
     }
     // ✅ [v4.0] Query đầy đủ thông tin bác sĩ (avatar, tên, chức danh, chuyên khoa)
     // thay vì chỉ trả về mảng doctorId
@@ -196,6 +223,15 @@ const editClinic = async (data) => {
     }
     clinic.name = data.name || clinic.name;
     clinic.address = data.address || clinic.address;
+    if (data.phone !== undefined) clinic.phone = data.phone;
+    if (data.email !== undefined) clinic.email = data.email;
+    if (data.status !== undefined) clinic.status = data.status;
+    if (data.commissionRate !== undefined && data.commissionRate !== null) {
+      clinic.commissionRate = parseFloat(data.commissionRate);
+    }
+    if (data.photos !== undefined) {
+      clinic.photos = typeof data.photos === 'string' ? data.photos : JSON.stringify(data.photos);
+    }
     // ✅ [SECURITY-FIX Phase 6] Validate Base64 image
     if (data.imageBase64) {
       const imgResult = validateBase64Image(data.imageBase64);
@@ -206,8 +242,12 @@ const editClinic = async (data) => {
       clinic.image = stripBase64Prefix(data.imageBase64);
     }
     // ✅ [SECURITY-FIX] Sanitize descriptionHTML trước khi update
-    clinic.descriptionHTML = data.descriptionHTML ? sanitizeContent(data.descriptionHTML) : clinic.descriptionHTML;
-    clinic.descriptionMarkdown = data.descriptionMarkdown || clinic.descriptionMarkdown;
+    if (data.descriptionHTML !== undefined) {
+      clinic.descriptionHTML = sanitizeContent(data.descriptionHTML || '');
+    }
+    if (data.descriptionMarkdown !== undefined) {
+      clinic.descriptionMarkdown = data.descriptionMarkdown;
+    }
     await clinic.save();
     return { errCode: 0, message: 'Cập nhật phòng khám thành công!' };
   } catch (err) {
