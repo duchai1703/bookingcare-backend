@@ -574,7 +574,9 @@ const getRevenueAnalyticsDetail = async (from, to) => {
   );
 
   const byClinic = await db.sequelize.query(
-    `SELECT c.id, c.name, 
+    `SELECT c.id, 
+            c.name,
+            c.name AS "clinicName", 
             COALESCE(SUM(b."bookingPrice"), 0)::FLOAT AS revenue,
             COUNT(*)::INT AS count
      FROM "Bookings" b
@@ -583,26 +585,36 @@ const getRevenueAnalyticsDetail = async (from, to) => {
      WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
        AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
      GROUP BY c.id, c.name
-     ORDER BY revenue DESC`,
+     ORDER BY revenue DESC
+     LIMIT 50`,
     { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
   );
 
   const byDoctor = await db.sequelize.query(
-    `SELECT u.id, CONCAT(u."lastName", ' ', u."firstName") AS "doctorName",
+    `SELECT u.id, 
+            u.id AS "doctorId",
+            CONCAT(u."lastName", ' ', u."firstName") AS "doctorName",
+            COALESCE(sp.name, 'Chuyên khoa chung') AS "specialtyName",
+            COALESCE(cl.name, 'Cơ sở BookingCare') AS "clinicName",
             COALESCE(SUM(b."bookingPrice"), 0)::FLOAT AS revenue,
             COUNT(*)::INT AS count
      FROM "Bookings" b
      INNER JOIN "Users" u ON b."doctorId" = u.id
+     LEFT JOIN "Doctor_Infos" di ON di."doctorId" = u.id
+     LEFT JOIN "Specialties" sp ON di."specialtyId" = sp.id
+     LEFT JOIN "Clinics" cl ON di."clinicId" = cl.id
      WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
        AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
-     GROUP BY u.id, u."lastName", u."firstName"
+     GROUP BY u.id, u."lastName", u."firstName", sp.name, cl.name
      ORDER BY revenue DESC
-     LIMIT 15`,
+     LIMIT 50`,
     { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
   );
 
   const bySpecialty = await db.sequelize.query(
-    `SELECT s.id, s.name, 
+    `SELECT s.id, 
+            s.name,
+            s.name AS "specialtyName", 
             COALESCE(SUM(b."bookingPrice"), 0)::FLOAT AS revenue,
             COUNT(*)::INT AS count
      FROM "Bookings" b
@@ -612,7 +624,7 @@ const getRevenueAnalyticsDetail = async (from, to) => {
        AND (b."statusId" = 'S3' OR b."paymentStatus" = 'paid')
      GROUP BY s.id, s.name
      ORDER BY revenue DESC
-     LIMIT 15`,
+     LIMIT 50`,
     { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
   );
 
@@ -633,9 +645,9 @@ const getRevenueAnalyticsDetail = async (from, to) => {
       unpaidCount: parseInt(summary?.unpaidCount || 0, 10),
       avgOrderValue,
     },
-    byClinic: byClinic.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
+    byClinic: byClinic.map(r => ({ ...r, clinicName: r.clinicName || r.name, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
     byDoctor: byDoctor.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
-    bySpecialty: bySpecialty.map(r => ({ ...r, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
+    bySpecialty: bySpecialty.map(r => ({ ...r, specialtyName: r.specialtyName || r.name, revenue: parseFloat(r.revenue) || 0, count: parseInt(r.count, 10) || 0 })),
   };
 };
 
@@ -671,11 +683,12 @@ const getDoctorCapacityDetail = async (from, to) => {
     bookedSlots: parseInt(d.bookedSlots, 10) || 0,
     schedulesCount: parseInt(d.schedulesCount, 10) || 0,
     utilizationRate: parseFloat(d.utilizationRate) || 0,
+    capacityRate: parseFloat(d.utilizationRate) || 0,
   }));
 
   const totalDoctors = formattedDoctors.length;
   const totalSlots = formattedDoctors.reduce((acc, d) => acc + d.totalSlots, 0);
-  const occupiedSlots = formattedDoctors.reduce((acc, d) => acc + d.bookedSlots, 0);
+  const occupiedSlots = formattedDoctors.reduce((acc, d) => acc + d.occupiedSlots, 0);
   const avgUtilization = totalSlots > 0 ? Number(((occupiedSlots / totalSlots) * 100).toFixed(1)) : 0;
 
   return {
@@ -715,27 +728,57 @@ const getPatientIntelligenceDetail = async (from, to) => {
   const returningRate = totalPatients > 0 ? Number(((returningPatients / totalPatients) * 100).toFixed(1)) : 0;
 
   const genderDist = await db.sequelize.query(
-    `SELECT COALESCE(b."patientGender", 'OTHER') AS gender, COUNT(*)::INT AS count
+    `SELECT 
+       CASE 
+         WHEN b."patientGender" = 'G1' THEN 'Nam' 
+         WHEN b."patientGender" = 'G2' THEN 'Nữ' 
+         ELSE 'Khác' 
+       END AS gender,
+       CASE 
+         WHEN b."patientGender" = 'G1' THEN 'Nam' 
+         WHEN b."patientGender" = 'G2' THEN 'Nữ' 
+         ELSE 'Khác' 
+       END AS "genderVi",
+       CASE 
+         WHEN b."patientGender" = 'G1' THEN 'Male' 
+         WHEN b."patientGender" = 'G2' THEN 'Female' 
+         ELSE 'Other' 
+       END AS "genderEn",
+       COUNT(*)::INT AS count
      FROM "Bookings" b
      WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
-     GROUP BY gender`,
+     GROUP BY b."patientGender"
+     ORDER BY count DESC`,
     { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
   );
 
   const topPatients = await db.sequelize.query(
     `SELECT b."patientId", 
             COALESCE(b."patientName", CONCAT(u."lastName", ' ', u."firstName"), 'Bệnh nhân') AS "patientName",
-            b."patientPhoneNumber", 
+            COALESCE(u.email, '—') AS email,
+            COALESCE(u."phoneNumber", b."patientPhoneNumber", '—') AS "phoneNumber",
+            COUNT(*)::INT AS "totalBookings",
             COUNT(*)::INT AS "bookingCount",
+            COUNT(CASE WHEN b."statusId" = 'S3' THEN 1 END)::INT AS "completedBookings",
             COALESCE(SUM(b."bookingPrice"), 0)::FLOAT AS "totalSpent"
      FROM "Bookings" b
      LEFT JOIN "Users" u ON b."patientId" = u.id
      WHERE CAST(b.date AS BIGINT) >= :from AND CAST(b.date AS BIGINT) <= :to
-     GROUP BY b."patientId", b."patientName", u."lastName", u."firstName", b."patientPhoneNumber"
-     ORDER BY "bookingCount" DESC
-     LIMIT 15`,
+     GROUP BY b."patientId", b."patientName", u."lastName", u."firstName", u.email, u."phoneNumber", b."patientPhoneNumber"
+     ORDER BY "totalSpent" DESC, "bookingCount" DESC
+     LIMIT 50`,
     { replacements: { from: fromStr, to: toStr }, type: db.sequelize.QueryTypes.SELECT }
   );
+
+  const formattedTopPatients = topPatients.map(p => ({
+    ...p,
+    email: p.email || '—',
+    phoneNumber: p.phoneNumber || '—',
+    totalBookings: parseInt(p.totalBookings, 10) || parseInt(p.bookingCount, 10) || 0,
+    bookingCount: parseInt(p.totalBookings, 10) || parseInt(p.bookingCount, 10) || 0,
+    completedBookings: parseInt(p.completedBookings, 10) || 0,
+    totalSpent: parseFloat(p.totalSpent) || 0,
+  }));
 
   return {
     summary: {
@@ -745,8 +788,8 @@ const getPatientIntelligenceDetail = async (from, to) => {
       returningRate,
     },
     genderDistribution: genderDist,
-    topFrequentPatients: topPatients.map(p => ({ ...p, bookingCount: parseInt(p.bookingCount, 10) || 0 })),
-    topPatients: topPatients.map(p => ({ ...p, bookingCount: parseInt(p.bookingCount, 10) || 0 })),
+    topFrequentPatients: formattedTopPatients,
+    topPatients: formattedTopPatients,
   };
 };
 

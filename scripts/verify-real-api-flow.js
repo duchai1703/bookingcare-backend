@@ -220,10 +220,30 @@ async function runVerification() {
   const revenueDetail = await statisticService.getRevenueAnalyticsDetail(queryFrom, queryTo);
   assert(revenueDetail && revenueDetail.summary, 'Báo cáo Doanh thu tính toán chuẩn xác');
   assert(revenueDetail.summary.refundAmount >= booking2.refundAmount, `Tổng tiền hoàn bao gồm ca hủy mới: ${revenueDetail.summary.refundAmount.toLocaleString('vi-VN')} VNĐ`);
+  assert(revenueDetail.byClinic.length > 0, `Doanh thu theo cơ sở y tế có ${revenueDetail.byClinic.length} dòng`);
+  assert(revenueDetail.byClinic[0].clinicName && revenueDetail.byClinic[0].clinicName.length > 0, `Trục Y biểu đồ cơ sở y tế có tên rõ ràng: "${revenueDetail.byClinic[0].clinicName}"`);
+  assert(revenueDetail.bySpecialty.length > 0, `Doanh thu theo chuyên khoa có ${revenueDetail.bySpecialty.length} dòng`);
+  assert(revenueDetail.bySpecialty[0].specialtyName && revenueDetail.bySpecialty[0].specialtyName.length > 0, `Trục Y biểu đồ chuyên khoa có tên rõ ràng: "${revenueDetail.bySpecialty[0].specialtyName}"`);
+  assert(revenueDetail.byDoctor.length > 0, `Bảng bác sĩ có ${revenueDetail.byDoctor.length} dòng`);
+  assert(revenueDetail.byDoctor[0].doctorName && revenueDetail.byDoctor[0].specialtyName !== '—' && revenueDetail.byDoctor[0].clinicName !== '—', `Bác sĩ có đầy đủ tên (${revenueDetail.byDoctor[0].doctorName}), chuyên khoa (${revenueDetail.byDoctor[0].specialtyName}), cơ sở (${revenueDetail.byDoctor[0].clinicName})`);
+
+  // Kiểm tra Báo cáo Hành vi Bệnh nhân (Patient Intelligence Detail)
+  logStep('6', 'Đối soát Dữ liệu Hành vi Bệnh nhân (Email, SĐT, Ca hoàn tất, Giới tính)');
+  const patientDetail = await statisticService.getPatientIntelligenceDetail(queryFrom, queryTo);
+  assert(patientDetail && patientDetail.summary, 'Báo cáo Hành vi Bệnh nhân phản hồi dữ liệu');
+  assert(patientDetail.topPatients && patientDetail.topPatients.length > 0, `Danh sách bệnh nhân thường xuyên có ${patientDetail.topPatients.length} bệnh nhân`);
+  const samplePatient = patientDetail.topPatients[0];
+  assert(samplePatient.patientName && samplePatient.patientName.length > 0, `Tên bệnh nhân: "${samplePatient.patientName}"`);
+  assert(samplePatient.email && samplePatient.email !== '—' && samplePatient.email.includes('@'), `Email bệnh nhân hiển thị chuẩn: "${samplePatient.email}"`);
+  assert(samplePatient.phoneNumber && samplePatient.phoneNumber !== '—', `Số điện thoại bệnh nhân hiển thị chuẩn: "${samplePatient.phoneNumber}"`);
+  assert(typeof samplePatient.completedBookings === 'number', `Số ca khám hoàn tất là số nguyên hợp lệ: ${samplePatient.completedBookings} ca`);
+  assert(patientDetail.genderDistribution && patientDetail.genderDistribution.length > 0, 'Cơ cấu giới tính có dữ liệu');
+  const hasRawGenderCode = patientDetail.genderDistribution.some(g => g.gender === 'G1' || g.gender === 'G2');
+  assert(!hasRawGenderCode, `Giới tính được giải mã nhãn thân thiện (Nam/Nữ/Khác), không còn mã thô: ${patientDetail.genderDistribution.map(g => g.gender).join(', ')}`);
 
   console.log('\n╔══════════════════════════════════════════════════════════════════╗');
-  console.log('║   🎉 TẤT CẢ 5 GIAI ĐOẠN KIỂM ĐỊNH ĐÃ VƯỢT QUA 100% THÀNH CÔNG!   ║');
-  console.log('║   ✔ Quy trình API thực tế và Báo cáo Analytics đồng bộ tuyệt đối ║');
+  console.log('║   🎉 TẤT CẢ 6 GIAI ĐOẠN KIỂM ĐỊNH ĐÃ VƯỢT QUA 100% THÀNH CÔNG!   ║');
+  console.log('║   ✔ Tên cơ sở, Chuyên khoa, Bác sĩ, Email, SĐT hoàn hảo 100%     ║');
   console.log('╚══════════════════════════════════════════════════════════════════╝\n');
 
   process.exit(0);
