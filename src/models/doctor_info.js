@@ -13,6 +13,12 @@ module.exports = (sequelize, DataTypes) => {
     description:     { type: DataTypes.TEXT, allowNull: true },
     note:            { type: DataTypes.TEXT, allowNull: true },
     count:           { type: DataTypes.INTEGER, defaultValue: 0 },
+    // [Doctor Operations Center] Tùy chỉnh hoa hồng, trạng thái hoạt động & ngân hàng nhận thanh toán
+    commissionRate:    { type: DataTypes.DECIMAL(5, 2), defaultValue: 15.00 },
+    workingStatus:     { type: DataTypes.STRING(20), defaultValue: 'active' }, // 'active', 'paused', 'suspended'
+    bankAccountNumber: { type: DataTypes.STRING(50), allowNull: true },
+    bankName:          { type: DataTypes.STRING(100), allowNull: true },
+    bankAccountName:   { type: DataTypes.STRING(100), allowNull: true },
   });
   return Doctor_Info;
 };

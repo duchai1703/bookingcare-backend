@@ -275,6 +275,29 @@ db.PatientBankAccount.belongsTo(db.User, {
   as: 'patientData',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Doctor Operations Center] User (Doctor) ↔ Doctor_Settlement (1:N) & Doctor_Commission_Log (1:N)
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.Doctor_Settlement, {
+  foreignKey: 'doctorId',
+  as: 'doctorSettlements',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Settlement.belongsTo(db.User, {
+  foreignKey: 'doctorId',
+  as: 'doctorData',
+});
+
+db.User.hasMany(db.Doctor_Commission_Log, {
+  foreignKey: 'doctorId',
+  as: 'commissionLogs',
+  onDelete: 'CASCADE',
+});
+db.Doctor_Commission_Log.belongsTo(db.User, {
+  foreignKey: 'doctorId',
+  as: 'doctorData',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

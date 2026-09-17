@@ -394,6 +394,49 @@ const seed = async () => {
     }
     console.log(`✅ Reviews: ${reviewArray.length} records (auto-generated from S3 bookings)`);
 
+    // ═══════════ 12. DOCTOR SETTLEMENTS & COMMISSION LOGS (v5.0 - Operations Center) ═══════════
+    const settlementArray = [];
+    const commissionLogArray = [];
+
+    for (let i = 0; i < Math.min(25, doctorUsers.length); i++) {
+      const doc = doctorUsers[i];
+      // Kỳ trước: 1 đợt thanh toán đã hoàn tất
+      settlementArray.push({
+        doctorId: doc.id,
+        periodFrom: new Date(Date.now() - 45 * 86400000),
+        periodTo: new Date(Date.now() - 15 * 86400000),
+        grossRevenue: 15000000,
+        commissionRate: 15.0,
+        platformFee: 2250000,
+        netPayout: 12750000,
+        payoutStatus: 'paid',
+        paymentMethod: 'bank_transfer',
+        transactionRef: `PAY-VCB-${1000 + i}`,
+        note: `Quyết toán chi trả doanh thu đợt tháng trước cho bác sĩ #${doc.id}`,
+        paidAt: new Date(Date.now() - 14 * 86400000),
+      });
+
+      if (i % 2 === 0) {
+        commissionLogArray.push({
+          doctorId: doc.id,
+          oldRate: 15.0,
+          newRate: [10, 12, 18, 20][i % 4],
+          reason: 'Chính sách ưu đãi doanh số cao & đàm phán hợp đồng mới',
+          updatedByAdminId: 1,
+        });
+      }
+    }
+
+    if (settlementArray.length > 0) {
+      await db.Doctor_Settlement.bulkCreate(settlementArray);
+      console.log(`✅ Doctor Settlements: ${settlementArray.length} payout records`);
+    }
+
+    if (commissionLogArray.length > 0) {
+      await db.Doctor_Commission_Log.bulkCreate(commissionLogArray);
+      console.log(`✅ Doctor Commission Logs: ${commissionLogArray.length} audit records`);
+    }
+
     // ═══════════ SUMMARY ═══════════
     const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
     const totalRecords = allcodeData.length + 1 + doctorUsers.length + patientUsers.length

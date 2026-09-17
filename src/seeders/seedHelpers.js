@@ -327,12 +327,29 @@ function generateDoctorInfo(doctorId, idx, totalSpecialties, totalClinics) {
     'Nhận khám bảo hiểm y tế. Mang theo thẻ BHYT.',
     'Khám chiều thứ 3, 5. Sáng thứ 7.',
     'Khám từ thứ 2 đến thứ 7. Nghỉ Chủ nhật.',
-    'Ưu tiên bệnh nhân đặt lịch trước qua BookingCare.',
   ];
+
+  const commissionRates = [10, 12, 15, 18, 20];
+  const commissionRate = commissionRates[idx % commissionRates.length];
+  // 44 bác sĩ active, 4 bác sĩ paused, 2 bác sĩ suspended
+  const workingStatus = (idx === 4 || idx === 9 || idx === 14 || idx === 22)
+    ? 'paused'
+    : (idx === 18 || idx === 33)
+      ? 'suspended'
+      : 'active';
+
+  const banks = ['Vietcombank', 'MB Bank', 'Techcombank', 'BIDV', 'VPBank'];
+  const bankName = banks[idx % banks.length];
+  const bankAccountNumber = '9876' + String(100000 + idx);
 
   return {
     doctorId, specialtyId, clinicId, priceId, provinceId, paymentId,
     contentHTML, contentMarkdown, description, note: pick(notes), count: randInt(0, 50),
+    commissionRate,
+    workingStatus,
+    bankAccountNumber,
+    bankName,
+    bankAccountName: 'BÁC SĨ ' + idx,
   };
 }
 

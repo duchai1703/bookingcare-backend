@@ -8,6 +8,7 @@ const clinicController = require('../controllers/clinicController');
 const statisticController = require('../controllers/statisticController');
 const paymentController = require('../controllers/paymentController'); // [NEW LOGIC VNPAY-MAIL]
 const patientManageController = require('../controllers/patientManageController'); // [Phase F] Patient Workspace & Refund Flow
+const doctorManageController = require('../controllers/doctorManageController'); // [Doctor Operations Center]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -248,6 +249,16 @@ const routes = (app) => {
   app.get('/api/v1/admin/patients',                  verifyToken, checkAdminRole, patientManageController.handleGetPatientsList);
   app.get('/api/v1/admin/patients/:id/workspace',    verifyToken, checkAdminRole, patientManageController.handleGetPatientWorkspace);
   app.post('/api/v1/admin/patients/refund',          verifyToken, checkAdminRole, patientManageController.handleProcessRefund);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor Operations Center] DOCTOR ENTERPRISE OPERATIONS & SETTLEMENTS — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/doctors',                   verifyToken, checkAdminRole, doctorManageController.handleGetAdminDoctorsList);
+  app.get('/api/v1/admin/doctors/:id/workspace',     verifyToken, checkAdminRole, doctorManageController.handleGetAdminDoctorWorkspace);
+  app.post('/api/v1/admin/doctors/:id/commission',   verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorCommission);
+  app.post('/api/v1/admin/doctors/:id/status',       verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorWorkingStatus);
+  app.post('/api/v1/admin/doctors/:id/payout',       verifyToken, checkAdminRole, doctorManageController.handleCreateDoctorPayout);
+  app.post('/api/v1/admin/doctors/:id/schedules',    verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorScheduleSlots);
 };
 
 module.exports = routes;

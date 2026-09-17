@@ -45,6 +45,20 @@ const postBookAppointment = async (data, patientId) => {
   // DS-05 FIX: transaction để đảm bảo atomicity
   const t = await db.sequelize.transaction();
   try {
+    // [Doctor Operations Center] Kiểm tra trạng thái hoạt động của Bác sĩ
+    const doctorInfo = await db.Doctor_Info.findOne({
+      where: { doctorId: data.doctorId },
+      transaction: t,
+    });
+    if (doctorInfo && doctorInfo.workingStatus === 'paused') {
+      await t.rollback();
+      return { errCode: 6, message: 'Bác sĩ hiện đang tạm nghỉ nhận lịch khám. Vui lòng chọn bác sĩ khác hoặc liên hệ hỗ trợ!' };
+    }
+    if (doctorInfo && doctorInfo.workingStatus === 'suspended') {
+      await t.rollback();
+      return { errCode: 7, message: 'Bác sĩ hiện đã ngừng tiếp nhận lịch khám trên hệ thống!' };
+    }
+
     // REQ-AM-023: Kiểm tra lịch khám còn chỗ trống không
     const schedule = await db.Schedule.findOne({
       where: { doctorId: data.doctorId, date: data.date, timeType: data.timeType },
