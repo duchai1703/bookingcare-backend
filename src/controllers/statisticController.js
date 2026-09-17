@@ -165,6 +165,85 @@ const getRevenueBySpecialty = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase E] Executive Master & Detail Analytics Controllers
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /api/v1/statistics/executive-master?from=...&to=...&compareFrom=...&compareTo=...
+const getExecutiveMaster = async (req, res) => {
+  try {
+    const { from, to, compareFrom, compareTo } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ errCode: 1, message: 'Missing required params: from, to' });
+    }
+    const data = await statisticService.getExecutiveMaster(Number(from), Number(to), compareFrom ? Number(compareFrom) : null, compareTo ? Number(compareTo) : null);
+    return res.status(200).json({ errCode: 0, data });
+  } catch (err) {
+    console.error('>>> getExecutiveMaster error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/analytics/bookings?from=...&to=...
+const getBookingAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ errCode: 1, message: 'Missing required params: from, to' });
+    }
+    const data = await statisticService.getBookingAnalyticsDetail(Number(from), Number(to));
+    return res.status(200).json({ errCode: 0, data });
+  } catch (err) {
+    console.error('>>> getBookingAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/analytics/revenue?from=...&to=...
+const getRevenueAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ errCode: 1, message: 'Missing required params: from, to' });
+    }
+    const data = await statisticService.getRevenueAnalyticsDetail(Number(from), Number(to));
+    return res.status(200).json({ errCode: 0, data });
+  } catch (err) {
+    console.error('>>> getRevenueAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/analytics/doctors?from=...&to=...
+const getDoctorCapacityAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ errCode: 1, message: 'Missing required params: from, to' });
+    }
+    const data = await statisticService.getDoctorCapacityDetail(Number(from), Number(to));
+    return res.status(200).json({ errCode: 0, data });
+  } catch (err) {
+    console.error('>>> getDoctorCapacityAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
+// GET /api/v1/statistics/analytics/patients?from=...&to=...
+const getPatientAnalytics = async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ errCode: 1, message: 'Missing required params: from, to' });
+    }
+    const data = await statisticService.getPatientIntelligenceDetail(Number(from), Number(to));
+    return res.status(200).json({ errCode: 0, data });
+  } catch (err) {
+    console.error('>>> getPatientAnalytics error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Server error' });
+  }
+};
+
 module.exports = {
   getOverviewStatistics,
   getBookingsByDay,
@@ -177,4 +256,11 @@ module.exports = {
   getRevenueByDoctor,
   getRevenueByClinic,
   getRevenueBySpecialty,
+  // [Phase E]
+  getExecutiveMaster,
+  getBookingAnalytics,
+  getRevenueAnalytics,
+  getDoctorCapacityAnalytics,
+  getPatientAnalytics,
 };
+

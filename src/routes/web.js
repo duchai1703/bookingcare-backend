@@ -231,8 +231,18 @@ const routes = (app) => {
   app.get('/api/v1/statistics/revenue-by-doctor',     verifyToken, checkAdminRole, statisticController.getRevenueByDoctor);
   app.get('/api/v1/statistics/revenue-by-clinic',     verifyToken, checkAdminRole, statisticController.getRevenueByClinic);
   app.get('/api/v1/statistics/revenue-by-specialty',  verifyToken, checkAdminRole, statisticController.getRevenueBySpecialty);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase E] Executive Master Dashboard & Detail Analytics — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/statistics/executive-master',           verifyToken, checkAdminRole, statisticController.getExecutiveMaster);
+  app.get('/api/v1/statistics/analytics/bookings',         verifyToken, checkAdminRole, statisticController.getBookingAnalytics);
+  app.get('/api/v1/statistics/analytics/revenue',          verifyToken, checkAdminRole, statisticController.getRevenueAnalytics);
+  app.get('/api/v1/statistics/analytics/doctors',          verifyToken, checkAdminRole, statisticController.getDoctorCapacityAnalytics);
+  app.get('/api/v1/statistics/analytics/patients',         verifyToken, checkAdminRole, statisticController.getPatientAnalytics);
 };
 
 module.exports = routes;
+
 
 
