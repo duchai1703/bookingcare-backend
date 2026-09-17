@@ -1,5 +1,5 @@
-// src/controllers/doctorManageController.js
 const doctorManageService = require('../services/doctorManageService');
+const policyEngineService = require('../services/policyEngineService');
 
 const handleGetAdminDoctorsList = async (req, res) => {
   try {
@@ -106,6 +106,29 @@ const handleUpdateDoctorScheduleSlots = async (req, res) => {
   }
 };
 
+const handleGetDoctorFinancialTerms = async (req, res) => {
+  try {
+    const doctorId = req.params.id;
+    const result = await policyEngineService.getDoctorFinancialTerms(doctorId);
+    return res.status(200).json({ errCode: 0, data: result });
+  } catch (error) {
+    console.error('Error in handleGetDoctorFinancialTerms:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi server: ' + error.message });
+  }
+};
+
+const handleSetDoctorFinancialTerms = async (req, res) => {
+  try {
+    const doctorId = req.params.id;
+    const adminId = req.user?.id || 1;
+    const result = await policyEngineService.setDoctorFinancialTerms(doctorId, req.body, adminId);
+    return res.status(200).json({ errCode: 0, ...result });
+  } catch (error) {
+    console.error('Error in handleSetDoctorFinancialTerms:', error);
+    return res.status(400).json({ errCode: 1, errMessage: error.message || 'Lỗi thiết lập điều khoản hoa hồng' });
+  }
+};
+
 module.exports = {
   handleGetAdminDoctorsList,
   handleGetAdminDoctorWorkspace,
@@ -113,4 +136,6 @@ module.exports = {
   handleUpdateDoctorWorkingStatus,
   handleCreateDoctorPayout,
   handleUpdateDoctorScheduleSlots,
+  handleGetDoctorFinancialTerms,
+  handleSetDoctorFinancialTerms,
 };

@@ -258,6 +258,8 @@ const routes = (app) => {
   // ═══════════════════════════════════════════════════════════════════════
   app.get('/api/v1/admin/doctors',                   verifyToken, checkAdminRole, doctorManageController.handleGetAdminDoctorsList);
   app.get('/api/v1/admin/doctors/:id/workspace',     verifyToken, checkAdminRole, doctorManageController.handleGetAdminDoctorWorkspace);
+  app.get('/api/v1/admin/doctors/:id/financial-terms', verifyToken, checkAdminRole, doctorManageController.handleGetDoctorFinancialTerms);
+  app.post('/api/v1/admin/doctors/:id/financial-terms', verifyToken, checkAdminRole, doctorManageController.handleSetDoctorFinancialTerms);
   app.post('/api/v1/admin/doctors/:id/commission',   verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorCommission);
   app.post('/api/v1/admin/doctors/:id/status',       verifyToken, checkAdminRole, doctorManageController.handleUpdateDoctorWorkingStatus);
   app.post('/api/v1/admin/doctors/:id/payout',       verifyToken, checkAdminRole, doctorManageController.handleCreateDoctorPayout);

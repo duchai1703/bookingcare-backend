@@ -592,6 +592,207 @@ const seedDefaultPoliciesIfEmpty = async () => {
   return { seeded: true, count: 2 };
 };
 
+/**
+ * 10. Lấy thông tin điều khoản tài chính hiện hành của Bác sĩ (Kế thừa vs Thỏa thuận riêng) + Lịch sử
+ * @param {number} doctorId
+ */
+const getDoctorFinancialTerms = async (doctorId) => {
+  const docId = parseInt(doctorId, 10);
+  const now = new Date();
+
+  // 1. Tìm xem bác sĩ có thỏa thuận riêng ACTIVE còn hiệu lực không
+  const activeDoctorTerm = await resolveActivePolicy('REVENUE_SHARE', 'DOCTOR', docId, now);
+  const isCustom = !!(activeDoctorTerm && activeDoctorTerm.scopeType === 'DOCTOR' && activeDoctorTerm.scopeId === docId);
+
+  // 2. Tìm chính sách sàn GLOBAL mặc định
+  const globalDefault = await resolveActivePolicy('REVENUE_SHARE', 'GLOBAL', null, now);
+
+  // 3. Chính sách hoàn tiền kế thừa từ sàn
+  const refundRule = await resolveActivePolicy('REFUND_RULE', 'GLOBAL', null, now);
+
+  // 4. Lấy lịch sử tất cả các điều khoản của bác sĩ này (từ trước tới nay)
+  const history = await db.Financial_Policy.findAll({
+    where: {
+      scopeType: 'DOCTOR',
+      scopeId: docId,
+      policyType: 'REVENUE_SHARE',
+    },
+    order: [['version', 'DESC'], ['effectiveFrom', 'DESC']],
+    include: [
+      {
+        model: db.User,
+        as: 'creator',
+        attributes: ['id', 'firstName', 'lastName', 'email'],
+      },
+    ],
+  });
+
+  const parsedHistory = history.map((h) => {
+    const item = h.toJSON();
+    try {
+      item.parsedRules = typeof item.rules === 'string' ? JSON.parse(item.rules) : item.rules;
+    } catch (e) {
+      item.parsedRules = {};
+    }
+    return item;
+  });
+
+  const currentTerm = isCustom ? activeDoctorTerm : globalDefault;
+  const platformFeePercent = currentTerm?.parsedRules?.platformFeePercent ?? 15;
+  const doctorSharePercent = currentTerm?.parsedRules?.doctorSharePercent ?? 85;
+
+  return {
+    doctorId: docId,
+    isCustom, // true nếu là thỏa thuận riêng, false nếu kế thừa chính sách sàn
+    currentTerm: {
+      id: currentTerm?.id,
+      code: currentTerm?.code,
+      name: currentTerm?.name,
+      version: currentTerm?.version,
+      scopeType: currentTerm?.scopeType,
+      scopeId: currentTerm?.scopeId,
+      status: currentTerm?.status,
+      effectiveFrom: currentTerm?.effectiveFrom,
+      effectiveTo: currentTerm?.effectiveTo,
+      description: currentTerm?.description,
+      platformFeePercent,
+      doctorSharePercent,
+      isLocked: currentTerm?.isLocked,
+    },
+    globalDefault: {
+      id: globalDefault?.id,
+      code: globalDefault?.code,
+      version: globalDefault?.version,
+      platformFeePercent: globalDefault?.parsedRules?.platformFeePercent ?? 15,
+      doctorSharePercent: globalDefault?.parsedRules?.doctorSharePercent ?? 85,
+    },
+    refundRule: {
+      id: refundRule?.id,
+      code: refundRule?.code,
+      name: refundRule?.name,
+      tiers: refundRule?.parsedRules?.tiers || [],
+    },
+    history: parsedHistory,
+  };
+};
+
+/**
+ * 11. Thiết lập điều khoản tài chính hoa hồng cho Bác sĩ (Tạo thỏa thuận mới hoặc quay về chính sách sàn)
+ * @param {number} doctorId
+ * @param {object} data { isOverride: boolean, platformFeePercent, effectiveFrom, reason }
+ * @param {number} adminId
+ */
+const setDoctorFinancialTerms = async (doctorId, data, adminId) => {
+  const docId = parseInt(doctorId, 10);
+  const { isOverride, platformFeePercent, effectiveFrom, effectiveTo = null, reason = '' } = data;
+
+  const fromDate = effectiveFrom ? new Date(effectiveFrom) : new Date();
+  const toDate = effectiveTo ? new Date(effectiveTo) : null;
+
+  // 1. Tìm điều khoản riêng ACTIVE hiện tại của bác sĩ
+  const currentActive = await db.Financial_Policy.findOne({
+    where: {
+      scopeType: 'DOCTOR',
+      scopeId: docId,
+      policyType: 'REVENUE_SHARE',
+      status: 'ACTIVE',
+    },
+    order: [['version', 'DESC']],
+  });
+
+  // Trường hợp A: Admin chọn "Kế thừa chính sách sàn" (Hủy thỏa thuận riêng)
+  if (!isOverride) {
+    if (currentActive) {
+      // Chốt thời gian kết thúc của thỏa thuận cũ
+      await currentActive.update({
+        effectiveTo: fromDate,
+        status: 'SUPERSEDED',
+      });
+    }
+
+    // Cập nhật giá trị hiển thị Doctor_Info.commissionRate tương ứng chính sách sàn
+    const globalDefault = await resolveActivePolicy('REVENUE_SHARE', 'GLOBAL', null, fromDate);
+    const globalRate = globalDefault?.parsedRules?.platformFeePercent ?? 15.0;
+    await db.Doctor_Info.update(
+      { commissionRate: globalRate },
+      { where: { doctorId: docId } }
+    );
+
+    return {
+      success: true,
+      message: 'Đã hoàn nguyên bác sĩ về sử dụng chính sách hoa hồng tiêu chuẩn của sàn',
+      isCustom: false,
+    };
+  }
+
+  // Trường hợp B: Admin chọn "Thiết lập thỏa thuận riêng"
+  const rateNum = Math.min(100, Math.max(0, parseFloat(platformFeePercent) || 0));
+  const docShareNum = Math.max(0, 100 - rateNum);
+
+  const rulesObj = {
+    platformFeePercent: rateNum,
+    doctorSharePercent: docShareNum,
+    clinicSharePercent: 0,
+    note: reason || 'Thỏa thuận tỷ lệ phân bổ hoa hồng riêng cho bác sĩ',
+  };
+
+  let newTerm;
+  if (currentActive) {
+    // Chốt thỏa thuận cũ
+    await currentActive.update({
+      effectiveTo: fromDate,
+      status: 'SUPERSEDED',
+    });
+
+    // Tạo phiên bản mới v+1
+    newTerm = await db.Financial_Policy.create({
+      code: currentActive.code || `DCP_DOC_${docId}`,
+      policyType: 'REVENUE_SHARE',
+      name: `Thỏa thuận Hoa hồng Bác sĩ #${docId} (v${currentActive.version + 1})`,
+      version: currentActive.version + 1,
+      scopeType: 'DOCTOR',
+      scopeId: docId,
+      effectiveFrom: fromDate,
+      effectiveTo: toDate,
+      status: 'ACTIVE',
+      rules: JSON.stringify(rulesObj),
+      description: reason || `Điều chỉnh thỏa thuận hợp tác bác sĩ #${docId}`,
+      isLocked: false,
+      createdById: adminId,
+    });
+  } else {
+    // Tạo mới phiên bản v1
+    newTerm = await db.Financial_Policy.create({
+      code: `DCP_DOC_${docId}`,
+      policyType: 'REVENUE_SHARE',
+      name: `Thỏa thuận Hoa hồng Bác sĩ #${docId} (v1)`,
+      version: 1,
+      scopeType: 'DOCTOR',
+      scopeId: docId,
+      effectiveFrom: fromDate,
+      effectiveTo: toDate,
+      status: 'ACTIVE',
+      rules: JSON.stringify(rulesObj),
+      description: reason || `Thiết lập thỏa thuận hợp tác ban đầu bác sĩ #${docId}`,
+      isLocked: false,
+      createdById: adminId,
+    });
+  }
+
+  // Cập nhật giá trị hiển thị Doctor_Info.commissionRate cho tương thích ngược
+  await db.Doctor_Info.update(
+    { commissionRate: rateNum },
+    { where: { doctorId: docId } }
+  );
+
+  return {
+    success: true,
+    message: `Đã thiết lập điều khoản thỏa thuận hoa hồng riêng (${rateNum}% sàn / ${docShareNum}% bác sĩ) thành công`,
+    isCustom: true,
+    data: newTerm,
+  };
+};
+
 module.exports = {
   resolveActivePolicy,
   freezeBookingFinancials,
@@ -601,5 +802,7 @@ module.exports = {
   updatePolicyDraft,
   getPoliciesList,
   getPolicyDetail,
-  seedDefaultPoliciesIfEmpty
+  seedDefaultPoliciesIfEmpty,
+  getDoctorFinancialTerms,
+  setDoctorFinancialTerms,
 };

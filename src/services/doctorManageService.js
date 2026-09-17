@@ -4,6 +4,7 @@ const db = require('../models');
 const { Op } = require('sequelize');
 const moment = require('moment');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
+const policyEngineService = require('./policyEngineService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. MASTER: Lấy danh sách bác sĩ kèm các chỉ số vận hành, tài chính & bộ lọc
@@ -51,7 +52,9 @@ const getAdminDoctorsList = async ({
          COUNT(*)::INT AS "totalBookings",
          COUNT(CASE WHEN "statusId" = 'S3' THEN 1 END)::INT AS "completedBookings",
          COUNT(CASE WHEN "statusId" = 'S4' THEN 1 END)::INT AS "cancelledBookings",
-         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0)::FLOAT AS "grossRevenue"
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0)::FLOAT AS "grossRevenue",
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "platformFee" ELSE 0 END), 0)::FLOAT AS "totalPlatformFeeFrozen",
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "doctorShare" ELSE 0 END), 0)::FLOAT AS "totalDoctorShareFrozen"
        FROM "Bookings"
        GROUP BY "doctorId"`,
       { type: db.sequelize.QueryTypes.SELECT }
@@ -99,8 +102,12 @@ const getAdminDoctorsList = async ({
       const commissionRate = parseFloat(docInfo.commissionRate) || 15.0;
       const workingStatus = docInfo.workingStatus || 'active';
       const grossRevenue = parseFloat(rev.grossRevenue) || 0;
-      const platformFee = Math.round(grossRevenue * (commissionRate / 100));
-      const netRevenue = Math.max(0, grossRevenue - platformFee);
+      const frozenPlatformFee = parseFloat(rev.totalPlatformFeeFrozen) || 0;
+      const frozenDoctorShare = parseFloat(rev.totalDoctorShareFrozen) || 0;
+
+      // Ưu tiên tổng hợp từ snapshot đã đóng băng, fallback tỷ lệ cũ nếu là booking lịch sử
+      const platformFee = frozenPlatformFee > 0 ? Math.round(frozenPlatformFee) : Math.round(grossRevenue * (commissionRate / 100));
+      const netRevenue = frozenDoctorShare > 0 ? Math.round(frozenDoctorShare) : Math.max(0, grossRevenue - platformFee);
       const pendingPayout = Math.max(0, netRevenue - paid);
 
       const utilizationRate = sched.capacitySlots > 0
@@ -299,13 +306,15 @@ const getAdminDoctorWorkspace = async (doctorId) => {
     const commissionRate = parseFloat(docInfo.commissionRate) || 15.0;
     const workingStatus = docInfo.workingStatus || 'active';
 
-    // a. KPIs trọn đời
+    // a. KPIs trọn đời — tổng hợp từ Ledger đã đóng băng
     const [stats] = await db.sequelize.query(
       `SELECT 
          COUNT(*)::INT AS "totalBookings",
          COUNT(CASE WHEN "statusId" = 'S3' THEN 1 END)::INT AS "completedBookings",
          COUNT(CASE WHEN "statusId" = 'S4' THEN 1 END)::INT AS "cancelledBookings",
          COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0)::FLOAT AS "grossRevenue",
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "platformFee" ELSE 0 END), 0)::FLOAT AS "totalPlatformFeeFrozen",
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "doctorShare" ELSE 0 END), 0)::FLOAT AS "totalDoctorShareFrozen",
          COALESCE(SUM("refundAmount"), 0)::FLOAT AS "totalRefund"
        FROM "Bookings"
        WHERE "doctorId" = :doctorId`,
@@ -313,8 +322,12 @@ const getAdminDoctorWorkspace = async (doctorId) => {
     );
 
     const grossRevenue = parseFloat(stats?.grossRevenue || 0);
-    const platformFee = Math.round(grossRevenue * (commissionRate / 100));
-    const netRevenue = Math.max(0, grossRevenue - platformFee);
+    const frozenPlatform = parseFloat(stats?.totalPlatformFeeFrozen || 0);
+    const frozenDoctor = parseFloat(stats?.totalDoctorShareFrozen || 0);
+
+    // Ưu tiên số liệu đóng băng bất biến
+    const platformFee = frozenPlatform > 0 ? Math.round(frozenPlatform) : Math.round(grossRevenue * (commissionRate / 100));
+    const netRevenue = frozenDoctor > 0 ? Math.round(frozenDoctor) : Math.max(0, grossRevenue - platformFee);
 
     // b. Tổng đã thanh toán (Doctor_Settlements)
     const settlements = await db.Doctor_Settlement.findAll({
@@ -486,6 +499,7 @@ const getAdminDoctorWorkspace = async (doctorId) => {
         })),
         settlements,
         commissionLogs,
+        financialTerms: await policyEngineService.getDoctorFinancialTerms(docId),
       },
     };
   } catch (error) {
