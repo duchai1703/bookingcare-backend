@@ -12,6 +12,7 @@ module.exports = (sequelize, DataTypes) => {
     roleId:        { type: DataTypes.STRING(10), allowNull: false },
     image:         { type: DataTypes.BLOB('long'), allowNull: true },
     positionId:    { type: DataTypes.STRING(10), allowNull: true },
+    birthday:      { type: DataTypes.STRING(20), allowNull: true }, // Ngày sinh bệnh nhân "YYYY-MM-DD" hoặc timestamp
     // [v3.0] tokenVersion: Tăng khi đổi mật khẩu → vô hiệu hóa mọi JWT đăng nhập cũ
     tokenVersion:  { type: DataTypes.INTEGER, defaultValue: 0 },
   });

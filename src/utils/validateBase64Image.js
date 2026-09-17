@@ -15,28 +15,28 @@ const validateBase64Image = (base64String) => {
     return { isValid: false, error: 'Dữ liệu ảnh không hợp lệ (rỗng hoặc sai kiểu)!' };
   }
 
-  // --- Bước 1: Kiểm tra định dạng MIME type từ data URI ---
+  // --- Bước 1: Kiểm tra định dạng MIME type từ data URI (nếu có) ---
   // Format: data:image/jpeg;base64,/9j/4AAQ...
-  const dataUriMatch = base64String.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+  let base64Data = base64String;
+  if (base64String.startsWith('data:')) {
+    const dataUriMatch = base64String.match(/^data:(image\/[a-zA-Z+]+);base64,/);
+    if (!dataUriMatch) {
+      return {
+        isValid: false,
+        error: 'Ảnh phải có định dạng data URI hợp lệ (data:image/...;base64,...)!',
+      };
+    }
 
-  if (!dataUriMatch) {
-    return {
-      isValid: false,
-      error: 'Ảnh phải có định dạng data URI hợp lệ (data:image/...;base64,...)!',
-    };
+    const mimeType = dataUriMatch[1].toLowerCase();
+    if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
+      return {
+        isValid: false,
+        error: `Định dạng ảnh không được phép: "${mimeType}". Chỉ chấp nhận: ${ALLOWED_MIME_TYPES.join(', ')}.`,
+      };
+    }
+
+    base64Data = base64String.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
   }
-
-  const mimeType = dataUriMatch[1].toLowerCase();
-
-  if (!ALLOWED_MIME_TYPES.includes(mimeType)) {
-    return {
-      isValid: false,
-      error: `Định dạng ảnh không được phép: "${mimeType}". Chỉ chấp nhận: ${ALLOWED_MIME_TYPES.join(', ')}.`,
-    };
-  }
-
-  // --- Bước 2: Tách phần base64 data thuần ---
-  const base64Data = base64String.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
 
   // Kiểm tra base64 hợp lệ (chỉ chứa ký tự base64)
   if (!/^[A-Za-z0-9+/]+=*$/.test(base64Data)) {

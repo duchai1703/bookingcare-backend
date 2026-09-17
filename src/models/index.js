@@ -262,6 +262,19 @@ db.BookingAttachment.belongsTo(db.User, {
   as: 'patientData',
 });
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase B] User (Patient) ↔ PatientBankAccount (1:N)
+// ─────────────────────────────────────────────────────
+db.User.hasMany(db.PatientBankAccount, {
+  foreignKey: 'patientId',
+  as: 'bankAccounts',
+  onDelete: 'CASCADE',
+});
+db.PatientBankAccount.belongsTo(db.User, {
+  foreignKey: 'patientId',
+  as: 'patientData',
+});
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

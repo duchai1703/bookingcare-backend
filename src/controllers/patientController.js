@@ -197,6 +197,66 @@ const handleDeleteAttachment = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Phase B] PATIENT BANK ACCOUNTS
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /api/v1/patient/bank-accounts
+const handleGetBankAccounts = async (req, res) => {
+  try {
+    const result = await patientService.getPatientBankAccounts(req.user.id);
+    const httpStatus = result.errCode === 0 ? 200 : 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleGetBankAccounts error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// POST /api/v1/patient/bank-accounts
+const handleAddBankAccount = async (req, res) => {
+  try {
+    const result = await patientService.addPatientBankAccount(req.user.id, req.body);
+    const httpStatus = result.errCode === 0 ? 201 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleAddBankAccount error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// PUT /api/v1/patient/bank-accounts/:id/primary
+const handleSetPrimaryBankAccount = async (req, res) => {
+  try {
+    const accountId = parseInt(req.params.id);
+    if (!accountId || isNaN(accountId)) {
+      return res.status(400).json({ errCode: 1, message: 'ID tài khoản không hợp lệ!' });
+    }
+    const result = await patientService.setPrimaryBankAccount(req.user.id, accountId);
+    const httpStatus = result.errCode === 0 ? 200 : (result.errCode === 404 ? 404 : 400);
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleSetPrimaryBankAccount error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// DELETE /api/v1/patient/bank-accounts/:id
+const handleDeleteBankAccount = async (req, res) => {
+  try {
+    const accountId = parseInt(req.params.id);
+    if (!accountId || isNaN(accountId)) {
+      return res.status(400).json({ errCode: 1, message: 'ID tài khoản không hợp lệ!' });
+    }
+    const result = await patientService.deletePatientBankAccount(req.user.id, accountId);
+    const httpStatus = result.errCode === 0 ? 200 : (result.errCode === 404 ? 404 : 400);
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleDeleteBankAccount error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -209,5 +269,10 @@ module.exports = {
   handleUploadAttachment,
   handleDownloadAttachment,
   handleDeleteAttachment,
+  handleGetBankAccounts,
+  handleAddBankAccount,
+  handleSetPrimaryBankAccount,
+  handleDeleteBankAccount,
 };
+
 

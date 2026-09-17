@@ -152,6 +152,9 @@ const postBookAppointment = async (data, patientId) => {
       patientAddress: data.address || '',
       patientGender: data.gender || '',
       patientBirthday: data.birthday || '',
+      bankAccountNumber: data.bankAccountNumber || '',
+      bankAccountName: data.bankAccountName || '',
+      bankName: data.bankName || '',
     }, { transaction: t }); // DS-05
 
     // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S1.5)
@@ -343,6 +346,15 @@ const getPatientProfile = async (patientId) => {
       include: [
         // Include Allcode để lấy tên giới tính (Giới tính: Nam/Nữ)
         { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        {
+          model: db.PatientBankAccount,
+          as: 'bankAccounts',
+          attributes: ['id', 'bankName', 'accountNumber', 'accountHolderName', 'isPrimary', 'createdAt'],
+        },
+      ],
+      order: [
+        [{ model: db.PatientBankAccount, as: 'bankAccounts' }, 'isPrimary', 'DESC'],
+        [{ model: db.PatientBankAccount, as: 'bankAccounts' }, 'createdAt', 'DESC'],
       ],
     });
 
@@ -380,22 +392,38 @@ const editPatientProfile = async (data, patientId) => {
     // [SECURITY] XSS Sanitize — Làm sạch TẤT CẢ input text trước khi lưu DB
     // Chặn Stored XSS tại Backend (Defense-in-Depth Layer 1)
     // ═══════════════════════════════════════════════════════════
-    if (data.firstName) user.firstName = sanitizeContent(data.firstName);
-    if (data.lastName) user.lastName = sanitizeContent(data.lastName);
-    if (data.address) user.address = sanitizeContent(data.address);
-    if (data.phoneNumber) user.phoneNumber = data.phoneNumber;
-    if (data.gender) user.gender = data.gender;
+    if (data.fullName && !data.firstName) {
+      const parts = data.fullName.trim().split(' ');
+      if (parts.length > 1) {
+        user.firstName = sanitizeContent(parts.slice(1).join(' '));
+        user.lastName = sanitizeContent(parts[0]);
+      } else {
+        user.firstName = sanitizeContent(data.fullName.trim());
+        user.lastName = '';
+      }
+    } else {
+      if (data.firstName) user.firstName = sanitizeContent(data.firstName);
+      if (data.lastName !== undefined) user.lastName = sanitizeContent(data.lastName);
+    }
+
+    if (data.birthday !== undefined) user.birthday = data.birthday;
+    if (data.address !== undefined) user.address = sanitizeContent(data.address);
+    if (data.phoneNumber !== undefined) user.phoneNumber = data.phoneNumber;
+    if (data.gender !== undefined) user.gender = data.gender;
 
     // ═══════════════════════════════════════════════════════════
     // [SECURITY] Image Validation — Validate MIME + size trước khi lưu
     // ═══════════════════════════════════════════════════════════
     if (data.image) {
-      const imgResult = validateBase64Image(data.image);
-      if (!imgResult.isValid) {
-        return { errCode: 4, message: imgResult.error };
+      const currentBlobBase64 = user.image ? convertBlobToBase64(user.image) : '';
+      // Chỉ cập nhật nếu ảnh khác ảnh hiện tại
+      if (data.image !== currentBlobBase64) {
+        const imgResult = validateBase64Image(data.image);
+        if (!imgResult.isValid) {
+          return { errCode: 4, message: imgResult.error };
+        }
+        user.image = stripBase64Prefix(data.image);
       }
-      // ✅ Strip prefix trước khi lưu vào BLOB (tránh Double-Encoding)
-      user.image = stripBase64Prefix(data.image);
     }
 
     await user.save();
@@ -407,6 +435,7 @@ const editPatientProfile = async (data, patientId) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
+      birthday: user.birthday,
       phoneNumber: user.phoneNumber,
       address: user.address,
       gender: user.gender,
@@ -905,6 +934,159 @@ const verifyDoctorCheckin = async (qrToken, doctorId) => {
   }
 };
 
+// ─────────────────────────────────────────────────────
+// 8. PATIENT BANK ACCOUNTS — Quản lý tài khoản hoàn tiền
+// ─────────────────────────────────────────────────────
+const getPatientBankAccounts = async (patientId) => {
+  try {
+    const accounts = await db.PatientBankAccount.findAll({
+      where: { patientId },
+      order: [['isPrimary', 'DESC'], ['createdAt', 'DESC']],
+    });
+    const formatted = accounts.map((a) => {
+      const j = a.toJSON();
+      j.accountHolder = j.accountHolderName || j.accountHolder;
+      return j;
+    });
+    return { errCode: 0, message: 'OK', data: formatted };
+  } catch (err) {
+    console.error('>>> getPatientBankAccounts error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const addPatientBankAccount = async (patientId, data) => {
+  try {
+    const bankName = data.bankName;
+    const accountNumber = data.accountNumber;
+    const accountHolder = data.accountHolderName || data.accountHolder;
+    const isPrimary = data.isPrimary;
+    if (!bankName || !accountNumber || !accountHolder) {
+      return { errCode: 1, message: 'Thiếu thông tin tài khoản ngân hàng!' };
+    }
+
+    const t = await db.sequelize.transaction();
+    try {
+      const existingCount = await db.PatientBankAccount.count({
+        where: { patientId },
+        transaction: t,
+      });
+
+      // Nếu là tài khoản đầu tiên, tự động cho là primary
+      const shouldBePrimary = existingCount === 0 || !!isPrimary;
+
+      if (shouldBePrimary) {
+        // Hủy primary các tài khoản khác
+        await db.PatientBankAccount.update(
+          { isPrimary: false },
+          { where: { patientId }, transaction: t }
+        );
+      }
+
+      const newAccount = await db.PatientBankAccount.create({
+        patientId,
+        bankName: sanitizeContent(bankName),
+        accountNumber: sanitizeContent(accountNumber.trim()),
+        accountHolderName: sanitizeContent(accountHolder.toUpperCase().trim()),
+        isPrimary: shouldBePrimary,
+      }, { transaction: t });
+
+      await t.commit();
+      const resData = newAccount.toJSON();
+      resData.accountHolder = resData.accountHolderName;
+      return { errCode: 0, message: 'Thêm tài khoản thành công!', data: resData };
+    } catch (txErr) {
+      await t.rollback();
+      throw txErr;
+    }
+  } catch (err) {
+    console.error('>>> addPatientBankAccount error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const setPrimaryBankAccount = async (patientId, accountId) => {
+  try {
+    if (!accountId) return { errCode: 1, message: 'Thiếu ID tài khoản!' };
+
+    const t = await db.sequelize.transaction();
+    try {
+      const target = await db.PatientBankAccount.findOne({
+        where: { id: accountId, patientId },
+        transaction: t,
+      });
+
+      if (!target) {
+        await t.rollback();
+        return { errCode: 404, message: 'Không tìm thấy tài khoản ngân hàng!' };
+      }
+
+      // Đặt tất cả thành false
+      await db.PatientBankAccount.update(
+        { isPrimary: false },
+        { where: { patientId }, transaction: t }
+      );
+
+      // Đặt target thành true
+      target.isPrimary = true;
+      await target.save({ transaction: t });
+
+      await t.commit();
+      return { errCode: 0, message: 'Đã đặt làm tài khoản nhận hoàn tiền chính!', data: target };
+    } catch (txErr) {
+      await t.rollback();
+      throw txErr;
+    }
+  } catch (err) {
+    console.error('>>> setPrimaryBankAccount error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+const deletePatientBankAccount = async (patientId, accountId) => {
+  try {
+    if (!accountId) return { errCode: 1, message: 'Thiếu ID tài khoản!' };
+
+    const t = await db.sequelize.transaction();
+    try {
+      const target = await db.PatientBankAccount.findOne({
+        where: { id: accountId, patientId },
+        transaction: t,
+      });
+
+      if (!target) {
+        await t.rollback();
+        return { errCode: 404, message: 'Không tìm thấy tài khoản ngân hàng!' };
+      }
+
+      const wasPrimary = target.isPrimary;
+      await target.destroy({ transaction: t });
+
+      // Nếu vừa xóa tài khoản primary, tự động chọn tài khoản còn lại gần nhất làm primary
+      if (wasPrimary) {
+        const nextAccount = await db.PatientBankAccount.findOne({
+          where: { patientId },
+          order: [['createdAt', 'DESC']],
+          transaction: t,
+        });
+        if (nextAccount) {
+          nextAccount.isPrimary = true;
+          await nextAccount.save({ transaction: t });
+        }
+      }
+
+      await t.commit();
+      return { errCode: 0, message: 'Xóa tài khoản thành công!' };
+    } catch (txErr) {
+      await t.rollback();
+      throw txErr;
+    }
+  } catch (err) {
+    console.error('>>> deletePatientBankAccount error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -918,5 +1100,10 @@ module.exports = {
   downloadBookingAttachment,
   deleteBookingAttachment,
   verifyDoctorCheckin,
+  getPatientBankAccounts,
+  addPatientBankAccount,
+  setPrimaryBankAccount,
+  deletePatientBankAccount,
 };
+
 

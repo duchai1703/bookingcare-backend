@@ -142,6 +142,12 @@ const routes = (app) => {
   app.put('/api/v1/patient/profile',          verifyToken, checkPatientRole, patientController.editPatientProfile);
   app.put('/api/v1/patient/change-password',  verifyToken, checkPatientRole, patientController.handleChangePassword);
 
+  // [Phase B] Patient Bank Accounts (Tài khoản nhận tiền hoàn)
+  app.get('/api/v1/patient/bank-accounts',             verifyToken, checkPatientRole, patientController.handleGetBankAccounts);
+  app.post('/api/v1/patient/bank-accounts',            verifyToken, checkPatientRole, patientController.handleAddBankAccount);
+  app.put('/api/v1/patient/bank-accounts/:id/primary', verifyToken, checkPatientRole, patientController.handleSetPrimaryBankAccount);
+  app.delete('/api/v1/patient/bank-accounts/:id',      verifyToken, checkPatientRole, patientController.handleDeleteBankAccount);
+
   // Booking APIs (Design Doc v3.0, Mục 4.1.2)
   // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch
   app.post('/api/v1/bookings',                    verifyToken, checkPatientRole, patientController.postBookAppointment);
