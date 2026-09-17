@@ -655,14 +655,39 @@ const cancelBooking = async (data, patientId) => {
       booking.statusId = 'S4';
 
       // ═══════════════════════════════════════════════════════════
-      // [NEW LOGIC VNPAY-MAIL]: Gán paymentStatus phù hợp
+      // [Chính sách Hoàn tiền dựa trên thời gian từ lúc đặt tới lúc hủy]
+      // ═══════════════════════════════════════════════════════════
+      const now = new Date();
+      booking.cancelledAt = now;
+
+      const createdAtTime = booking.createdAt ? new Date(booking.createdAt).getTime() : now.getTime();
+      const hoursSinceCreation = Math.max(0, (now.getTime() - createdAtTime) / (1000 * 60 * 60));
+
+      let calculatedRefundRate = 100;
+      if (hoursSinceCreation <= 24) {
+        calculatedRefundRate = 100;
+      } else if (hoursSinceCreation <= 72) {
+        calculatedRefundRate = 75;
+      } else {
+        calculatedRefundRate = 50;
+      }
+
+      booking.refundRate = calculatedRefundRate;
+      const price = parseInt(booking.bookingPrice, 10) || 0;
+      const calculatedRefundAmount = Math.round((price * calculatedRefundRate) / 100);
+      booking.refundAmount = calculatedRefundAmount;
+
+      // ═══════════════════════════════════════════════════════════
+      // [Gán paymentStatus & refundStatus phù hợp]
       // ═══════════════════════════════════════════════════════════
       if (oldStatus === 'S1.5') {
-        // Ghost Booking fix: gán cancelled để IPN không thể ghi đè S2
         booking.paymentStatus = 'cancelled';
-      } else if (oldStatus === 'S2') {
-        // Lỗi 12: Trách nhiệm tài chính — Admin cần hoàn tiền thủ công
+        booking.refundStatus = 'none';
+      } else if (oldStatus === 'S2' || booking.paymentStatus === 'paid') {
         booking.paymentStatus = 'refund_pending';
+        booking.refundStatus = calculatedRefundAmount > 0 ? 'pending' : 'none';
+      } else {
+        booking.refundStatus = 'none';
       }
 
       await booking.save({ transaction: t });
@@ -691,7 +716,17 @@ const cancelBooking = async (data, patientId) => {
       // (Không trừ slot nếu oldStatus = 'S1' vì S1 chưa tăng slot)
 
       await t.commit();
-      return { errCode: 0, message: 'Hủy lịch hẹn thành công!' };
+      return {
+        errCode: 0,
+        message: 'Hủy lịch hẹn thành công!',
+        data: {
+          bookingId: booking.id,
+          cancelledAt: booking.cancelledAt,
+          refundRate: booking.refundRate,
+          refundAmount: booking.refundAmount,
+          refundStatus: booking.refundStatus,
+        },
+      };
     } catch (txErr) {
       await t.rollback();
       throw txErr;

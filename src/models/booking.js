@@ -38,6 +38,7 @@ module.exports = (sequelize, DataTypes) => {
     refundAmount:      { type: DataTypes.INTEGER,      allowNull: true },  // Số tiền hoàn (VNĐ)
     // refundStatus values: 'none' | 'pending' | 'done'
     refundStatus:      { type: DataTypes.STRING(20),   allowNull: true, defaultValue: 'none' },
+    cancelledAt:       { type: DataTypes.DATE,         allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
