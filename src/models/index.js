@@ -445,6 +445,7 @@ db.Doctor_Onboarding_Request.belongsTo(db.Allcode, {
   constraints: false,
 });
 
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 
