@@ -234,6 +234,12 @@ const routes = (app) => {
   app.get('/api/v1/doctor/income-workspace', verifyToken, checkDoctorRole, doctorController.getDoctorIncomeWorkspace);
   app.put('/api/v1/bookings/:bookingId/medical-info', verifyToken, checkDoctorRole, doctorController.updateMedicalInfo);
 
+  // [Encounter Workspace]
+  app.get('/api/v1/doctor/encounters/:bookingId', verifyToken, checkDoctorRole, doctorController.getDoctorEncounter);
+  app.put('/api/v1/doctor/encounters/:bookingId', verifyToken, checkDoctorRole, doctorController.saveDoctorEncounter);
+  app.post('/api/v1/doctor/encounters/:bookingId/attachments', verifyToken, checkDoctorRole, doctorController.uploadEncounterAttachments);
+  app.delete('/api/v1/doctor/encounters/:bookingId/attachments/:attachmentId', verifyToken, checkDoctorRole, doctorController.deleteEncounterAttachment);
+
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase B] STATISTICS mở rộng — Admin R1
   // ═══════════════════════════════════════════════════════════════════════

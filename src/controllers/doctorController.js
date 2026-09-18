@@ -269,6 +269,54 @@ const updateMedicalInfo = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
+// [Encounter Workspace] getDoctorEncounter / saveDoctorEncounter
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorEncounter = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const bookingId = parseInt(req.params.bookingId, 10);
+    const result = await doctorService.getDoctorEncounter(bookingId, doctorId);
+    return res.status(result.errCode === 0 ? 200 : 404).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+const saveDoctorEncounter = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const bookingId = parseInt(req.params.bookingId, 10);
+    const result = await doctorService.saveDoctorEncounter(bookingId, doctorId, req.body);
+    return res.status(result.errCode === 0 ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+const uploadEncounterAttachments = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const bookingId = parseInt(req.params.bookingId, 10);
+    const result = await doctorService.uploadEncounterAttachments(bookingId, doctorId, req.body.attachments);
+    return res.status(result.errCode === 0 ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+const deleteEncounterAttachment = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const bookingId = parseInt(req.params.bookingId, 10);
+    const attachmentId = parseInt(req.params.attachmentId, 10);
+    const result = await doctorService.deleteEncounterAttachment(bookingId, doctorId, attachmentId);
+    return res.status(result.errCode === 0 ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 // [Phase B] getDoctorOwnProfile / updateDoctorOwnProfile
 // ═══════════════════════════════════════════════════════════════════════
 const getDoctorOwnProfile = async (req, res) => {
@@ -401,5 +449,10 @@ module.exports = {
   toggleCloseScheduleSlot,
   // [Doctor Financial Workspace]
   getDoctorIncomeWorkspace,
+  // [Encounter Workspace]
+  getDoctorEncounter,
+  saveDoctorEncounter,
+  uploadEncounterAttachments,
+  deleteEncounterAttachment,
 };
 

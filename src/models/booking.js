@@ -43,11 +43,15 @@ module.exports = (sequelize, DataTypes) => {
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
     // ═══════════════════════════════════════════════════════════════════════
+    chiefComplaint: { type: DataTypes.TEXT, allowNull: true },        // Lý do khám bệnh
     symptoms: { type: DataTypes.TEXT, allowNull: true },          // Triệu chứng bệnh nhân báo
     clinicalNotes: { type: DataTypes.TEXT, allowNull: true },          // Ghi chú lâm sàng bác sĩ
     diagnosis: { type: DataTypes.TEXT, allowNull: true },          // Chẩn đoán
+    treatmentPlan: { type: DataTypes.TEXT, allowNull: true },          // Kế hoạch điều trị
     followUpDate: { type: DataTypes.STRING(20), allowNull: true },    // Ngày tái khám "YYYY-MM-DD"
     careInstructions: { type: DataTypes.TEXT, allowNull: true },          // Hướng dẫn chăm sóc tại nhà
+    encounterStatus: { type: DataTypes.STRING(20), allowNull: true, defaultValue: 'not_started' }, // 'not_started' | 'in_progress' | 'completed'
+    lastSavedAt: { type: DataTypes.DATE, allowNull: true },            // Thời điểm tự động lưu gần nhất
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase B] Mã QR khám bệnh bảo mật (Check-in Doctor Mobile App)

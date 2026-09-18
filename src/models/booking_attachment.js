@@ -31,6 +31,24 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.TEXT, // Lưu chuỗi base64 của tệp đính kèm
       allowNull: false,
     },
+    category: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+      defaultValue: 'record', // 'xray' | 'lab' | 'mri' | 'prescription' | 'record' | 'other'
+    },
+    uploadedBy: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: 'DOCTOR', // 'DOCTOR' | 'PATIENT'
+    },
+    examinationDate: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+    },
+    note: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   }, {
     tableName: 'Booking_Attachments',
     timestamps: true,

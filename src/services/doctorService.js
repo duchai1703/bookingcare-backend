@@ -1,6 +1,7 @@
 // src/services/doctorService.js
 // ✅ [SECURITY-FIX] Sanitize HTML trước khi lưu DB (Defense-in-Depth Layer 1)
 // ✅ [FIX-IMAGE] Strip prefix trước khi lưu, convert BLOB khi đọc
+const { Op } = require('sequelize');
 const db = require('../models');
 const emailService = require('./emailService');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
@@ -734,6 +735,275 @@ const updateMedicalInfo = async (bookingId, doctorId, data) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
+// [Encounter Workspace] getDoctorEncounter — Lấy chi tiết phiên khám
+// GET /api/v1/doctor/encounters/:bookingId
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorEncounter = async (bookingId, doctorId) => {
+  try {
+    const booking = await db.Booking.findOne({
+      where: { id: bookingId, doctorId },
+      include: [
+        {
+          model: db.User,
+          as: 'patientData',
+          attributes: ['id', 'email', 'firstName', 'lastName', 'address', 'gender', 'phoneNumber', 'image'],
+          include: [
+            { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          ],
+        },
+        {
+          model: db.User,
+          as: 'doctorBookingData',
+          attributes: ['id', 'firstName', 'lastName'],
+          include: [
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              include: [
+                { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+              ],
+            },
+          ],
+        },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        {
+          model: db.BookingMedicine,
+          as: 'bookingMedicines',
+          include: [
+            { model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'activeIngredient', 'unit', 'concentration'] },
+          ],
+        },
+        {
+          model: db.BookingAttachment,
+          as: 'attachments',
+          attributes: ['id', 'fileName', 'fileType', 'fileSize', 'fileData', 'category', 'uploadedBy', 'examinationDate', 'note', 'createdAt'],
+        },
+      ],
+    });
+
+    if (!booking) {
+      return { errCode: 1, message: 'Không tìm thấy ca khám hoặc bạn không có quyền truy cập.' };
+    }
+
+    const plain = booking.toJSON ? booking.toJSON() : booking;
+
+    // Tính tuổi bệnh nhân
+    let patientAge = null;
+    if (plain.patientBirthday) {
+      const birthYear = parseInt(plain.patientBirthday.substring(0, 4), 10);
+      if (!isNaN(birthYear)) {
+        patientAge = new Date().getFullYear() - birthYear;
+      }
+    }
+    if (!patientAge) patientAge = 35; // Giá trị ngầm định nếu chưa có năm sinh
+
+    // Lấy lịch sử các lần khám trước đó của bệnh nhân
+    const historyBookings = await db.Booking.findAll({
+      where: {
+        patientId: plain.patientId,
+        id: { [Op.ne]: bookingId },
+        statusId: 'S3',
+      },
+      include: [
+        { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
+        { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.BookingAttachment, as: 'attachments', attributes: ['id', 'fileName', 'category'] },
+      ],
+      order: [['date', 'DESC'], ['id', 'DESC']],
+      limit: 10,
+    });
+
+    const patientHistory = historyBookings.map(h => ({
+      id: h.id,
+      date: h.date,
+      timeType: h.timeTypeBooking?.valueVi || '',
+      diagnosis: h.diagnosis || 'Đã hoàn tất khám định kỳ',
+      symptoms: h.symptoms || '',
+      clinicalNotes: h.clinicalNotes || '',
+      doctorName: h.doctorBookingData ? `${h.doctorBookingData.lastName || ''} ${h.doctorBookingData.firstName || ''}`.trim() : 'Bác sĩ BookingCare',
+      attachmentsCount: h.attachments ? h.attachments.length : 0,
+    }));
+
+    // Follow-up Entitlements
+    const followUpEntitlements = {
+      chat: {
+        enabled: true,
+        days: 7,
+        label: 'Chat sau khám 7 ngày',
+        status: plain.statusId === 'S3' ? 'active' : 'pending_completion',
+      },
+      video: {
+        enabled: true,
+        count: 1,
+        durationMinutes: 15,
+        label: '1 buổi video tái khám (15 phút)',
+        status: plain.statusId === 'S3' ? 'active' : 'pending_completion',
+      },
+    };
+
+    return {
+      errCode: 0,
+      data: {
+        ...plain,
+        patientAge,
+        patientCode: `PT-${String(plain.patientId).padStart(5, '0')}`,
+        bookingCode: `#BK-${plain.id}`,
+        patientHistory,
+        followUpEntitlements,
+      },
+    };
+  } catch (err) {
+    console.error('>>> getDoctorEncounter error:', err);
+    return { errCode: -1, message: 'Lỗi server khi tải chi tiết phiên khám.' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Encounter Workspace] saveDoctorEncounter — Lưu nháp / Hoàn tất phiên khám
+// PUT /api/v1/doctor/encounters/:bookingId
+// ═══════════════════════════════════════════════════════════════════════
+const saveDoctorEncounter = async (bookingId, doctorId, data) => {
+  try {
+    const booking = await db.Booking.findOne({ where: { id: bookingId, doctorId } });
+    if (!booking) {
+      return { errCode: 1, message: 'Không tìm thấy ca khám hoặc bạn không có quyền thao tác.' };
+    }
+
+    const updateFields = {
+      lastSavedAt: new Date(),
+    };
+
+    if (data.chiefComplaint !== undefined) updateFields.chiefComplaint = data.chiefComplaint;
+    if (data.symptoms !== undefined) updateFields.symptoms = data.symptoms;
+    if (data.clinicalNotes !== undefined) updateFields.clinicalNotes = data.clinicalNotes;
+    if (data.diagnosis !== undefined) updateFields.diagnosis = data.diagnosis;
+    if (data.treatmentPlan !== undefined) updateFields.treatmentPlan = data.treatmentPlan;
+    if (data.followUpDate !== undefined) updateFields.followUpDate = data.followUpDate;
+    if (data.careInstructions !== undefined) updateFields.careInstructions = data.careInstructions;
+
+    // Quản lý trạng thái phiên khám
+    if (data.action === 'start') {
+      updateFields.encounterStatus = 'in_progress';
+    } else if (data.action === 'complete') {
+      updateFields.encounterStatus = 'completed';
+      updateFields.statusId = 'S3'; // Chuyển sang Đã khám xong
+    } else if (data.encounterStatus !== undefined) {
+      updateFields.encounterStatus = data.encounterStatus;
+    }
+
+    await booking.update(updateFields);
+
+    // 1. Cập nhật đơn thuốc nếu có truyền
+    if (Array.isArray(data.medicines)) {
+      await db.BookingMedicine.destroy({ where: { bookingId } });
+      const validMedicines = data.medicines.filter(m => m.medicineId);
+      if (validMedicines.length > 0) {
+        await db.BookingMedicine.bulkCreate(
+          validMedicines.map(m => ({
+            bookingId,
+            medicineId: m.medicineId,
+            quantity: Number(m.quantity) || 1,
+            dosage: m.dosage || '',
+            usageInstructions: m.usageInstructions || '',
+          }))
+        );
+      }
+    }
+
+    // 2. Thêm các tài liệu mới nếu có truyền
+    if (Array.isArray(data.newAttachments) && data.newAttachments.length > 0) {
+      const attachmentsToCreate = data.newAttachments.map(att => ({
+        bookingId,
+        patientId: booking.patientId,
+        fileName: att.fileName || 'Tài liệu y tế',
+        fileType: att.fileType || 'image/jpeg',
+        fileSize: Number(att.fileSize) || (att.fileData ? att.fileData.length : 0),
+        fileData: att.fileData,
+        category: att.category || 'record',
+        uploadedBy: att.uploadedBy || 'DOCTOR',
+        examinationDate: att.examinationDate || new Date().toISOString().slice(0, 10),
+        note: att.note || '',
+      }));
+      await db.BookingAttachment.bulkCreate(attachmentsToCreate);
+    }
+
+    // 3. Xóa các tài liệu bị chỉ định gỡ bỏ
+    if (Array.isArray(data.deleteAttachmentIds) && data.deleteAttachmentIds.length > 0) {
+      await db.BookingAttachment.destroy({
+        where: {
+          id: { [Op.in]: data.deleteAttachmentIds },
+          bookingId,
+        },
+      });
+    }
+
+    return {
+      errCode: 0,
+      message: data.action === 'complete'
+        ? 'Hoàn tất phiên khám và cập nhật hồ sơ bệnh nhân thành công!'
+        : 'Đã lưu phiên khám thành công!',
+      data: {
+        lastSavedAt: updateFields.lastSavedAt,
+        encounterStatus: updateFields.encounterStatus || booking.encounterStatus,
+        statusId: updateFields.statusId || booking.statusId,
+      },
+    };
+  } catch (err) {
+    console.error('>>> saveDoctorEncounter error:', err);
+    return { errCode: -1, message: 'Lỗi server khi lưu phiên khám.' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Encounter Workspace] uploadEncounterAttachments — Tải lên nhiều tài liệu
+// POST /api/v1/doctor/encounters/:bookingId/attachments
+// ═══════════════════════════════════════════════════════════════════════
+const uploadEncounterAttachments = async (bookingId, doctorId, attachments) => {
+  try {
+    const booking = await db.Booking.findOne({ where: { id: bookingId, doctorId } });
+    if (!booking) return { errCode: 1, message: 'Ca khám không tồn tại hoặc không có quyền.' };
+
+    const items = (Array.isArray(attachments) ? attachments : [attachments]).map(att => ({
+      bookingId,
+      patientId: booking.patientId,
+      fileName: att.fileName || 'Tài liệu y tế',
+      fileType: att.fileType || 'image/jpeg',
+      fileSize: Number(att.fileSize) || 0,
+      fileData: att.fileData,
+      category: att.category || 'record',
+      uploadedBy: att.uploadedBy || 'DOCTOR',
+      examinationDate: att.examinationDate || new Date().toISOString().slice(0, 10),
+      note: att.note || '',
+    }));
+
+    const created = await db.BookingAttachment.bulkCreate(items);
+    return { errCode: 0, data: created, message: 'Đã tải tài liệu lên thành công!' };
+  } catch (err) {
+    console.error('>>> uploadEncounterAttachments error:', err);
+    return { errCode: -1, message: 'Lỗi khi tải tài liệu lên.' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// [Encounter Workspace] deleteEncounterAttachment — Gỡ bỏ tài liệu đính kèm
+// DELETE /api/v1/doctor/encounters/:bookingId/attachments/:attachmentId
+// ═══════════════════════════════════════════════════════════════════════
+const deleteEncounterAttachment = async (bookingId, doctorId, attachmentId) => {
+  try {
+    const booking = await db.Booking.findOne({ where: { id: bookingId, doctorId } });
+    if (!booking) return { errCode: 1, message: 'Ca khám không tồn tại hoặc không có quyền.' };
+
+    await db.BookingAttachment.destroy({ where: { id: attachmentId, bookingId } });
+    return { errCode: 0, message: 'Đã gỡ bỏ tài liệu đính kèm thành công!' };
+  } catch (err) {
+    console.error('>>> deleteEncounterAttachment error:', err);
+    return { errCode: -1, message: 'Lỗi khi gỡ bỏ tài liệu.' };
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 // [Phase B] getDoctorOwnProfile — Bác sĩ xem hồ sơ cá nhân
 // GET /api/v1/doctor/profile
 // ═══════════════════════════════════════════════════════════════════════
@@ -1391,5 +1661,10 @@ module.exports = {
   toggleCloseScheduleSlot,
   // [Doctor Financial Workspace]
   getDoctorIncomeWorkspace,
+  // [Encounter Workspace]
+  getDoctorEncounter,
+  saveDoctorEncounter,
+  uploadEncounterAttachments,
+  deleteEncounterAttachment,
 };
 
