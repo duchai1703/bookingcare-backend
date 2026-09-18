@@ -259,7 +259,7 @@ const getAllDoctors = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════
 const updateMedicalInfo = async (req, res) => {
   try {
-    const doctorId  = req.user.id;   // IDOR: luôn lấy từ JWT
+    const doctorId = req.user.id;   // IDOR: luôn lấy từ JWT
     const bookingId = parseInt(req.params.bookingId, 10);
     const result = await doctorService.updateMedicalInfo(bookingId, doctorId, req.body);
     return res.status(result.errCode === 0 ? 200 : 400).json(result);

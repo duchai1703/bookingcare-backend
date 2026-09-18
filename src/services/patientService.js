@@ -19,7 +19,7 @@ const postBookAppointment = async (data, patientId) => {
   // DS-05 FIX: Validate trước transaction để tránh mở transaction khi input sai
   // REQ-PT-014: Validate dữ liệu đầu vào
   if (!data.email || !data.fullName || !data.doctorId || !data.date ||
-      !data.timeType || !data.phoneNumber) {
+    !data.timeType || !data.phoneNumber) {
     return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
   }
 
@@ -934,35 +934,82 @@ const deleteBookingAttachment = async (bookingId, attachmentId, userId) => {
 };
 
 // ─────────────────────────────────────────────────────
-// 7. DOCTOR QR CHECK-IN SERVICE (Mobile Doctor App)
+// 7. DOCTOR QR CHECK-IN SERVICE (Mobile / Web Doctor Workspace)
 // ─────────────────────────────────────────────────────
-const verifyDoctorCheckin = async (qrToken, doctorId) => {
+const verifyDoctorCheckin = async (rawCode, doctorId) => {
   try {
-    if (!qrToken) return { errCode: 1, message: 'Thiếu mã QR check-in!' };
+    if (!rawCode) return { errCode: 1, message: 'Thiếu mã tiếp nhận hoặc mã QR!' };
+
+    let token = String(rawCode).trim();
+    let bookingId = null;
+
+    // Phân tích định dạng đầu vào:
+    // Trường hợp 1: Chuỗi QR "BKQ:<id>:<token>"
+    if (token.startsWith('BKQ:')) {
+      const parts = token.split(':');
+      if (parts.length >= 2 && parts[1]) {
+        bookingId = parseInt(parts[1], 10);
+      }
+      if (parts.length >= 3 && parts[2] && parts[2] !== 'NO_TOKEN') {
+        token = parts[2];
+      }
+    }
+    // Trường hợp 2: Mã booking dạng "#BK-123" hoặc "BK-123"
+    else if (/^#?BK-\d+$/i.test(token)) {
+      const num = token.replace(/[^0-9]/g, '');
+      bookingId = parseInt(num, 10);
+    }
+    // Trường hợp 3: Số ID thuần "123"
+    else if (/^\d+$/.test(token)) {
+      bookingId = parseInt(token, 10);
+    }
+
+    const orConditions = [];
+    if (token && !token.startsWith('BKQ:') && !/^#?BK-\d+$/i.test(token) && !/^\d+$/.test(token)) {
+      orConditions.push({ qrToken: token });
+    }
+    if (bookingId && !isNaN(bookingId)) {
+      orConditions.push({ id: bookingId });
+    }
+
+    if (orConditions.length === 0) {
+      return { errCode: 404, message: 'Định dạng mã tra cứu không hợp lệ!' };
+    }
 
     const booking = await db.Booking.findOne({
-      where: { qrToken },
+      where: {
+        [db.Sequelize.Op.or]: orConditions,
+      },
       include: [
-        { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName', 'email', 'phonenumber', 'address', 'gender'] },
+        {
+          model: db.User,
+          as: 'patientData',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'address', 'gender'],
+          include: [
+            { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          ],
+        },
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'genderBookingData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         {
           model: db.BookingAttachment,
           as: 'attachments',
           attributes: ['id', 'fileName', 'fileType', 'fileSize', 'createdAt'],
+          required: false,
         },
       ],
     });
 
     if (!booking) {
-      return { errCode: 404, message: 'Mã QR không hợp lệ hoặc không tồn tại trên hệ thống!' };
+      return { errCode: 404, message: 'Mã tra cứu không tồn tại trên hệ thống!' };
     }
 
     // Kiểm tra đúng bác sĩ phụ trách
-    if (booking.doctorId !== doctorId) {
+    if (doctorId && booking.doctorId !== doctorId) {
       return {
         errCode: 2,
-        message: 'Lịch khám này thuộc về bác sĩ khác!',
+        message: 'Lịch khám này thuộc về bác sĩ khác! Bạn không có quyền tiếp nhận.',
         data: {
           bookingId: booking.id,
           doctorId: booking.doctorId,
@@ -989,7 +1036,7 @@ const verifyDoctorCheckin = async (qrToken, doctorId) => {
 
     return {
       errCode: 0,
-      message: 'Xác thực mã QR thành công! Bác sĩ có thể tiếp nhận bệnh nhân.',
+      message: 'Xác thực mã tiếp nhận thành công!',
       data: booking,
     };
   } catch (err) {

@@ -1,68 +1,68 @@
 // SRS Section 4.2 – Bảng Booking (State Machine: S1→S2→S3/S4)
 module.exports = (sequelize, DataTypes) => {
   const Booking = sequelize.define('Booking', {
-    id:                 { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-    statusId:           { type: DataTypes.STRING(10), allowNull: false },
-    doctorId:           { type: DataTypes.INTEGER, allowNull: false },
-    patientId:          { type: DataTypes.INTEGER, allowNull: false },
-    date:               { type: DataTypes.STRING(20), allowNull: false },
-    timeType:           { type: DataTypes.STRING(10), allowNull: false },
-    token:              { type: DataTypes.STRING(255), allowNull: false },
-    reason:             { type: DataTypes.TEXT, allowNull: true },
-    patientName:        { type: DataTypes.STRING(255), allowNull: true },
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    statusId: { type: DataTypes.STRING(10), allowNull: false },
+    doctorId: { type: DataTypes.INTEGER, allowNull: false },
+    patientId: { type: DataTypes.INTEGER, allowNull: false },
+    date: { type: DataTypes.STRING(20), allowNull: false },
+    timeType: { type: DataTypes.STRING(10), allowNull: false },
+    token: { type: DataTypes.STRING(255), allowNull: false },
+    reason: { type: DataTypes.TEXT, allowNull: true },
+    patientName: { type: DataTypes.STRING(255), allowNull: true },
     patientPhoneNumber: { type: DataTypes.STRING(20), allowNull: true },
-    patientAddress:     { type: DataTypes.STRING(255), allowNull: true },
-    patientGender:      { type: DataTypes.STRING(10), allowNull: true },
-    patientBirthday:    { type: DataTypes.STRING(20), allowNull: true },
+    patientAddress: { type: DataTypes.STRING(255), allowNull: true },
+    patientGender: { type: DataTypes.STRING(10), allowNull: true },
+    patientBirthday: { type: DataTypes.STRING(20), allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase 11] VNPay Payment Integration — 9 cột mới
     // ═══════════════════════════════════════════════════════════════════════
-    paymentToken:         { type: DataTypes.STRING(255), allowNull: true, unique: true },
-    paymentStatus:        { type: DataTypes.STRING(30),  allowNull: true, defaultValue: 'unpaid' },
-    bookingPrice:         { type: DataTypes.INTEGER,     allowNull: true, defaultValue: 0 },
-    vnpayTransactionNo:   { type: DataTypes.STRING(50),  allowNull: true },
-    vnp_PayDate:          { type: DataTypes.STRING(20),  allowNull: true },
-    publicReceiptToken:   { type: DataTypes.STRING(100), allowNull: true, unique: true },
-    receiptExpiredAt:     { type: DataTypes.DATE,        allowNull: true },
-    reconcileFirstSeenAt: { type: DataTypes.DATE,        allowNull: true },
-    lastQuerydrCode:      { type: DataTypes.STRING(4),   allowNull: true },
+    paymentToken: { type: DataTypes.STRING(255), allowNull: true, unique: true },
+    paymentStatus: { type: DataTypes.STRING(30), allowNull: true, defaultValue: 'unpaid' },
+    bookingPrice: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
+    vnpayTransactionNo: { type: DataTypes.STRING(50), allowNull: true },
+    vnp_PayDate: { type: DataTypes.STRING(20), allowNull: true },
+    publicReceiptToken: { type: DataTypes.STRING(100), allowNull: true, unique: true },
+    receiptExpiredAt: { type: DataTypes.DATE, allowNull: true },
+    reconcileFirstSeenAt: { type: DataTypes.DATE, allowNull: true },
+    lastQuerydrCode: { type: DataTypes.STRING(4), allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin hoàn tiền
     // ═══════════════════════════════════════════════════════════════════════
-    bankAccountNumber: { type: DataTypes.STRING(50),   allowNull: true },  // Số TK hoàn tiền
-    bankAccountName:   { type: DataTypes.STRING(255),  allowNull: true },  // Tên chủ TK
-    bankName:          { type: DataTypes.STRING(255),  allowNull: true },  // Tên ngân hàng
-    refundRate:        { type: DataTypes.DECIMAL(5, 2),allowNull: true },  // % hoàn (vd: 80.00)
-    refundAmount:      { type: DataTypes.INTEGER,      allowNull: true },  // Số tiền hoàn (VNĐ)
+    bankAccountNumber: { type: DataTypes.STRING(50), allowNull: true },  // Số TK hoàn tiền
+    bankAccountName: { type: DataTypes.STRING(255), allowNull: true },  // Tên chủ TK
+    bankName: { type: DataTypes.STRING(255), allowNull: true },  // Tên ngân hàng
+    refundRate: { type: DataTypes.DECIMAL(5, 2), allowNull: true },  // % hoàn (vd: 80.00)
+    refundAmount: { type: DataTypes.INTEGER, allowNull: true },  // Số tiền hoàn (VNĐ)
     // refundStatus values: 'none' | 'pending' | 'done'
-    refundStatus:      { type: DataTypes.STRING(20),   allowNull: true, defaultValue: 'none' },
-    cancelledAt:       { type: DataTypes.DATE,         allowNull: true },
+    refundStatus: { type: DataTypes.STRING(20), allowNull: true, defaultValue: 'none' },
+    cancelledAt: { type: DataTypes.DATE, allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
     // ═══════════════════════════════════════════════════════════════════════
-    symptoms:          { type: DataTypes.TEXT, allowNull: true },          // Triệu chứng bệnh nhân báo
-    clinicalNotes:     { type: DataTypes.TEXT, allowNull: true },          // Ghi chú lâm sàng bác sĩ
-    diagnosis:         { type: DataTypes.TEXT, allowNull: true },          // Chẩn đoán
-    followUpDate:      { type: DataTypes.STRING(20), allowNull: true },    // Ngày tái khám "YYYY-MM-DD"
-    careInstructions:  { type: DataTypes.TEXT, allowNull: true },          // Hướng dẫn chăm sóc tại nhà
+    symptoms: { type: DataTypes.TEXT, allowNull: true },          // Triệu chứng bệnh nhân báo
+    clinicalNotes: { type: DataTypes.TEXT, allowNull: true },          // Ghi chú lâm sàng bác sĩ
+    diagnosis: { type: DataTypes.TEXT, allowNull: true },          // Chẩn đoán
+    followUpDate: { type: DataTypes.STRING(20), allowNull: true },    // Ngày tái khám "YYYY-MM-DD"
+    careInstructions: { type: DataTypes.TEXT, allowNull: true },          // Hướng dẫn chăm sóc tại nhà
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase B] Mã QR khám bệnh bảo mật (Check-in Doctor Mobile App)
     // ═══════════════════════════════════════════════════════════════════════
-    qrToken:           { type: DataTypes.STRING(100), allowNull: true, unique: true },
+    qrToken: { type: DataTypes.STRING(100), allowNull: true, unique: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Policy Engine] Snapshot Bất biến & Bóc tách Tài chính
     // ═══════════════════════════════════════════════════════════════════════
-    revenuePolicyId:   { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách phân bổ áp dụng
-    refundPolicyId:    { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách hoàn tiền áp dụng
-    policySnapshot:    { type: DataTypes.TEXT, allowNull: true },          // Tham trị: JSON string snapshot toàn bộ rules lúc đặt
-    platformFee:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền App thu thực tế (VND)
-    doctorShare:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Bác sĩ nhận thực tế (VND)
-    clinicShare:       { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Cơ sở y tế nhận thực tế (nếu có)
+    revenuePolicyId: { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách phân bổ áp dụng
+    refundPolicyId: { type: DataTypes.INTEGER, allowNull: true },       // Tham biến: ID chính sách hoàn tiền áp dụng
+    policySnapshot: { type: DataTypes.TEXT, allowNull: true },          // Tham trị: JSON string snapshot toàn bộ rules lúc đặt
+    platformFee: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền App thu thực tế (VND)
+    doctorShare: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Bác sĩ nhận thực tế (VND)
+    clinicShare: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Cơ sở y tế nhận thực tế (nếu có)
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [

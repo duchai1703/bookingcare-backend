@@ -268,6 +268,11 @@ const getListPatientForDoctor = async (doctorId, date, statusId) => {
         },
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'genderBookingData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      ],
+      order: [
+        ['timeType', 'ASC'],
+        ['id', 'ASC'],
       ],
       raw: false,
       nest: true,
@@ -468,7 +473,7 @@ const getPatientBookingHistory = async (patientId, doctorId) => {
 const getAllDoctors = async ({ clinicId, specialtyId, page = 1, limit = 12 } = {}) => {
   try {
     const doctorInfoWhere = {};
-    if (clinicId)    doctorInfoWhere.clinicId    = parseInt(clinicId);
+    if (clinicId) doctorInfoWhere.clinicId = parseInt(clinicId);
     if (specialtyId) doctorInfoWhere.specialtyId = parseInt(specialtyId);
 
     const result = await db.User.findAndCountAll({
@@ -481,14 +486,14 @@ const getAllDoctors = async ({ clinicId, specialtyId, page = 1, limit = 12 } = {
         required: Object.keys(doctorInfoWhere).length > 0,
         include: [
           { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
-          { model: db.Clinic,    as: 'clinicData',    attributes: ['id', 'name'] },
-          { model: db.Allcode,   as: 'priceData',     attributes: ['valueVi', 'valueEn'] },
-          { model: db.Allcode,   as: 'provinceData',  attributes: ['valueVi', 'valueEn'] },
+          { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name'] },
+          { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+          { model: db.Allcode, as: 'provinceData', attributes: ['valueVi', 'valueEn'] },
         ],
       }],
-      limit:  parseInt(limit),
+      limit: parseInt(limit),
       offset: (parseInt(page) - 1) * parseInt(limit),
-      order:  [['id', 'DESC']],
+      order: [['id', 'DESC']],
       distinct: true,
     });
 
@@ -516,10 +521,10 @@ const updateMedicalInfo = async (bookingId, doctorId, data) => {
     if (!booking) return { errCode: 1, message: 'Booking not found or unauthorized' };
 
     await booking.update({
-      symptoms:         data.symptoms         ?? booking.symptoms,
-      clinicalNotes:    data.clinicalNotes    ?? booking.clinicalNotes,
-      diagnosis:        data.diagnosis        ?? booking.diagnosis,
-      followUpDate:     data.followUpDate     ?? booking.followUpDate,
+      symptoms: data.symptoms ?? booking.symptoms,
+      clinicalNotes: data.clinicalNotes ?? booking.clinicalNotes,
+      diagnosis: data.diagnosis ?? booking.diagnosis,
+      followUpDate: data.followUpDate ?? booking.followUpDate,
       careInstructions: data.careInstructions ?? booking.careInstructions,
     });
 
@@ -530,9 +535,9 @@ const updateMedicalInfo = async (bookingId, doctorId, data) => {
         await db.BookingMedicine.bulkCreate(
           data.medicines.map(m => ({
             bookingId,
-            medicineId:        m.medicineId,
-            quantity:          m.quantity,
-            dosage:            m.dosage,
+            medicineId: m.medicineId,
+            quantity: m.quantity,
+            dosage: m.dosage,
             usageInstructions: m.usageInstructions,
           }))
         );
@@ -564,9 +569,9 @@ const getDoctorOwnProfile = async (doctorId) => {
         as: 'doctorInfoData',
         include: [
           { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
-          { model: db.Clinic,    as: 'clinicData',    attributes: ['id', 'name'] },
-          { model: db.Allcode,   as: 'priceData',     attributes: ['valueVi', 'valueEn'] },
-          { model: db.Allcode,   as: 'provinceData',  attributes: ['valueVi', 'valueEn'] },
+          { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name'] },
+          { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+          { model: db.Allcode, as: 'provinceData', attributes: ['valueVi', 'valueEn'] },
         ],
       }],
     });
@@ -595,9 +600,9 @@ const updateDoctorOwnProfile = async (doctorId, data) => {
     // [SECURITY] doctorId always from JWT (req.user.id) — IDOR safe
     // Update basic user info fields
     const userFields = {};
-    if (data.firstName !== undefined)   userFields.firstName   = data.firstName;
-    if (data.lastName  !== undefined)   userFields.lastName    = data.lastName;
-    if (data.address   !== undefined)   userFields.address     = data.address;
+    if (data.firstName !== undefined) userFields.firstName = data.firstName;
+    if (data.lastName !== undefined) userFields.lastName = data.lastName;
+    if (data.address !== undefined) userFields.address = data.address;
     if (data.phoneNumber !== undefined) userFields.phoneNumber = data.phoneNumber;
     if (data.image) {
       // ✅ [FIX-IMAGE] Lưu pure base64 TEXT string (không phải binary buffer)
@@ -611,16 +616,16 @@ const updateDoctorOwnProfile = async (doctorId, data) => {
 
     // Update professional doctor info fields (upsert pattern)
     const infoFields = {};
-    if (data.contentHTML     !== undefined) infoFields.contentHTML     = sanitizeContent(data.contentHTML);
+    if (data.contentHTML !== undefined) infoFields.contentHTML = sanitizeContent(data.contentHTML);
     if (data.contentMarkdown !== undefined) infoFields.contentMarkdown = data.contentMarkdown;
-    if (data.description     !== undefined) infoFields.description     = data.description;
+    if (data.description !== undefined) infoFields.description = data.description;
     // [NEW] Professional fields — doctor can now manage these themselves
     if (data.specialtyId !== undefined) infoFields.specialtyId = data.specialtyId || null;
-    if (data.clinicId    !== undefined) infoFields.clinicId    = data.clinicId    || null;
-    if (data.priceId     !== undefined) infoFields.priceId     = data.priceId     || null;
-    if (data.provinceId  !== undefined) infoFields.provinceId  = data.provinceId  || null;
-    if (data.paymentId   !== undefined) infoFields.paymentId   = data.paymentId   || null;
-    if (data.note        !== undefined) infoFields.note        = data.note        || '';
+    if (data.clinicId !== undefined) infoFields.clinicId = data.clinicId || null;
+    if (data.priceId !== undefined) infoFields.priceId = data.priceId || null;
+    if (data.provinceId !== undefined) infoFields.provinceId = data.provinceId || null;
+    if (data.paymentId !== undefined) infoFields.paymentId = data.paymentId || null;
+    if (data.note !== undefined) infoFields.note = data.note || '';
 
     if (Object.keys(infoFields).length > 0) {
       // Upsert: create Doctor_Info row if not exists yet
@@ -649,7 +654,7 @@ const getDoctorRevenue = async (doctorId, year) => {
     const bookings = await db.Booking.findAll({
       where: {
         doctorId,
-        statusId:      'S3',
+        statusId: 'S3',
         paymentStatus: 'paid',
         date: { [db.Sequelize.Op.like]: `${targetYear}-%` },
       },
@@ -661,7 +666,7 @@ const getDoctorRevenue = async (doctorId, year) => {
       const monthIdx = parseInt((b.date || '').split('-')[1], 10) - 1;
       if (monthIdx >= 0 && monthIdx < 12) {
         monthly[monthIdx].revenue += b.bookingPrice || 0;
-        monthly[monthIdx].count   += 1;
+        monthly[monthIdx].count += 1;
       }
     });
     const total = monthly.reduce((s, m) => s + m.revenue, 0);
