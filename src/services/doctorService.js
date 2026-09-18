@@ -231,14 +231,191 @@ const getScheduleByDate = async (doctorId, date, includeAll = false) => {
       include: [
         { model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
       ],
+      order: [
+        ['timeType', 'ASC'],
+        ['id', 'ASC'],
+      ],
       raw: false,
       nest: true,
     });
-    // FIX BUG-06: Admin sees ALL schedules; Patient sees only available
-    const result = includeAll ? schedules : schedules.filter(s => s.currentNumber < s.maxNumber);
+
+    // Nếu includeAll === true (Admin hoặc Doctor), truy vấn thêm danh sách booking thực tế của từng slot
+    if (includeAll) {
+      const bookings = await db.Booking.findAll({
+        where: {
+          doctorId,
+          date: String(date),
+          statusId: { [db.Sequelize.Op.ne]: 'S4' },
+        },
+        include: [
+          {
+            model: db.User,
+            as: 'patientData',
+            attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'address', 'gender'],
+            include: [
+              { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+            ],
+          },
+          { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        ],
+        raw: false,
+        nest: true,
+      });
+
+      const enriched = schedules.map((s) => {
+        const plain = s.toJSON ? s.toJSON() : s;
+        plain.slotBookings = bookings
+          .filter((b) => b.timeType === s.timeType)
+          .map((b) => (b.toJSON ? b.toJSON() : b));
+        return plain;
+      });
+
+      return { errCode: 0, data: enriched };
+    }
+
+    // Patient sees only available
+    const result = schedules.filter((s) => s.currentNumber < s.maxNumber);
     return { errCode: 0, data: result };
   } catch (err) {
     console.error('>>> getScheduleByDate error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ===== [Doctor Capacity Engine] SAO CHÉP LỊCH KHÁM SANG NHIỀU NGÀY =====
+const copyDoctorSchedule = async (doctorId, sourceDate, targetDates) => {
+  try {
+    if (!doctorId || !sourceDate || !Array.isArray(targetDates) || targetDates.length === 0) {
+      return { errCode: 1, message: 'Thiếu tham số bắt buộc!' };
+    }
+
+    const sourceSchedules = await db.Schedule.findAll({
+      where: { doctorId, date: String(sourceDate) },
+      raw: true,
+    });
+
+    if (sourceSchedules.length === 0) {
+      return { errCode: 2, message: 'Ngày nguồn chưa có khung giờ khám nào để sao chép!' };
+    }
+
+    let createdCount = 0;
+    for (const targetDate of targetDates) {
+      const targetDateStr = String(targetDate);
+      for (const s of sourceSchedules) {
+        const existing = await db.Schedule.findOne({
+          where: { doctorId, date: targetDateStr, timeType: s.timeType },
+        });
+        if (!existing) {
+          await db.Schedule.create({
+            doctorId,
+            date: targetDateStr,
+            timeType: s.timeType,
+            maxNumber: s.maxNumber || 10,
+            currentNumber: 0,
+          });
+          createdCount++;
+        }
+      }
+    }
+
+    return {
+      errCode: 0,
+      message: `Sao chép thành công! Đã tạo ${createdCount} khung giờ khám mới.`,
+      data: { createdCount },
+    };
+  } catch (err) {
+    console.error('>>> copyDoctorSchedule error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ===== [Doctor Capacity Engine] THIẾT LẬP LỊCH LẶP ĐỊNH KỲ THEO TUẦN =====
+const createRecurringSchedule = async (doctorId, config) => {
+  try {
+    const { daysOfWeek, startDate, endDate, timeTypes, maxNumber = 10 } = config;
+    if (
+      !doctorId ||
+      !Array.isArray(daysOfWeek) ||
+      daysOfWeek.length === 0 ||
+      !startDate ||
+      !endDate ||
+      !Array.isArray(timeTypes) ||
+      timeTypes.length === 0
+    ) {
+      return { errCode: 1, message: 'Thiếu thông tin thiết lập lịch định kỳ!' };
+    }
+
+    const moment = require('moment');
+    const startM = moment.utc(startDate);
+    const endM = moment.utc(endDate);
+
+    if (endM.isBefore(startM)) {
+      return { errCode: 2, message: 'Ngày kết thúc phải sau ngày bắt đầu!' };
+    }
+
+    let createdCount = 0;
+    const curr = startM.clone();
+
+    while (curr.isSameOrBefore(endM)) {
+      const dayOfWeek = curr.isoWeekday(); // 1 (Thứ 2) -> 7 (Chủ nhật)
+      if (daysOfWeek.includes(dayOfWeek)) {
+        const dateTimestamp = curr.valueOf();
+        const dateStr = String(dateTimestamp);
+
+        for (const timeType of timeTypes) {
+          const existing = await db.Schedule.findOne({
+            where: { doctorId, date: dateStr, timeType },
+          });
+          if (!existing) {
+            await db.Schedule.create({
+              doctorId,
+              date: dateStr,
+              timeType,
+              maxNumber: parseInt(maxNumber, 10) || 10,
+              currentNumber: 0,
+            });
+            createdCount++;
+          }
+        }
+      }
+      curr.add(1, 'days');
+    }
+
+    return {
+      errCode: 0,
+      message: `Thiết lập lịch định kỳ thành công! Đã sinh ra ${createdCount} khung giờ khám.`,
+      data: { createdCount },
+    };
+  } catch (err) {
+    console.error('>>> createRecurringSchedule error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ===== [Doctor Capacity Engine] ĐÓNG / MỞ NHẬN LỊCH CỦA 1 SLOT =====
+const toggleCloseScheduleSlot = async (scheduleId, doctorId, isClose = true) => {
+  try {
+    const schedule = await db.Schedule.findOne({
+      where: { id: scheduleId, doctorId },
+    });
+    if (!schedule) return { errCode: 1, message: 'Không tìm thấy lịch khám!' };
+
+    if (isClose) {
+      // Đóng slot: maxNumber = currentNumber
+      schedule.maxNumber = schedule.currentNumber;
+    } else {
+      // Mở lại slot: mặc định cho phép thêm ít nhất 5 chỗ
+      schedule.maxNumber = Math.max(schedule.currentNumber + 5, 10);
+    }
+    await schedule.save();
+
+    return {
+      errCode: 0,
+      message: isClose ? 'Đã đóng nhận lịch cho khung giờ này!' : 'Đã mở lại nhận lịch!',
+      data: schedule,
+    };
+  } catch (err) {
+    console.error('>>> toggleCloseScheduleSlot error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
@@ -695,5 +872,9 @@ module.exports = {
   getDoctorOwnProfile,
   updateDoctorOwnProfile,
   getDoctorRevenue,
+  // [Doctor Capacity Engine]
+  copyDoctorSchedule,
+  createRecurringSchedule,
+  toggleCloseScheduleSlot,
 };
 

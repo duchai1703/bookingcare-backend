@@ -134,6 +134,10 @@ const routes = (app) => {
   app.patch('/api/v1/bookings/:bookingId/cancel', verifyToken, checkDoctorRole, doctorController.cancelBooking);        // REQ-DR-004
   app.get('/api/v1/patients/:patientId/bookings', verifyToken, checkDoctorRole, doctorController.getPatientBookingHistory); // REQ-DR-007
   app.get('/api/v1/doctor/checkin/:qrToken', verifyToken, checkDoctorRole, doctorController.verifyDoctorCheckin); // [Phase B] Doctor QR check-in
+  // [Doctor Capacity Engine]
+  app.post('/api/v1/doctor/schedules/copy', verifyToken, checkDoctorRole, doctorController.copyDoctorSchedule);
+  app.post('/api/v1/doctor/schedules/recurring', verifyToken, checkDoctorRole, doctorController.createRecurringSchedule);
+  app.patch('/api/v1/doctor/schedules/:id/toggle-close', verifyToken, checkDoctorRole, doctorController.toggleCloseScheduleSlot);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase 9.2] PATIENT ROUTES – Yêu cầu role R3 (verifyToken + checkPatientRole)

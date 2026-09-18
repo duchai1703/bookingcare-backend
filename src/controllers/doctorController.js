@@ -320,6 +320,46 @@ const verifyDoctorCheckin = async (req, res) => {
   }
 };
 
+// [Doctor Capacity Engine]
+const copyDoctorSchedule = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const { sourceDate, targetDates } = req.body;
+    const result = await doctorService.copyDoctorSchedule(doctorId, sourceDate, targetDates);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> copyDoctorSchedule error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+const createRecurringSchedule = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const result = await doctorService.createRecurringSchedule(doctorId, req.body);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> createRecurringSchedule error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+const toggleCloseScheduleSlot = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const scheduleId = req.params.id;
+    const isClose = req.body.isClose !== undefined ? req.body.isClose : true;
+    const result = await doctorService.toggleCloseScheduleSlot(scheduleId, doctorId, isClose);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> toggleCloseScheduleSlot error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -340,5 +380,9 @@ module.exports = {
   updateDoctorOwnProfile,
   getDoctorRevenue,
   verifyDoctorCheckin,
+  // [Doctor Capacity Engine]
+  copyDoctorSchedule,
+  createRecurringSchedule,
+  toggleCloseScheduleSlot,
 };
 
