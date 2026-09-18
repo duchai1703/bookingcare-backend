@@ -302,6 +302,21 @@ const getDoctorRevenue = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
+// [Doctor Income Workspace] GET /api/v1/doctor/income-workspace
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorIncomeWorkspace = async (req, res) => {
+  try {
+    const doctorId = req.user.id;
+    const result = await doctorService.getDoctorIncomeWorkspace(doctorId, req.query);
+    const httpStatus = result.errCode === 0 ? 200 : 400;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> getDoctorIncomeWorkspace error:', err);
+    return res.status(500).json({ errCode: -1, message: err.message });
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════════
 // [Phase B] verifyDoctorCheckin — GET /api/v1/doctor/checkin/:qrToken
 // ═══════════════════════════════════════════════════════════════════════
 const verifyDoctorCheckin = async (req, res) => {
@@ -384,5 +399,7 @@ module.exports = {
   copyDoctorSchedule,
   createRecurringSchedule,
   toggleCloseScheduleSlot,
+  // [Doctor Financial Workspace]
+  getDoctorIncomeWorkspace,
 };
 

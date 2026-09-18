@@ -231,6 +231,7 @@ const routes = (app) => {
   app.get('/api/v1/doctor/profile', verifyToken, checkDoctorRole, doctorController.getDoctorOwnProfile);
   app.put('/api/v1/doctor/profile', verifyToken, checkDoctorRole, doctorController.updateDoctorOwnProfile);
   app.get('/api/v1/doctor/revenue', verifyToken, checkDoctorRole, doctorController.getDoctorRevenue);
+  app.get('/api/v1/doctor/income-workspace', verifyToken, checkDoctorRole, doctorController.getDoctorIncomeWorkspace);
   app.put('/api/v1/bookings/:bookingId/medical-info', verifyToken, checkDoctorRole, doctorController.updateMedicalInfo);
 
   // ═══════════════════════════════════════════════════════════════════════

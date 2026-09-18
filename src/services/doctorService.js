@@ -854,6 +854,352 @@ const getDoctorRevenue = async (doctorId, year) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// [Doctor Income Workspace] Mini Financial Workspace — Bóc tách tài chính Master-Detail
+// GET /api/v1/doctor/income-workspace?startDate=&endDate=&facilityId=&specialtyId=&status=
+// ═══════════════════════════════════════════════════════════════════════
+const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      facilityId,
+      specialtyId,
+      status = 'all', // 'all', 'paid', 'pending', 'refunded'
+    } = query;
+
+    // 1. Lấy thông tin cơ sở & chuyên khoa của bác sĩ
+    const doctorInfo = await db.Doctor_Info.findOne({
+      where: { doctorId },
+      include: [
+        { model: db.User, as: 'doctorData', attributes: ['id', 'firstName', 'lastName', 'email'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+        { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+      ],
+    });
+
+    const defaultClinic = doctorInfo?.clinicData ? {
+      id: doctorInfo.clinicData.id,
+      name: doctorInfo.clinicData.name,
+      address: doctorInfo.clinicData.address,
+    } : { id: 1, name: 'Bệnh viện Trung ương BookingCare', address: 'Hà Nội' };
+
+    const defaultSpecialty = doctorInfo?.specialtyData ? {
+      id: doctorInfo.specialtyData.id,
+      name: doctorInfo.specialtyData.name,
+    } : { id: 1, name: 'Khám chuyên khoa' };
+
+    // 2. Lấy danh sách các đợt đối soát (Settlements) của bác sĩ
+    const settlements = await db.Doctor_Settlement.findAll({
+      where: { doctorId },
+      order: [['periodTo', 'DESC'], ['id', 'DESC']],
+    });
+
+    // 3. Lấy toàn bộ bookings của bác sĩ
+    const bookings = await db.Booking.findAll({
+      where: { doctorId },
+      include: [
+        {
+          model: db.User,
+          as: 'patientData',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'address', 'gender'],
+        },
+        {
+          model: db.Allcode,
+          as: 'timeTypeBooking',
+          attributes: ['keyMap', 'valueEn', 'valueVi'],
+        },
+        {
+          model: db.Allcode,
+          as: 'statusData',
+          attributes: ['keyMap', 'valueEn', 'valueVi'],
+        },
+      ],
+      order: [['id', 'DESC']],
+    });
+
+    // 4. Map & Bóc tách tài chính từng Booking
+    const enrichedBookings = bookings.map(b => {
+      // Parse date (hỗ trợ cả timestamp epoch ms dạng string và YYYY-MM-DD)
+      let bookingDateObj;
+      if (!isNaN(Number(b.date)) && Number(b.date) > 1000000000) {
+        bookingDateObj = new Date(Number(b.date));
+      } else {
+        bookingDateObj = new Date(b.date);
+      }
+      const formattedDate = !isNaN(bookingDateObj.getTime())
+        ? bookingDateObj.toISOString().split('T')[0]
+        : (b.date || '');
+
+      // Parse Frozen Policy Snapshot (Bất biến tại thời điểm đặt lịch)
+      let snapshot = null;
+      if (b.policySnapshot) {
+        try {
+          snapshot = typeof b.policySnapshot === 'string' ? JSON.parse(b.policySnapshot) : b.policySnapshot;
+        } catch (e) {
+          snapshot = null;
+        }
+      }
+
+      // Bóc tách tài chính: Gross price, Platform fee, Doctor share
+      const grossPrice = Number(b.bookingPrice) || 0;
+      let platformFee = 0;
+      let doctorShare = 0;
+      let clinicShare = 0;
+
+      if (Number(b.doctorShare) > 0) {
+        doctorShare = Number(b.doctorShare);
+        platformFee = Number(b.platformFee) || (grossPrice - doctorShare);
+        clinicShare = Number(b.clinicShare) || 0;
+      } else if (snapshot?.calculation) {
+        doctorShare = Number(snapshot.calculation.doctorShare) || 0;
+        platformFee = Number(snapshot.calculation.platformFee) || 0;
+        clinicShare = Number(snapshot.calculation.clinicShare) || 0;
+      } else {
+        // Fallback an toàn cho booking cũ: mặc định hoa hồng theo setting hoặc 85/15
+        const commRate = doctorInfo?.commissionRate ? Number(doctorInfo.commissionRate) : 15;
+        platformFee = Math.round(grossPrice * (commRate / 100));
+        doctorShare = grossPrice - platformFee;
+      }
+
+      const isRefunded = b.statusId === 'S4' || b.paymentStatus === 'refunded' || b.refundStatus === 'done' || b.paymentStatus === 'refund_pending';
+      const refundAmount = Number(b.refundAmount) || (isRefunded ? Math.round(grossPrice * (Number(b.refundRate) || 80) / 100) : 0);
+
+      // Trạng thái kép:
+      // Chặng 1: Bệnh nhân -> Nền tảng (BN -> App)
+      let patientPaymentStatus = 'unpaid';
+      if (isRefunded) {
+        patientPaymentStatus = 'refunded';
+      } else if (b.paymentStatus === 'paid') {
+        patientPaymentStatus = 'paid';
+      }
+
+      // Chặng 2: Nền tảng -> Bác sĩ (App -> BS)
+      let appPayoutStatus = 'pending';
+      let matchedSettlement = null;
+
+      if (isRefunded) {
+        appPayoutStatus = 'refunded';
+      } else if (patientPaymentStatus !== 'paid' || b.statusId === 'S1') {
+        appPayoutStatus = 'unpaid';
+      } else {
+        // Tra cứu trong các đợt đối soát
+        for (const s of settlements) {
+          if (s.payoutStatus === 'paid') {
+            const pFrom = new Date(s.periodFrom);
+            const pTo = new Date(s.periodTo);
+            if (bookingDateObj >= pFrom && bookingDateObj <= pTo) {
+              matchedSettlement = {
+                id: s.id,
+                code: `PAY-${s.id.toString().padStart(6, '0')}`,
+                transactionRef: s.transactionRef,
+                paidAt: s.paidAt,
+                paymentMethod: s.paymentMethod,
+                note: s.note,
+              };
+              appPayoutStatus = 'paid';
+              break;
+            }
+          }
+        }
+      }
+
+      return {
+        id: b.id,
+        bookingCode: `#BK-${b.id}`,
+        statusId: b.statusId,
+        statusText: b.statusData?.valueVi || b.statusId,
+        date: formattedDate,
+        rawDate: b.date,
+        timeType: b.timeType,
+        timeTypeText: b.timeTypeBooking?.valueVi || b.timeType,
+        patientName: b.patientName || `${b.patientData?.lastName || ''} ${b.patientData?.firstName || ''}`.trim() || 'Bệnh nhân',
+        patientPhoneNumber: b.patientPhoneNumber || b.patientData?.phoneNumber || '',
+        patientAddress: b.patientAddress || b.patientData?.address || '',
+        patientGender: b.patientGender || b.patientData?.gender || '',
+        patientId: b.patientId,
+        facility: defaultClinic,
+        specialty: defaultSpecialty,
+        serviceName: `Khám ${defaultSpecialty.name}`,
+        grossPrice,
+        platformFee,
+        doctorShare: isRefunded ? 0 : doctorShare,
+        originalDoctorShare: doctorShare,
+        clinicShare,
+        patientPaymentStatus, // 'paid' | 'unpaid' | 'refunded'
+        appPayoutStatus,      // 'paid' | 'pending' | 'refunded' | 'unpaid'
+        isRefunded,
+        refundAmount,
+        refundRate: b.refundRate,
+        refundStatus: b.refundStatus,
+        cancelledAt: b.cancelledAt,
+        vnpayTransactionNo: b.vnpayTransactionNo,
+        vnp_PayDate: b.vnp_PayDate,
+        settlement: matchedSettlement,
+        policySnapshot: snapshot,
+        revenuePolicyId: b.revenuePolicyId,
+        refundPolicyId: b.refundPolicyId,
+        createdAt: b.createdAt,
+      };
+    });
+
+    // 5. Lọc danh sách theo thời gian & cơ sở để tính KPIs
+    let timeFiltered = enrichedBookings;
+    if (startDate) {
+      timeFiltered = timeFiltered.filter(b => b.date >= startDate);
+    }
+    if (endDate) {
+      timeFiltered = timeFiltered.filter(b => b.date <= endDate);
+    }
+    if (facilityId && facilityId !== 'all') {
+      timeFiltered = timeFiltered.filter(b => String(b.facility?.id) === String(facilityId));
+    }
+    if (specialtyId && specialtyId !== 'all') {
+      timeFiltered = timeFiltered.filter(b => String(b.specialty?.id) === String(specialtyId));
+    }
+
+    // 6. Tính toán 4 KPIs cốt lõi
+    let totalIncome = 0;
+    let paidIncome = 0;
+    let pendingIncome = 0;
+    let refundedIncome = 0;
+    let eligibleCount = 0;
+
+    timeFiltered.forEach(b => {
+      if (!b.isRefunded && b.patientPaymentStatus === 'paid') {
+        totalIncome += b.doctorShare;
+        eligibleCount += 1;
+        if (b.appPayoutStatus === 'paid') {
+          paidIncome += b.doctorShare;
+        } else {
+          pendingIncome += b.doctorShare;
+        }
+      } else if (b.isRefunded) {
+        refundedIncome += b.refundAmount;
+      }
+    });
+
+    const paidRatio = totalIncome > 0 ? Math.round((paidIncome / totalIncome) * 100) : 0;
+    const pendingRatio = totalIncome > 0 ? Math.round((pendingIncome / totalIncome) * 100) : 0;
+
+    const counts = {
+      all: timeFiltered.length,
+      paid: timeFiltered.filter(b => b.appPayoutStatus === 'paid').length,
+      pending: timeFiltered.filter(b => b.appPayoutStatus === 'pending' && b.patientPaymentStatus === 'paid').length,
+      refunded: timeFiltered.filter(b => b.isRefunded || b.patientPaymentStatus === 'refunded').length,
+    };
+
+    // 7. Lọc tiếp theo status tab cho Master List
+    let filteredTransactions = timeFiltered;
+    if (status && status !== 'all') {
+      if (status === 'paid') {
+        filteredTransactions = filteredTransactions.filter(b => b.appPayoutStatus === 'paid');
+      } else if (status === 'pending') {
+        filteredTransactions = filteredTransactions.filter(b => b.appPayoutStatus === 'pending' && b.patientPaymentStatus === 'paid');
+      } else if (status === 'refunded') {
+        filteredTransactions = filteredTransactions.filter(b => b.isRefunded || b.patientPaymentStatus === 'refunded');
+      }
+    }
+
+    // 8. Timeline data cho biểu đồ thu nhập theo thời gian
+    const timelineMap = {};
+    timeFiltered.forEach(b => {
+      const key = b.date || 'Chưa rõ';
+      if (!timelineMap[key]) {
+        timelineMap[key] = { date: key, income: 0, count: 0, gross: 0 };
+      }
+      if (!b.isRefunded && b.patientPaymentStatus === 'paid') {
+        timelineMap[key].income += b.doctorShare;
+        timelineMap[key].count += 1;
+        timelineMap[key].gross += b.grossPrice;
+      }
+    });
+    const timeline = Object.values(timelineMap).sort((a, b) => a.date.localeCompare(b.date));
+
+    // 9. Phân bổ thu nhập theo cơ sở
+    const facilityIncomeMap = {};
+    timeFiltered.forEach(b => {
+      const facName = b.facility?.name || 'Cơ sở chính';
+      if (!facilityIncomeMap[facName]) {
+        facilityIncomeMap[facName] = { name: facName, income: 0, count: 0 };
+      }
+      if (!b.isRefunded && b.patientPaymentStatus === 'paid') {
+        facilityIncomeMap[facName].income += b.doctorShare;
+        facilityIncomeMap[facName].count += 1;
+      }
+    });
+
+    // 10. Danh sách các đợt đối soát (Payouts)
+    const enrichedSettlements = settlements.map(s => {
+      const pFrom = new Date(s.periodFrom);
+      const pTo = new Date(s.periodTo);
+      const coveredBookings = enrichedBookings.filter(b => {
+        const bd = new Date(b.rawDate ? (!isNaN(Number(b.rawDate)) ? Number(b.rawDate) : b.rawDate) : b.date);
+        return bd >= pFrom && bd <= pTo && b.patientPaymentStatus === 'paid' && !b.isRefunded;
+      });
+
+      return {
+        id: s.id,
+        code: `PAY-${s.id.toString().padStart(6, '0')}`,
+        periodFrom: s.periodFrom,
+        periodTo: s.periodTo,
+        grossRevenue: Number(s.grossRevenue) || 0,
+        commissionRate: Number(s.commissionRate) || 15,
+        platformFee: Number(s.platformFee) || 0,
+        netPayout: Number(s.netPayout) || 0,
+        payoutStatus: s.payoutStatus,
+        paymentMethod: s.paymentMethod,
+        transactionRef: s.transactionRef || `PAY-VCB-${s.id + 1000}`,
+        receiptImage: s.receiptImage,
+        note: s.note,
+        paidAt: s.paidAt,
+        sessionsCount: coveredBookings.length,
+        bookings: coveredBookings.map(cb => ({
+          id: cb.id,
+          bookingCode: cb.bookingCode,
+          patientName: cb.patientName,
+          date: cb.date,
+          grossPrice: cb.grossPrice,
+          doctorShare: cb.doctorShare,
+        })),
+      };
+    });
+
+    return {
+      errCode: 0,
+      data: {
+        kpi: {
+          totalIncome,
+          paidIncome,
+          pendingIncome,
+          refundedIncome,
+          totalConsultations: eligibleCount,
+          paidRatio,
+          pendingRatio,
+        },
+        counts,
+        timeline,
+        facilityDistribution: Object.values(facilityIncomeMap),
+        transactions: filteredTransactions,
+        settlements: enrichedSettlements,
+        facilities: [defaultClinic],
+        specialties: [defaultSpecialty],
+        doctorProfile: {
+          id: doctorId,
+          name: `${doctorInfo?.doctorData?.lastName || ''} ${doctorInfo?.doctorData?.firstName || ''}`.trim(),
+          bankAccountNumber: doctorInfo?.bankAccountNumber,
+          bankName: doctorInfo?.bankName,
+          bankAccountName: doctorInfo?.bankAccountName,
+          commissionRate: doctorInfo?.commissionRate || 15,
+        },
+      },
+    };
+  } catch (err) {
+    console.error('>>> getDoctorIncomeWorkspace error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -876,5 +1222,7 @@ module.exports = {
   copyDoctorSchedule,
   createRecurringSchedule,
   toggleCloseScheduleSlot,
+  // [Doctor Financial Workspace]
+  getDoctorIncomeWorkspace,
 };
 
