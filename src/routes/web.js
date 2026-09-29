@@ -95,6 +95,7 @@ const routes = (app) => {
   app.get('/api/v1/users', verifyToken, checkAdminRole, userController.handleGetAllUsers);
   app.post('/api/v1/users', verifyToken, checkAdminRole, userController.handleCreateNewUser);
   app.put('/api/v1/users/:id', verifyToken, checkAdminRole, userController.handleEditUser);
+  app.post('/api/v1/users/:id/reset-password', verifyToken, checkAdminRole, userController.handleResetUserPassword);
   app.delete('/api/v1/users/:id', verifyToken, checkAdminRole, userController.handleDeleteUser);
 
   // Doctor Management (SRS 3.3)

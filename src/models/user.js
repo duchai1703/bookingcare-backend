@@ -15,6 +15,8 @@ module.exports = (sequelize, DataTypes) => {
     birthday:      { type: DataTypes.STRING(20), allowNull: true }, // Ngày sinh bệnh nhân "YYYY-MM-DD" hoặc timestamp
     // [v3.0] tokenVersion: Tăng khi đổi mật khẩu → vô hiệu hóa mọi JWT đăng nhập cũ
     tokenVersion:  { type: DataTypes.INTEGER, defaultValue: 0 },
+    // [Phase 14] isActive: Khóa hoặc kích hoạt tài khoản người dùng
+    isActive:      { type: DataTypes.BOOLEAN, defaultValue: true },
   });
   return User;
 };

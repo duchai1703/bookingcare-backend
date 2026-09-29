@@ -18,6 +18,14 @@ const handleUserLogin = async (email, password) => {
       return { errCode: 1, message: 'Email không tồn tại trong hệ thống!' };
     }
 
+    // [Phase 14] Kiểm tra tài khoản có bị khóa không
+    if (user.isActive === false) {
+      return {
+        errCode: 8,
+        message: 'Tài khoản của bạn đã bị tạm khóa. Vui lòng liên hệ Quản trị viên để được hỗ trợ!',
+      };
+    }
+
     // Kiểm tra guest cũ (password = null) → không cho login trực tiếp
     if (!user.password) {
       return {
@@ -155,6 +163,14 @@ const editUser = async (data) => {
     user.gender = data.gender || user.gender;
     user.roleId = data.roleId || user.roleId;
     user.positionId = data.positionId || user.positionId;
+    // [Phase 14] Cập nhật trạng thái khóa/kích hoạt
+    if (data.isActive !== undefined) {
+      user.isActive = Boolean(data.isActive);
+      // Nếu khóa tài khoản, tăng tokenVersion để buộc đăng xuất mọi phiên JWT
+      if (!user.isActive) {
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
+      }
+    }
     if (data.image) {
       // ✅ [SECURITY-FIX] Validate Base64 image trước khi lưu
       const imgResult = validateBase64Image(data.image);
@@ -168,6 +184,31 @@ const editUser = async (data) => {
     return { errCode: 0, message: 'Cập nhật thành công!' };
   } catch (err) {
     console.error('>>> editUser error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
+// ===== [Phase 14] RESET USER PASSWORD =====
+const resetUserPassword = async (id, newPassword) => {
+  try {
+    if (!id) return { errCode: 1, message: 'Thiếu ID người dùng!' };
+    const user = await db.User.findByPk(id);
+    if (!user) return { errCode: 3, message: 'Không tìm thấy người dùng!' };
+
+    const targetPassword = newPassword && newPassword.trim().length >= 6 ? newPassword.trim() : 'BookingCare@123';
+    const hashedPassword = await bcrypt.hash(targetPassword, 10);
+
+    user.password = hashedPassword;
+    user.tokenVersion = (user.tokenVersion || 0) + 1; // Vô hiệu hóa mọi JWT session cũ
+    await user.save();
+
+    return {
+      errCode: 0,
+      message: 'Đặt lại mật khẩu thành công!',
+      newPassword: targetPassword,
+    };
+  } catch (err) {
+    console.error('>>> resetUserPassword error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
@@ -298,6 +339,7 @@ module.exports = {
   createNewUser,
   editUser,
   deleteUser,
+  resetUserPassword,
   getAllCodeService,
   searchService,
 };

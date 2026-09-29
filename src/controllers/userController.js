@@ -75,6 +75,20 @@ const handleDeleteUser = async (req, res) => {
   }
 };
 
+const handleResetUserPassword = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { newPassword } = req.body || {};
+    const result = await userService.resetUserPassword(id, newPassword);
+    const statusMap = { 0: 200, 1: 400, 3: 404 };
+    const httpStatus = statusMap[result.errCode] || 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleResetUserPassword error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 const getAllCode = async (req, res) => {
   try {
     const result = await userService.getAllCodeService(req.query.type);
@@ -156,6 +170,7 @@ module.exports = {
   handleCreateNewUser,
   handleEditUser,
   handleDeleteUser,
+  handleResetUserPassword,
   getAllCode,
   handleSearch,
   handleRegisterPatient,
