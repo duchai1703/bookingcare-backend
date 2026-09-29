@@ -54,6 +54,7 @@ const routes = (app) => {
   app.get('/api/v1/doctors/top', doctorController.getTopDoctorHome);
   app.get('/api/v1/doctors/:id', doctorController.getDetailDoctorById);
   app.get('/api/v1/doctors/:doctorId/schedules', doctorController.getScheduleByDate);
+  app.get('/api/v1/doctors/:doctorId/practices', doctorController.handleGetDoctorPractices);
 
   // ─────────────────────────────────────────────────────
   // [Phase 9.2] Doctor Reviews — PUBLIC (không cần auth)
@@ -233,6 +234,7 @@ const routes = (app) => {
   app.put('/api/v1/doctor/profile', verifyToken, checkDoctorRole, doctorController.updateDoctorOwnProfile);
   app.get('/api/v1/doctor/revenue', verifyToken, checkDoctorRole, doctorController.getDoctorRevenue);
   app.get('/api/v1/doctor/income-workspace', verifyToken, checkDoctorRole, doctorController.getDoctorIncomeWorkspace);
+  app.get('/api/v1/doctor/my-practices', verifyToken, checkDoctorRole, doctorController.handleGetMyPractices);
   app.put('/api/v1/bookings/:bookingId/medical-info', verifyToken, checkDoctorRole, doctorController.updateMedicalInfo);
 
   // [Encounter Workspace]

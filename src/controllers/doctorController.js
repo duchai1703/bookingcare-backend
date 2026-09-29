@@ -134,6 +134,7 @@ const getScheduleByDate = async (req, res) => {
   try {
     const doctorId = req.params.doctorId || req.query.doctorId;
     const date = req.query.date;
+    const clinicId = req.query.clinicId || null;
     let includeAll = req.query.includeAll === 'true'; // FIX BUG-06: Admin sees all slots
 
     // [Phase 10.5 Security Hotfix] Guard includeAll — chỉ R1 (Admin) hoặc R2 (Doctor, chỉ lịch của mình)
@@ -155,7 +156,7 @@ const getScheduleByDate = async (req, res) => {
     if (!doctorId || !date) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số!' });
     }
-    const result = await doctorService.getScheduleByDate(doctorId, date, includeAll);
+    const result = await doctorService.getScheduleByDate(doctorId, date, includeAll, clinicId);
     const httpStatus = result.errCode === 0 ? 200 : 500;
     return res.status(httpStatus).json(result);
   } catch (err) {
@@ -164,16 +165,16 @@ const getScheduleByDate = async (req, res) => {
   }
 };
 
-// REQ-DR-003 – Lấy danh sách bệnh nhân, lọc theo statusId
+// REQ-DR-003 – Lấy danh sách bệnh nhân, lọc theo statusId và cơ sở y tế (clinicId)
 const getListPatientForDoctor = async (req, res) => {
   try {
     // FIX DS-06: lấy doctorId từ JWT — không tin URL để chặn IDOR
     const doctorId = req.user.id;
-    const { date, statusId } = req.query;
+    const { date, statusId, clinicId } = req.query;
     if (!date) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu tham số date!' });
     }
-    const result = await doctorService.getListPatientForDoctor(doctorId, date, statusId);
+    const result = await doctorService.getListPatientForDoctor(doctorId, date, statusId, clinicId);
     const httpStatus = result.errCode === 0 ? 200 : 500;
     return res.status(httpStatus).json(result);
   } catch (err) {
@@ -423,6 +424,35 @@ const toggleCloseScheduleSlot = async (req, res) => {
   }
 };
 
+// ===== [Multi-Facility] GET DOCTOR PRACTICES =====
+const handleGetDoctorPractices = async (req, res) => {
+  try {
+    const doctorId = req.params.doctorId || req.query.doctorId;
+    if (!doctorId) {
+      return res.status(400).json({ errCode: 1, message: 'Thiếu doctorId!' });
+    }
+    const result = await doctorService.getDoctorPractices(doctorId);
+    return res.status(result.errCode === 0 ? 200 : 500).json(result);
+  } catch (err) {
+    console.error('>>> handleGetDoctorPractices error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+const handleGetMyPractices = async (req, res) => {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: 1, message: 'Chưa xác thực!' });
+    }
+    const result = await doctorService.getDoctorPractices(doctorId);
+    return res.status(result.errCode === 0 ? 200 : 500).json(result);
+  } catch (err) {
+    console.error('>>> handleGetMyPractices error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -454,5 +484,9 @@ module.exports = {
   saveDoctorEncounter,
   uploadEncounterAttachments,
   deleteEncounterAttachment,
+  // [Multi-Facility Support]
+  handleGetDoctorPractices,
+  handleGetMyPractices,
 };
+
 

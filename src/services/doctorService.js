@@ -160,34 +160,104 @@ const deleteDoctorInfo = async (doctorId) => {
   }
 };
 
-// ===== BULK CREATE SCHEDULE (SRS REQ-AM-018, 019) =====
+// ===== BULK CREATE SCHEDULE (SRS REQ-AM-018, 019, Multi-Facility Support) =====
 const bulkCreateSchedule = async (data) => {
   try {
     if (!data.arrSchedule || !Array.isArray(data.arrSchedule) || data.arrSchedule.length === 0) {
       return { errCode: 1, message: 'Thiếu dữ liệu lịch khám!' };
     }
-    // ✅ [FIX] Ép kiểu date → String để tránh lỗi PostgreSQL "character varying = bigint"
-    const schedules = data.arrSchedule.map(item => ({
+
+    const doctorId = Number(data.arrSchedule[0].doctorId);
+
+    // Xác định default clinicId nếu request không truyền trên từng item
+    let defaultClinicId = data.clinicId ? Number(data.clinicId) : null;
+    if (!defaultClinicId) {
+      // Tìm primary assignment hoặc Doctor_Info.clinicId làm fallback
+      const primaryAssignment = await db.Doctor_Assignment.findOne({
+        where: { doctorId, workingStatus: 'active', isPrimary: true },
+        attributes: ['clinicId'],
+      });
+      if (primaryAssignment && primaryAssignment.clinicId) {
+        defaultClinicId = Number(primaryAssignment.clinicId);
+      } else {
+        const docInfo = await db.Doctor_Info.findOne({
+          where: { doctorId },
+          attributes: ['clinicId'],
+        });
+        defaultClinicId = docInfo?.clinicId ? Number(docInfo.clinicId) : null;
+      }
+    }
+
+    // ✅ Ép kiểu date → String và gán clinicId chuẩn hóa
+    const schedules = data.arrSchedule.map((item) => ({
       ...item,
+      doctorId: Number(item.doctorId),
+      clinicId: item.clinicId ? Number(item.clinicId) : defaultClinicId,
       date: String(item.date),
       maxNumber: item.maxNumber || 10,
       currentNumber: 0,
     }));
+
+    const dateStr = String(schedules[0].date);
+
+    // Lấy tất cả schedule của doctor trong ngày này để kiểm tra xung đột và trùng lặp
     const existing = await db.Schedule.findAll({
-      where: { doctorId: schedules[0].doctorId, date: String(schedules[0].date) },
-      attributes: ['timeType', 'doctorId', 'date'],
-      raw: true,
+      where: { doctorId, date: dateStr },
+      attributes: ['id', 'timeType', 'doctorId', 'date', 'clinicId'],
+      include: [
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name'] },
+        { model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      ],
+      raw: false,
+      nest: true,
     });
-    const toCreate = schedules.filter(s => !existing.find(e => e.timeType === s.timeType && String(e.date) === String(s.date)));
+
+    const conflicts = [];
+    const toCreate = [];
+
+    for (const s of schedules) {
+      const exist = existing.find(
+        (e) => e.timeType === s.timeType && String(e.date) === String(s.date)
+      );
+
+      if (exist) {
+        // [Multi-facility Conflict Prevention]:
+        // Cùng 1 bác sĩ không thể xếp lịch ở 2 cơ sở y tế khác nhau trong cùng khung giờ!
+        if (s.clinicId && exist.clinicId && Number(exist.clinicId) !== Number(s.clinicId)) {
+          const timeLabel = exist.timeTypeData?.valueVi || exist.timeType;
+          const clinicName = exist.clinicData?.name || `Cơ sở ID ${exist.clinicId}`;
+          conflicts.push(`Khung giờ ${timeLabel} đã được xếp lịch tại ${clinicName}`);
+        }
+        // Nếu cùng clinicId -> Đã tồn tại tại cơ sở này, bỏ qua để tránh duplicate
+      } else {
+        toCreate.push(s);
+      }
+    }
+
+    // Nếu phát hiện xung đột lịch khám giữa các cơ sở, trả về lỗi ngăn chặn ngay lập tức
+    if (conflicts.length > 0) {
+      return {
+        errCode: 4,
+        message: `Xung đột lịch khám: Bác sĩ đã có ca khám tại cơ sở khác vào khung giờ này! (${conflicts.join('; ')})`,
+        conflicts,
+      };
+    }
+
     if (toCreate.length > 0) {
       await db.Schedule.bulkCreate(toCreate);
     }
-    return { errCode: 0, message: `Tạo ${toCreate.length} lịch khám thành công!` };
+
+    return {
+      errCode: 0,
+      message: `Tạo ${toCreate.length} lịch khám thành công!`,
+      createdCount: toCreate.length,
+    };
   } catch (err) {
     console.error('>>> bulkCreateSchedule error:', err);
     return { errCode: -1, message: 'Lỗi server!' };
   }
 };
+
 
 // ===== MỚI: DELETE SCHEDULE (SRS REQ-AM-021) =====
 // ✅ [FIX] Hỗ trợ xóa bằng ID (primary key) hoặc bộ 3 {doctorId, date, timeType}
@@ -223,14 +293,24 @@ const deleteSchedule = async (data) => {
   }
 };
 
-// ===== GET SCHEDULE BY DATE (SRS 3.8 REQ-PT-009) =====
-const getScheduleByDate = async (doctorId, date, includeAll = false) => {
+// ===== GET SCHEDULE BY DATE (SRS 3.8 REQ-PT-009, Multi-Facility Support) =====
+const getScheduleByDate = async (doctorId, date, includeAll = false, clinicId = null) => {
   try {
+    const whereCondition = {
+      doctorId: Number(doctorId),
+      date: String(date),
+    };
+
+    if (clinicId) {
+      whereCondition.clinicId = Number(clinicId);
+    }
+
     // ✅ [FIX] Ép kiểu date → String để tránh lỗi PostgreSQL "character varying = bigint"
     const schedules = await db.Schedule.findAll({
-      where: { doctorId, date: String(date) },
+      where: whereCondition,
       include: [
         { model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
       ],
       order: [
         ['timeType', 'ASC'],
@@ -242,12 +322,17 @@ const getScheduleByDate = async (doctorId, date, includeAll = false) => {
 
     // Nếu includeAll === true (Admin hoặc Doctor), truy vấn thêm danh sách booking thực tế của từng slot
     if (includeAll) {
+      const bookingWhere = {
+        doctorId: Number(doctorId),
+        date: String(date),
+        statusId: { [db.Sequelize.Op.ne]: 'S4' },
+      };
+      if (clinicId) {
+        bookingWhere.clinicId = Number(clinicId);
+      }
+
       const bookings = await db.Booking.findAll({
-        where: {
-          doctorId,
-          date: String(date),
-          statusId: { [db.Sequelize.Op.ne]: 'S4' },
-        },
+        where: bookingWhere,
         include: [
           {
             model: db.User,
@@ -258,6 +343,7 @@ const getScheduleByDate = async (doctorId, date, includeAll = false) => {
             ],
           },
           { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
         ],
         raw: false,
         nest: true,
@@ -309,6 +395,7 @@ const copyDoctorSchedule = async (doctorId, sourceDate, targetDates) => {
         if (!existing) {
           await db.Schedule.create({
             doctorId,
+            clinicId: s.clinicId || null,
             date: targetDateStr,
             timeType: s.timeType,
             maxNumber: s.maxNumber || 10,
@@ -333,7 +420,7 @@ const copyDoctorSchedule = async (doctorId, sourceDate, targetDates) => {
 // ===== [Doctor Capacity Engine] THIẾT LẬP LỊCH LẶP ĐỊNH KỲ THEO TUẦN =====
 const createRecurringSchedule = async (doctorId, config) => {
   try {
-    const { daysOfWeek, startDate, endDate, timeTypes, maxNumber = 10 } = config;
+    const { daysOfWeek, startDate, endDate, timeTypes, maxNumber = 10, clinicId = null } = config;
     if (
       !doctorId ||
       !Array.isArray(daysOfWeek) ||
@@ -344,6 +431,24 @@ const createRecurringSchedule = async (doctorId, config) => {
       timeTypes.length === 0
     ) {
       return { errCode: 1, message: 'Thiếu thông tin thiết lập lịch định kỳ!' };
+    }
+
+    // Xác định clinicId nếu không truyền
+    let targetClinicId = clinicId ? Number(clinicId) : null;
+    if (!targetClinicId) {
+      const primaryAssignment = await db.Doctor_Assignment.findOne({
+        where: { doctorId, workingStatus: 'active', isPrimary: true },
+        attributes: ['clinicId'],
+      });
+      if (primaryAssignment && primaryAssignment.clinicId) {
+        targetClinicId = Number(primaryAssignment.clinicId);
+      } else {
+        const docInfo = await db.Doctor_Info.findOne({
+          where: { doctorId },
+          attributes: ['clinicId'],
+        });
+        targetClinicId = docInfo?.clinicId ? Number(docInfo.clinicId) : null;
+      }
     }
 
     const moment = require('moment');
@@ -370,6 +475,7 @@ const createRecurringSchedule = async (doctorId, config) => {
           if (!existing) {
             await db.Schedule.create({
               doctorId,
+              clinicId: targetClinicId,
               date: dateStr,
               timeType,
               maxNumber: parseInt(maxNumber, 10) || 10,
@@ -384,7 +490,7 @@ const createRecurringSchedule = async (doctorId, config) => {
 
     return {
       errCode: 0,
-      message: `Thiết lập lịch định kỳ thành công! Đã sinh ra ${createdCount} khung giờ khám.`,
+      message: `Thiết lập lịch định kỳ thành công! Đã tạo ${createdCount} khung giờ khám mới.`,
       data: { createdCount },
     };
   } catch (err) {
@@ -421,18 +527,22 @@ const toggleCloseScheduleSlot = async (scheduleId, doctorId, isClose = true) => 
   }
 };
 
-// ===== SỬA: GET LIST PATIENT FOR DOCTOR (SRS 3.11 REQ-DR-001, 002, 003) =====
-// Thêm param statusId để lọc theo trạng thái (REQ-DR-003)
-const getListPatientForDoctor = async (doctorId, date, statusId) => {
+// ===== SỬA: GET LIST PATIENT FOR DOCTOR (SRS 3.11 REQ-DR-001, 002, 003, Multi-Facility Support) =====
+// Thêm param statusId để lọc theo trạng thái (REQ-DR-003) và clinicId để lọc theo cơ sở làm việc
+const getListPatientForDoctor = async (doctorId, date, statusId, clinicId = null) => {
   try {
     // Xây dựng where clause động
-    const whereClause = { doctorId, date };
+    const whereClause = { doctorId: Number(doctorId), date: String(date) };
     if (statusId && statusId !== 'ALL') {
       whereClause.statusId = statusId;
     } else if (!statusId) {
       whereClause.statusId = 'S2'; // Mặc định lọc S2 (đã xác nhận)
     }
     // Nếu statusId === 'ALL' thì không filter theo statusId
+
+    if (clinicId) {
+      whereClause.clinicId = Number(clinicId);
+    }
 
     const patients = await db.Booking.findAll({
       where: whereClause,
@@ -447,6 +557,7 @@ const getListPatientForDoctor = async (doctorId, date, statusId) => {
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'genderBookingData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
       ],
       order: [
         ['timeType', 'ASC'],
@@ -1351,6 +1462,11 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
           as: 'statusData',
           attributes: ['keyMap', 'valueEn', 'valueVi'],
         },
+        {
+          model: db.Clinic,
+          as: 'clinicData',
+          attributes: ['id', 'name', 'address'],
+        },
       ],
       order: [['id', 'DESC']],
     });
@@ -1441,6 +1557,12 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
         }
       }
 
+      const bookingFacility = b.clinicData ? {
+        id: b.clinicData.id,
+        name: b.clinicData.name,
+        address: b.clinicData.address,
+      } : defaultClinic;
+
       return {
         id: b.id,
         bookingCode: `#BK-${b.id}`,
@@ -1455,7 +1577,7 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
         patientAddress: b.patientAddress || b.patientData?.address || '',
         patientGender: b.patientGender || b.patientData?.gender || '',
         patientId: b.patientId,
-        facility: defaultClinic,
+        facility: bookingFacility,
         specialty: defaultSpecialty,
         serviceName: `Khám ${defaultSpecialty.name}`,
         grossPrice,
@@ -1637,6 +1759,53 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
   }
 };
 
+// ===== [Multi-Facility] GET DOCTOR PRACTICES (PractitionerRole) =====
+const getDoctorPractices = async (doctorId) => {
+  try {
+    if (!doctorId) {
+      return { errCode: 1, message: 'Thiếu doctorId!' };
+    }
+
+    const assignments = await db.Doctor_Assignment.findAll({
+      where: {
+        doctorId: Number(doctorId),
+        workingStatus: 'active',
+      },
+      include: [
+        {
+          model: db.Clinic,
+          as: 'clinicData',
+          attributes: ['id', 'name', 'address', 'image'],
+        },
+        {
+          model: db.Specialty,
+          as: 'specialtyData',
+          attributes: ['id', 'name', 'image'],
+        },
+        {
+          model: db.Allcode,
+          as: 'priceTypeData',
+          attributes: ['keyMap', 'valueVi', 'valueEn'],
+        },
+      ],
+      order: [
+        ['isPrimary', 'DESC'],
+        ['id', 'ASC'],
+      ],
+      raw: false,
+      nest: true,
+    });
+
+    return {
+      errCode: 0,
+      data: assignments,
+    };
+  } catch (err) {
+    console.error('>>> getDoctorPractices error:', err);
+    return { errCode: -1, message: 'Lỗi server!' };
+  }
+};
+
 module.exports = {
   getTopDoctorHome,
   getDetailDoctorById,
@@ -1666,5 +1835,8 @@ module.exports = {
   saveDoctorEncounter,
   uploadEncounterAttachments,
   deleteEncounterAttachment,
+  // [Multi-Facility Support]
+  getDoctorPractices,
 };
+
 

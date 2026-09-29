@@ -72,7 +72,7 @@ const resolveActivePolicy = async (policyType, scopeType = 'GLOBAL', scopeId = n
  * @param {object} param0 { doctorId, clinicId, totalAmount, bookingDate }
  * @param {object} transaction Sequelize transaction (optional)
  */
-const freezeBookingFinancials = async ({ doctorId, clinicId, totalAmount, bookingDate = new Date() }, transaction = null) => {
+const freezeBookingFinancials = async ({ doctorId, clinicId, totalAmount, bookingDate = new Date(), customCommissionRate = null }, transaction = null) => {
   const amount = Number(totalAmount) || 0;
 
   // 1. Phân giải Revenue Share Policy
@@ -99,12 +99,22 @@ const freezeBookingFinancials = async ({ doctorId, clinicId, totalAmount, bookin
     refundPolicy = await resolveActivePolicy('REFUND_RULE', 'GLOBAL', null, bookingDate);
   }
 
-  // Cấu hình tỷ lệ phân chia
-  const revRules = revenuePolicy?.parsedRules || {
+  // Cấu hình tỷ lệ phân chia (Ưu tiên: customCommissionRate từ Doctor_Assignment nếu có)
+  let revRules = revenuePolicy?.parsedRules || {
     platformFeePercent: 15,
     doctorSharePercent: 85,
     clinicSharePercent: 0
   };
+
+  if (customCommissionRate !== null && customCommissionRate !== undefined && !isNaN(customCommissionRate)) {
+    const feeRate = Math.min(100, Math.max(0, Number(customCommissionRate)));
+    revRules = {
+      platformFeePercent: feeRate,
+      doctorSharePercent: 100 - feeRate,
+      clinicSharePercent: 0,
+      customSource: 'DOCTOR_ASSIGNMENT'
+    };
+  }
 
   const platformFeePercent = Number(revRules.platformFeePercent) || 0;
   const clinicSharePercent = Number(revRules.clinicSharePercent) || 0;
@@ -221,8 +231,8 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date()) =
     }
   }
 
-  // Tổng tiền khám gốc
-  const originalAmount = Number(booking.totalAmount || booking.depositAmount || 0);
+  // Tổng tiền khám gốc (hỗ trợ bookingPrice chuẩn của Bookings table hoặc snapshot)
+  const originalAmount = Number(booking.bookingPrice || booking.totalAmount || booking.depositAmount || snapshot?.totalAmount || 0);
   const refundAmount = Math.round((originalAmount * appliedRefundPercent) / 100);
   const deductionAmount = originalAmount - refundAmount;
 

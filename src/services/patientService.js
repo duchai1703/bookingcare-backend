@@ -127,9 +127,48 @@ const postBookAppointment = async (data, patientId) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // [NEW LOGIC VNPAY-MAIL]: Lỗi 14 — Null Pointer Exception nếu bác sĩ chưa cấu hình giá
-    // Fetch Doctor_Info để lấy priceId → Allcode.valueVi (VND)
+    // [Multi-Facility Support]: Phân giải cơ sở y tế (clinicId) & Doctor_Assignment
     // ═══════════════════════════════════════════════════════════
+    let resolvedClinicId = data.clinicId ? Number(data.clinicId) : null;
+    let resolvedAssignment = null;
+
+    if (data.doctorAssignmentId) {
+      resolvedAssignment = await db.Doctor_Assignment.findByPk(data.doctorAssignmentId, {
+        include: [{ model: db.Allcode, as: 'priceTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+        transaction: t,
+      });
+      if (resolvedAssignment) {
+        resolvedClinicId = resolvedAssignment.clinicId;
+      }
+    }
+
+    // Nếu chưa có assignment nhưng có clinicId, tìm assignment của bác sĩ tại cơ sở đó
+    if (!resolvedAssignment && resolvedClinicId) {
+      resolvedAssignment = await db.Doctor_Assignment.findOne({
+        where: { doctorId: data.doctorId, clinicId: resolvedClinicId, workingStatus: 'active' },
+        include: [{ model: db.Allcode, as: 'priceTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+        transaction: t,
+      });
+    }
+
+    // Nếu vẫn chưa có clinicId, thử suy từ Schedule đã đăng ký của slot khám này
+    if (!resolvedClinicId) {
+      const matchedSchedule = await db.Schedule.findOne({
+        where: { doctorId: data.doctorId, date: String(data.date), timeType: data.timeType },
+        attributes: ['clinicId'],
+        transaction: t,
+      });
+      if (matchedSchedule && matchedSchedule.clinicId) {
+        resolvedClinicId = matchedSchedule.clinicId;
+        resolvedAssignment = await db.Doctor_Assignment.findOne({
+          where: { doctorId: data.doctorId, clinicId: resolvedClinicId, workingStatus: 'active' },
+          include: [{ model: db.Allcode, as: 'priceTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+          transaction: t,
+        });
+      }
+    }
+
+    // Fallback thông tin bác sĩ từ Doctor_Info
     const doctorInfor = await db.Doctor_Info.findOne({
       where: { doctorId: data.doctorId },
       include: [
@@ -137,14 +176,23 @@ const postBookAppointment = async (data, patientId) => {
       ],
       transaction: t,
     });
-    if (!doctorInfor) {
+
+    if (!resolvedClinicId && doctorInfor?.clinicId) {
+      resolvedClinicId = doctorInfor.clinicId;
+    }
+
+    if (!doctorInfor && !resolvedAssignment) {
       await t.rollback();
       return { errCode: 6, message: 'Bác sĩ chưa cấu hình thông tin khám! Vui lòng chọn bác sĩ khác.' };
     }
 
-    // [NEW LOGIC VNPAY-MAIL]: Lỗi 15 — Forex Leak: BẮT BUỘC lưu valueVi (VND)
-    // Parse chuỗi "500.000đ" → số 500000
-    const priceStr = doctorInfor.priceData?.valueVi || '0';
+    // [Multi-Facility Price Resolution]: Ưu tiên giá khám riêng của cơ sở trong Doctor_Assignment
+    let priceStr = '0';
+    if (resolvedAssignment?.priceTypeData?.valueVi) {
+      priceStr = resolvedAssignment.priceTypeData.valueVi;
+    } else if (doctorInfor?.priceData?.valueVi) {
+      priceStr = doctorInfor.priceData.valueVi;
+    }
     const bookingPrice = parseInt(priceStr.replace(/[^0-9]/g, ''), 10) || 0;
 
     // [Financial Policy Engine]: Đóng băng chính sách phân bổ doanh thu & quy định hoàn tiền
@@ -159,18 +207,31 @@ const postBookAppointment = async (data, patientId) => {
     try {
       financialData = await policyEngineService.freezeBookingFinancials({
         doctorId: data.doctorId,
-        clinicId: doctorInfor.clinicId,
+        clinicId: resolvedClinicId,
         totalAmount: bookingPrice,
-        bookingDate: data.date ? new Date(Number(data.date)) : new Date()
+        bookingDate: data.date ? new Date(Number(data.date)) : new Date(),
+        customCommissionRate: resolvedAssignment?.commissionRate !== undefined ? resolvedAssignment.commissionRate : null,
       }, t);
     } catch (fErr) {
       console.error('>>> [PolicyEngine] Error freezing booking financials:', fErr);
+    }
+
+    // Chuẩn hóa giới tính để đảm bảo hợp lệ theo Allcode (G1: Nam, G2: Nữ, G3: Khác)
+    let normalizedGender = null;
+    if (data.gender === 'G1' || data.gender === 'M' || data.gender === 'MALE' || data.gender === 'Nam') {
+      normalizedGender = 'G1';
+    } else if (data.gender === 'G2' || data.gender === 'F' || data.gender === 'FEMALE' || data.gender === 'Nữ') {
+      normalizedGender = 'G2';
+    } else if (data.gender === 'G3' || data.gender === 'OTHER') {
+      normalizedGender = 'G3';
     }
 
     // REQ-PT-015: Lưu booking (statusId = 'S1' theo State Machine)
     await db.Booking.create({
       statusId: 'S1',
       doctorId: data.doctorId,
+      clinicId: resolvedClinicId,
+      doctorAssignmentId: resolvedAssignment?.id || null,
       patientId: resolvedPatientId,
       date: data.date,
       timeType: data.timeType,
@@ -185,7 +246,7 @@ const postBookAppointment = async (data, patientId) => {
       patientName: data.fullName,
       patientPhoneNumber: data.phoneNumber,
       patientAddress: data.address || '',
-      patientGender: data.gender || '',
+      patientGender: normalizedGender,
       patientBirthday: data.birthday || '',
       bankAccountNumber: data.bankAccountNumber || '',
       bankAccountName: data.bankAccountName || '',
@@ -714,7 +775,7 @@ const cancelBooking = async (data, patientId) => {
         booking.refundStatus = 'none';
       } else if (oldStatus === 'S2' || booking.paymentStatus === 'paid') {
         booking.paymentStatus = 'refund_pending';
-        booking.refundStatus = calculatedRefundAmount > 0 ? 'pending' : 'none';
+        booking.refundStatus = (refundCalc.refundAmount > 0) ? 'pending' : 'none';
       } else {
         booking.refundStatus = 'none';
       }
