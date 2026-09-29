@@ -376,6 +376,45 @@ db.Doctor_Assignment.belongsTo(db.Allcode, {
 });
 
 // ─────────────────────────────────────────────────────
+// 🔗 [Phase 1 - Multi-facility] Clinic ↔ Schedule (1:N)
+// Một Cơ sở y tế có nhiều lịch khám
+// ─────────────────────────────────────────────────────
+db.Clinic.hasMany(db.Schedule, {
+  foreignKey: 'clinicId',
+  as: 'clinicSchedules',
+});
+db.Schedule.belongsTo(db.Clinic, {
+  foreignKey: 'clinicId',
+  as: 'clinicData',
+});
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 1 - Multi-facility] Clinic ↔ Booking (1:N)
+// Một Cơ sở y tế có nhiều lịch hẹn đặt khám
+// ─────────────────────────────────────────────────────
+db.Clinic.hasMany(db.Booking, {
+  foreignKey: 'clinicId',
+  as: 'clinicBookings',
+});
+db.Booking.belongsTo(db.Clinic, {
+  foreignKey: 'clinicId',
+  as: 'clinicData',
+});
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Phase 1 - Multi-facility] Doctor_Assignment ↔ Booking (1:N)
+// Một Phân bổ công tác có nhiều lịch hẹn
+// ─────────────────────────────────────────────────────
+db.Doctor_Assignment.hasMany(db.Booking, {
+  foreignKey: 'doctorAssignmentId',
+  as: 'assignmentBookings',
+});
+db.Booking.belongsTo(db.Doctor_Assignment, {
+  foreignKey: 'doctorAssignmentId',
+  as: 'assignmentData',
+});
+
+// ─────────────────────────────────────────────────────
 // 🔗 Financial_Policy ↔ Booking (1:N) & User (Creator)
 // Quản lý chính sách phân bổ doanh thu & quy định hoàn tiền
 // ─────────────────────────────────────────────────────

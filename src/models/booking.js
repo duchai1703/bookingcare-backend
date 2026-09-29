@@ -67,6 +67,12 @@ module.exports = (sequelize, DataTypes) => {
     platformFee: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền App thu thực tế (VND)
     doctorShare: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Bác sĩ nhận thực tế (VND)
     clinicShare: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 }, // Tiền Cơ sở y tế nhận thực tế (nếu có)
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Phase 1 - Multi-facility] Phân bổ Cơ sở khám & Quan hệ công tác
+    // ═══════════════════════════════════════════════════════════════════════
+    clinicId: { type: DataTypes.INTEGER, allowNull: true },
+    doctorAssignmentId: { type: DataTypes.INTEGER, allowNull: true },
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [
@@ -77,6 +83,9 @@ module.exports = (sequelize, DataTypes) => {
       // [NEW LOGIC VNPAY-MAIL]: Composite Index cho Cronjob cleanupS1 (Lỗi 24 — chống Full Table Scan)
       { fields: ['statusId', 'paymentStatus'], name: 'idx_bookings_status_payment' },
       { fields: ['qrToken'], name: 'idx_bookings_qrToken' },
+      { fields: ['clinicId'], name: 'idx_bookings_clinicId' },
+      { fields: ['doctorAssignmentId'], name: 'idx_bookings_doctorAssignmentId' },
+      { fields: ['doctorId', 'clinicId', 'date'], name: 'idx_bookings_doctor_clinic_date' },
     ],
   });
   return Booking;
