@@ -84,34 +84,50 @@ const deleteMedicine = async (id) => {
 // ══════════════════════════════════════════════════════
 
 const DEFAULT_SYSTEM_SETTINGS = [
-  { key: 'refund_rate_cancel_before_24h', value: '100', description: 'Tỷ lệ hoàn tiền khi hủy trước mốc quy định (%)' },
-  { key: 'refund_rate_cancel_after_24h',  value: '50',  description: 'Tỷ lệ hoàn tiền khi hủy sau mốc quy định (%)' },
-  { key: 'refund_threshold_hours',        value: '24',  description: 'Mốc thời gian quy định hủy lịch trước giờ khám (giờ)' },
-  { key: 'service_fee_rate',              value: '5',   description: 'Phí dịch vụ nền tảng hệ thống (%)' },
+  // 1. Vận hành & Quy tắc Đặt khám
+  { key: 'booking_hold_timeout_minutes', value: '15', description: 'Thời gian tối đa giữ chỗ chờ thanh toán VNPay (phút)' },
+  { key: 'max_daily_bookings_per_patient', value: '3', description: 'Số lịch hẹn tối đa một bệnh nhân được đặt trong cùng 1 ngày' },
+  { key: 'min_hours_before_booking_cancel', value: '2', description: 'Thời gian tối thiểu cho phép bệnh nhân hủy lịch trước giờ khám (giờ)' },
+
+  // 2. Kênh Thông báo & Tự động hóa
+  { key: 'auto_email_booking_confirmation', value: 'true', description: 'Tự động gửi email xác nhận ngay khi đặt lịch thành công' },
+  { key: 'auto_email_remedy_prescription', value: 'true', description: 'Tự động gửi email hóa đơn & đơn thuốc điện tử cho bệnh nhân sau khám' },
+  { key: 'appointment_reminder_hours_before', value: '2', description: 'Thời gian gửi email / thông báo nhắc lịch trước giờ khám (giờ)' },
+
+  // 3. Thông tin Thương hiệu & Hỗ trợ CSKH
+  { key: 'platform_support_hotline', value: '1900-2115', description: 'Hotline tổng đài CSKH hỗ trợ bệnh nhân 24/7' },
+  { key: 'platform_support_email', value: 'hotro@bookingcare.vn', description: 'Email tiếp nhận hỗ trợ và phản hồi của BookingCare' },
+  { key: 'platform_headquarters_address', value: '28 Thành Thái, Dịch Vọng Hậu, Cầu Giấy, Hà Nội', description: 'Địa chỉ trụ sở công ty hiển thị trên hóa đơn / email' },
+
+  // 4. An toàn & Bảo trì Hệ thống
+  { key: 'maintenance_mode', value: 'false', description: 'Kích hoạt chế độ bảo trì toàn hệ thống' },
+  { key: 'session_timeout_hours', value: '2', description: 'Thời hạn hiệu lực của phiên đăng nhập quản trị (giờ)' },
+];
+
+const LEGACY_KEYS = [
+  'refund_rate_cancel_before_24h',
+  'refund_rate_cancel_after_24h',
+  'refund_threshold_hours',
+  'service_fee_rate',
 ];
 
 const getSystemSettings = async () => {
+  // Dọn dẹp các key hoàn tiền / phí sàn cũ (đã chuyển sang Financial Policy Engine)
+  await db.SystemSetting.destroy({ where: { key: LEGACY_KEYS } });
+
   let data = await db.SystemSetting.findAll({ order: [['key', 'ASC']] });
   
-  // Tự động khởi tạo (Self-healing Auto-seed) nếu bảng trống
-  if (!data || data.length === 0) {
-    for (const item of DEFAULT_SYSTEM_SETTINGS) {
+  // Tự động khởi tạo (Self-healing Auto-seed) nếu bảng trống hoặc thiếu key mới
+  const existingKeys = new Set(data.map(item => item.key));
+  let added = false;
+  for (const item of DEFAULT_SYSTEM_SETTINGS) {
+    if (!existingKeys.has(item.key)) {
       await db.SystemSetting.upsert(item);
+      added = true;
     }
+  }
+  if (added || data.length === 0) {
     data = await db.SystemSetting.findAll({ order: [['key', 'ASC']] });
-  } else {
-    // Đảm bảo các key mới như refund_threshold_hours được khởi tạo nếu chưa có
-    const existingKeys = new Set(data.map(item => item.key));
-    let added = false;
-    for (const item of DEFAULT_SYSTEM_SETTINGS) {
-      if (!existingKeys.has(item.key)) {
-        await db.SystemSetting.upsert(item);
-        added = true;
-      }
-    }
-    if (added) {
-      data = await db.SystemSetting.findAll({ order: [['key', 'ASC']] });
-    }
   }
 
   return { errCode: 0, data };
@@ -142,6 +158,8 @@ const updateBulkSystemSettings = async (settingsList = []) => {
 };
 
 const resetSystemSettings = async () => {
+  // Xóa sạch để đưa về mặc định nền tảng chuẩn
+  await db.SystemSetting.destroy({ where: {} });
   for (const item of DEFAULT_SYSTEM_SETTINGS) {
     await db.SystemSetting.upsert(item);
   }
