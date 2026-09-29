@@ -7,7 +7,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seeders/seedAllcode.js",
-    "test:real-flow": "node scripts/verify-real-api-flow.js"
+    "test:real-flow": "node scripts/verify-real-api-flow.js",
+    "test:clinical-flow": "node scripts/verify-doctor-patient-clinical-flow.js"
   },
   "keywords": [
     "bookingcare",
