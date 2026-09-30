@@ -36,8 +36,11 @@ module.exports = (sequelize, DataTypes) => {
     bankName: { type: DataTypes.STRING(255), allowNull: true },  // Tên ngân hàng
     refundRate: { type: DataTypes.DECIMAL(5, 2), allowNull: true },  // % hoàn (vd: 80.00)
     refundAmount: { type: DataTypes.INTEGER, allowNull: true },  // Số tiền hoàn (VNĐ)
-    // refundStatus values: 'none' | 'pending' | 'done'
+    // refundStatus values: 'none' | 'pending' | 'done' | 'completed'
     refundStatus: { type: DataTypes.STRING(20), allowNull: true, defaultValue: 'none' },
+    refundMethod: { type: DataTypes.STRING(30), allowNull: true }, // 'WALLET' | 'BANK_TRANSFER'
+    refundedAt: { type: DataTypes.DATE, allowNull: true },
+    paymentMethod: { type: DataTypes.STRING(30), allowNull: true, defaultValue: 'VNPAY' }, // 'WALLET' | 'VNPAY'
     cancelledAt: { type: DataTypes.DATE, allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════

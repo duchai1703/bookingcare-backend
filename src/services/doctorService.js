@@ -641,6 +641,29 @@ const sendRemedy = async (data) => {
     booking.statusId = 'S3'; // State Machine: S2 → S3 (Đã khám xong)
     await booking.save({ transaction: t });
 
+    // ═══════════════════════════════════════════════════════════
+    // [Financial Wallet Hold -> Capture] Ca khám hoàn thành → Capture tiền giữ
+    // ═══════════════════════════════════════════════════════════
+    const walletHold = await db.Wallet_Hold.findOne({
+      where: { bookingId: booking.id, status: 'HELD' },
+      lock: t.LOCK.UPDATE,
+      transaction: t,
+    });
+    if (walletHold) {
+      await walletHold.update({ status: 'CAPTURED' }, { transaction: t });
+      const patientWallet = await db.Wallet.findOne({
+        where: { id: walletHold.walletId },
+        lock: t.LOCK.UPDATE,
+        transaction: t,
+      });
+      if (patientWallet) {
+        const curReserved = Number(patientWallet.reservedBalance) || 0;
+        await patientWallet.update({
+          reservedBalance: Math.max(0, curReserved - Number(walletHold.amount)),
+        }, { transaction: t });
+      }
+    }
+
     // ===== 6. COMMIT — Mở khóa dòng booking =====
     await t.commit();
     // → 🔓 Dòng booking được MỞ KHÓA tại đây

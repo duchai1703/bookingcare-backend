@@ -226,9 +226,40 @@ const postBookAppointment = async (data, patientId) => {
       normalizedGender = 'G3';
     }
 
-    // REQ-PT-015: Lưu booking (statusId = 'S1' theo State Machine)
-    await db.Booking.create({
-      statusId: 'S1',
+    // ═══════════════════════════════════════════════════════════
+    // [Financial Wallet Payment Gateway] Kiểm tra ví nếu thanh toán bằng Ví
+    // ═══════════════════════════════════════════════════════════
+    const isWalletPayment = data.paymentMethod === 'WALLET';
+    let patientWallet = null;
+
+    if (isWalletPayment) {
+      if (!resolvedPatientId) {
+        await t.rollback();
+        return {
+          errCode: -11,
+          message: 'Bạn cần đăng nhập tài khoản bệnh nhân để thanh toán bằng Ví BookingCare!',
+        };
+      }
+
+      patientWallet = await db.Wallet.findOne({
+        where: { ownerId: resolvedPatientId, walletType: 'PATIENT' },
+        lock: t.LOCK.UPDATE,
+        transaction: t,
+      });
+
+      if (!patientWallet || Number(patientWallet.availableBalance) < Number(bookingPrice)) {
+        await t.rollback();
+        const curBal = patientWallet ? Number(patientWallet.availableBalance).toLocaleString('vi-VN') : '0';
+        return {
+          errCode: -10,
+          message: `Số dư ví BookingCare không đủ (hiện có: ${curBal} đ, cần: ${Number(bookingPrice).toLocaleString('vi-VN')} đ). Vui lòng nạp thêm tiền vào ví!`,
+        };
+      }
+    }
+
+    // REQ-PT-015: Lưu booking (statusId = 'S2' nếu trả bằng ví, 'S1' nếu chờ email)
+    const newBooking = await db.Booking.create({
+      statusId: isWalletPayment ? 'S2' : 'S1',
       doctorId: data.doctorId,
       clinicId: resolvedClinicId,
       doctorAssignmentId: resolvedAssignment?.id || null,
@@ -240,6 +271,8 @@ const postBookAppointment = async (data, patientId) => {
       paymentToken: crypto.randomUUID(),
       // [NEW LOGIC VNPAY-MAIL]: Lỗi 15 — bookingPrice luôn bằng VND
       bookingPrice: bookingPrice,
+      paymentStatus: isWalletPayment ? 'paid' : 'unpaid',
+      paymentMethod: isWalletPayment ? 'WALLET' : 'VNPAY',
       // [Phase B] QR Token cho Mobile Doctor check-in
       qrToken: `BKQ-${resolvedPatientId || 'GUEST'}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
       reason: data.reason || '',
@@ -259,6 +292,57 @@ const postBookAppointment = async (data, patientId) => {
       doctorShare: financialData.doctorShare,
       clinicShare: financialData.clinicShare,
     }, { transaction: t }); // DS-05
+
+    // ═══════════════════════════════════════════════════════════
+    // [Wallet Two-Phase Hold & Immutable Ledger Entry]
+    // ═══════════════════════════════════════════════════════════
+    if (isWalletPayment && patientWallet) {
+      const newAvail = Number(patientWallet.availableBalance) - Number(bookingPrice);
+      const newReserved = Number(patientWallet.reservedBalance) + Number(bookingPrice);
+
+      await patientWallet.update({
+        availableBalance: newAvail,
+        reservedBalance: newReserved,
+      }, { transaction: t });
+
+      await db.Wallet_Hold.create({
+        walletId: patientWallet.id,
+        bookingId: newBooking.id,
+        amount: bookingPrice,
+        status: 'HELD',
+        reason: 'BOOKING_RESERVATION',
+      }, { transaction: t });
+
+      await db.Wallet_Transaction.create({
+        walletId: patientWallet.id,
+        direction: 'DEBIT',
+        amount: bookingPrice,
+        balanceAfter: newAvail,
+        transactionType: 'BOOKING_PAYMENT',
+        referenceType: 'BOOKING',
+        referenceId: String(newBooking.id),
+        idempotencyKey: `BOOKING_PAY_${newBooking.id}`,
+        description: `Thanh toán giữ chỗ ca khám #${newBooking.id}`,
+        status: 'COMPLETED',
+      }, { transaction: t });
+
+      // Tăng slot Schedule ngay lập tức vì booking đã là S2
+      const schedule = await db.Schedule.findOne({
+        where: {
+          doctorId: data.doctorId,
+          date: data.date,
+          timeType: data.timeType,
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!schedule || schedule.currentNumber >= schedule.maxNumber) {
+        await t.rollback();
+        return { errCode: 5, message: 'Khung giờ này vừa hết chỗ! Vui lòng chọn khung giờ khác.' };
+      }
+      await schedule.increment('currentNumber', { by: 1, transaction: t });
+    }
 
     // FIX BE-06: KHÔNG tăng slot tại S1 — chỉ tăng sau khi verify email (S1→S1.5)
 
@@ -307,7 +391,17 @@ const postBookAppointment = async (data, patientId) => {
       console.warn('>>> [EMAIL_WARNING] Không gửi được email xác thực:', emailErr.message);
     }
 
-    const response = { errCode: 0, message: 'Đặt lịch thành công! Vui lòng kiểm tra email.' };
+    const response = {
+      errCode: 0,
+      message: isWalletPayment
+        ? 'Đặt lịch khám và thanh toán bằng Ví BookingCare thành công! Lịch hẹn của bạn đã được xác nhận.'
+        : 'Đặt lịch thành công! Vui lòng kiểm tra email.',
+      data: {
+        bookingId: newBooking.id,
+        paymentMethod: newBooking.paymentMethod,
+        statusId: newBooking.statusId,
+      },
+    };
     // Trả kèm cảnh báo deprecation nếu dùng Guest Mode
     if (deprecationWarning) response.deprecationWarning = deprecationWarning;
     return response;
@@ -774,8 +868,67 @@ const cancelBooking = async (data, patientId) => {
         booking.paymentStatus = 'cancelled';
         booking.refundStatus = 'none';
       } else if (oldStatus === 'S2' || booking.paymentStatus === 'paid') {
-        booking.paymentStatus = 'refund_pending';
-        booking.refundStatus = (refundCalc.refundAmount > 0) ? 'pending' : 'none';
+        if (booking.paymentMethod === 'WALLET') {
+          // ═══════════════════════════════════════════════════════════
+          // [Zero-Admin Instant Wallet Refund] Hoàn tiền 100% tự động tức thì vào Ví!
+          // ═══════════════════════════════════════════════════════════
+          const patientWallet = await db.Wallet.findOne({
+            where: { ownerId: booking.patientId, walletType: 'PATIENT' },
+            lock: t.LOCK.UPDATE,
+            transaction: t,
+          });
+
+          // Tìm và nhả khoản giữ tiền (Wallet_Hold)
+          const walletHold = await db.Wallet_Hold.findOne({
+            where: { bookingId: booking.id, status: 'HELD' },
+            lock: t.LOCK.UPDATE,
+            transaction: t,
+          });
+
+          if (walletHold) {
+            await walletHold.update({ status: 'RELEASED' }, { transaction: t });
+          }
+
+          if (patientWallet) {
+            const currentReserved = Number(patientWallet.reservedBalance) || 0;
+            const currentAvail = Number(patientWallet.availableBalance) || 0;
+            const refundAmt = Number(refundCalc.refundAmount) || 0;
+            const holdAmt = walletHold ? Number(walletHold.amount) : Number(booking.bookingPrice);
+
+            const newReserved = Math.max(0, currentReserved - holdAmt);
+            const newAvail = currentAvail + refundAmt;
+
+            await patientWallet.update({
+              reservedBalance: newReserved,
+              availableBalance: newAvail,
+            }, { transaction: t });
+
+            if (refundAmt > 0) {
+              await db.Wallet_Transaction.create({
+                walletId: patientWallet.id,
+                direction: 'CREDIT',
+                amount: refundAmt,
+                balanceAfter: newAvail,
+                transactionType: 'REFUND',
+                referenceType: 'BOOKING',
+                referenceId: String(booking.id),
+                idempotencyKey: `REFUND_WALLET_${booking.id}`,
+                description: `Hoàn tiền tự động ${refundCalc.appliedRefundPercent}% cho ca khám #${booking.id} đã hủy theo chính sách`,
+                status: 'COMPLETED',
+              }, { transaction: t });
+            }
+          }
+
+          booking.paymentStatus = refundCalc.refundAmount > 0 ? 'refunded' : 'cancelled';
+          booking.refundStatus = refundCalc.refundAmount > 0 ? 'completed' : 'none';
+          booking.refundMethod = 'WALLET';
+          booking.refundedAt = now;
+        } else {
+          // VNPay / Chuyển khoản ngân hàng truyền thống
+          booking.paymentStatus = 'refund_pending';
+          booking.refundStatus = (refundCalc.refundAmount > 0) ? 'pending' : 'none';
+          booking.refundMethod = 'BANK_TRANSFER';
+        }
       } else {
         booking.refundStatus = 'none';
       }
@@ -806,15 +959,22 @@ const cancelBooking = async (data, patientId) => {
       // (Không trừ slot nếu oldStatus = 'S1' vì S1 chưa tăng slot)
 
       await t.commit();
+
+      const isWalletRefund = booking.paymentMethod === 'WALLET' && refundCalc.refundAmount > 0;
+      const successMessage = isWalletRefund
+        ? `Hủy lịch hẹn thành công! Số tiền ${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} đ (${refundCalc.appliedRefundPercent}%) đã được tự động hoàn ngay vào Ví BookingCare của bạn.`
+        : 'Hủy lịch hẹn thành công!';
+
       return {
         errCode: 0,
-        message: 'Hủy lịch hẹn thành công!',
+        message: successMessage,
         data: {
           bookingId: booking.id,
           cancelledAt: booking.cancelledAt,
           refundRate: booking.refundRate,
           refundAmount: booking.refundAmount,
           refundStatus: booking.refundStatus,
+          refundMethod: booking.refundMethod,
         },
       };
     } catch (txErr) {
