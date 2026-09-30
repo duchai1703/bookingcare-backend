@@ -476,6 +476,389 @@ async function getWalletTransactions(userId, { page = 1, limit = 20, type = null
   }
 }
 
+/**
+ * [PHASE 4] Lấy chỉ số thanh khoản, nợ phải trả, bảo chứng quỹ và kiểm tra đối soát toàn vẹn sổ cái
+ */
+async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
+  try {
+    const ratio = Math.max(10, Math.min(100, Number(reserveRatio) || 40));
+
+    // 1. Nợ phải trả bệnh nhân (Available Liabilities)
+    const patientWallets = await db.Wallet.findAll({
+      where: { walletType: 'PATIENT' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('availableBalance')), 0), 'totalAvailable'],
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('reservedBalance')), 0), 'totalReserved'],
+        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'walletCount'],
+      ],
+      raw: true,
+    });
+
+    const patientAvailableLiability = Number(patientWallets[0]?.totalAvailable || 0);
+    const patientReservedLiability = Number(patientWallets[0]?.totalReserved || 0);
+    const totalPatientWallets = parseInt(patientWallets[0]?.walletCount || 0, 10);
+
+    // 2. Ký quỹ giữ chỗ ca khám đang chờ thực hiện (Active Escrow Holds)
+    const activeHolds = await db.Wallet_Hold.findAll({
+      where: { status: 'HELD' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalHeld'],
+        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'holdCount'],
+      ],
+      raw: true,
+    });
+    const escrowActiveHolds = Number(activeHolds[0]?.totalHeld || 0);
+    const activeHoldCount = parseInt(activeHolds[0]?.holdCount || 0, 10);
+
+    // 3. Tiền chờ trả Bác sĩ / Cơ sở y tế (Doctor Payables)
+    let doctorPayables = 0;
+    try {
+      if (db.Doctor_Settlement) {
+        const docSettlements = await db.Doctor_Settlement.findAll({
+          where: { payoutStatus: { [Op.in]: ['PENDING', 'PROCESSING'] } },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('netPayout')), 0), 'totalPayable'],
+          ],
+          raw: true,
+        });
+        doctorPayables = Number(docSettlements[0]?.totalPayable || 0);
+      }
+    } catch (e) {
+      doctorPayables = 0;
+    }
+
+    // Tổng nghĩa vụ nợ của toàn hệ thống (Total Liabilities)
+    const totalLiabilities = patientAvailableLiability + patientReservedLiability + doctorPayables;
+
+    // 4. Dòng tiền thực tế nạp vào hệ thống qua cổng thanh toán (Total Inflow Cash)
+    const depositTransactions = await db.Payment_Transaction.findAll({
+      where: { status: 'SUCCESS' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalDeposited'],
+        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'depositCount'],
+      ],
+      raw: true,
+    });
+    const totalCashInflow = Number(depositTransactions[0]?.totalDeposited || 0);
+    const totalDepositCount = parseInt(depositTransactions[0]?.depositCount || 0, 10);
+
+    // 5. Doanh thu dịch vụ khám đã hoàn tất (Captured) & Tiền đã hoàn trả vào ví (Refunded)
+    const capturedHolds = await db.Wallet_Hold.findAll({
+      where: { status: 'CAPTURED' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalCaptured'],
+      ],
+      raw: true,
+    });
+    const totalCapturedRevenue = Number(capturedHolds[0]?.totalCaptured || 0);
+
+    const refundTxs = await db.Wallet_Transaction.findAll({
+      where: { transactionType: 'REFUND' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalRefunded'],
+      ],
+      raw: true,
+    });
+    const totalRefunded = Number(refundTxs[0]?.totalRefunded || 0);
+
+    // 6. Tính toán An toàn Thanh khoản & Khả năng Rút vốn Đầu tư
+    // Dự trữ bắt buộc: khóa cứng không được rút đi đầu tư
+    const mandatoryReserveCash = Math.round(totalLiabilities * (ratio / 100));
+
+    // Số tiền chủ sàn ĐƯỢC PHÉP rút đi đầu tư mà vẫn đảm bảo 100% khả năng hoàn tiền tức thì:
+    // Net Withdrawable = max(0, Total Inflow - Mandatory Reserve - Reserved Balance)
+    const netWithdrawableLiquidity = Math.max(
+      0,
+      totalCashInflow - mandatoryReserveCash - patientReservedLiability
+    );
+
+    // Hệ số bảo chứng thanh khoản (Solvency Ratio = Cash Inflow / Total Liabilities)
+    const solvencyRatio = totalLiabilities > 0
+      ? parseFloat((totalCashInflow / totalLiabilities).toFixed(2))
+      : 2.0;
+
+    let solvencyStatus = 'OPTIMAL';
+    let solvencyLabel = 'Bảo chứng Tối ưu & An toàn Tuyệt đối';
+    let solvencyColor = '#10b981';
+
+    if (solvencyRatio >= 1.3) {
+      solvencyStatus = 'OPTIMAL';
+      solvencyLabel = 'Bảo chứng Tối ưu & An toàn Tuyệt đối';
+      solvencyColor = '#10b981';
+    } else if (solvencyRatio >= 1.1) {
+      solvencyStatus = 'HEALTHY';
+      solvencyLabel = 'Thanh khoản Lành mạnh';
+      solvencyColor = '#0ea5e9';
+    } else if (solvencyRatio >= 1.0) {
+      solvencyStatus = 'WARNING';
+      solvencyLabel = 'Cảnh báo: Tiệm cận Mức Dự trữ Tối thiểu';
+      solvencyColor = '#f59e0b';
+    } else {
+      solvencyStatus = 'CRITICAL';
+      solvencyLabel = 'Báo động Đỏ: Nguy cơ Thiếu hụt Thanh khoản!';
+      solvencyColor = '#ef4444';
+    }
+
+    // 7. Kiểm tra Đối soát Tính toàn vẹn Sổ cái (Double-Entry Ledger Integrity Reconciliation)
+    const ledgerStats = await db.Wallet_Transaction.findAll({
+      attributes: [
+        'direction',
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalAmount'],
+      ],
+      group: ['direction'],
+      raw: true,
+    });
+
+    let ledgerCredits = 0;
+    let ledgerDebits = 0;
+    ledgerStats.forEach((st) => {
+      if (st.direction === 'CREDIT') ledgerCredits = Number(st.totalAmount || 0);
+      if (st.direction === 'DEBIT') ledgerDebits = Number(st.totalAmount || 0);
+    });
+
+    const netLedgerBalance = ledgerCredits - ledgerDebits;
+    const sumWalletsBalance = patientAvailableLiability + patientReservedLiability;
+    const discrepancy = Math.abs(sumWalletsBalance - netLedgerBalance);
+    const isLedgerBalanced = discrepancy < 0.05;
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        summary: {
+          patientAvailableLiability,
+          patientReservedLiability,
+          escrowActiveHolds,
+          activeHoldCount,
+          doctorPayables,
+          totalLiabilities,
+          totalCashInflow,
+          totalDepositCount,
+          totalCapturedRevenue,
+          totalRefunded,
+          totalPatientWallets,
+        },
+        solvency: {
+          reserveRatio: ratio,
+          mandatoryReserveCash,
+          netWithdrawableLiquidity,
+          solvencyRatio,
+          solvencyStatus,
+          solvencyLabel,
+          solvencyColor,
+        },
+        reconciliation: {
+          sumWalletsBalance,
+          ledgerCredits,
+          ledgerDebits,
+          netLedgerBalance,
+          discrepancy,
+          isLedgerBalanced,
+          lastReconciledAt: new Date(),
+        },
+      },
+    };
+  } catch (error) {
+    console.error('Error in getAdminLiquidityMetrics:', error);
+    return {
+      errCode: 1,
+      errMessage: error.message || 'Lỗi khi tính toán chỉ số thanh khoản',
+    };
+  }
+}
+
+/**
+ * [PHASE 4] Lấy danh sách giao dịch Sổ cái toàn sàn (Ledger Explorer & Audit Trail)
+ */
+async function getAdminWalletTransactions({
+  page = 1,
+  limit = 20,
+  type = null,
+  direction = null,
+  search = '',
+  startDate = null,
+  endDate = null,
+} = {}) {
+  try {
+    const offset = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
+    const where = {};
+
+    if (type && type !== 'ALL') {
+      where.transactionType = type;
+    }
+
+    if (direction && direction !== 'ALL') {
+      where.direction = direction;
+    }
+
+    if (startDate && endDate) {
+      where.createdAt = {
+        [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()],
+      };
+    }
+
+    if (search && search.trim().length > 0) {
+      const q = `%${search.trim()}%`;
+      where[Op.or] = [
+        { idempotencyKey: { [Op.iLike]: q } },
+        { referenceId: { [Op.iLike]: q } },
+        { description: { [Op.iLike]: q } },
+      ];
+    }
+
+    const { count, rows } = await db.Wallet_Transaction.findAndCountAll({
+      where,
+      include: [
+        {
+          model: db.Wallet,
+          as: 'wallet',
+          attributes: ['id', 'ownerId', 'walletType', 'availableBalance', 'reservedBalance'],
+          include: [
+            {
+              model: db.User,
+              as: 'owner',
+              attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber'],
+            },
+          ],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit, 10),
+      offset,
+    });
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        total: count,
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        totalPages: Math.ceil(count / limit),
+        transactions: rows,
+      },
+    };
+  } catch (error) {
+    console.error('Error in getAdminWalletTransactions:', error);
+    return {
+      errCode: 1,
+      errMessage: error.message || 'Lỗi khi tra cứu sổ cái giao dịch',
+    };
+  }
+}
+
+/**
+ * [PHASE 4] Lấy danh sách ví người dùng (User Wallets Management)
+ */
+async function getAdminWalletsList({
+  page = 1,
+  limit = 20,
+  status = null,
+  walletType = 'PATIENT',
+  search = '',
+} = {}) {
+  try {
+    const offset = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
+    const where = {};
+
+    if (walletType && walletType !== 'ALL') {
+      where.walletType = walletType;
+    }
+
+    if (status && status !== 'ALL') {
+      where.status = status;
+    }
+
+    const userWhere = {};
+    if (search && search.trim().length > 0) {
+      const q = `%${search.trim()}%`;
+      userWhere[Op.or] = [
+        { email: { [Op.iLike]: q } },
+        { firstName: { [Op.iLike]: q } },
+        { lastName: { [Op.iLike]: q } },
+        { phoneNumber: { [Op.iLike]: q } },
+      ];
+    }
+
+    const { count, rows } = await db.Wallet.findAndCountAll({
+      where,
+      include: [
+        {
+          model: db.User,
+          as: 'owner',
+          where: Object.keys(userWhere).length > 0 ? userWhere : undefined,
+          attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber'],
+        },
+      ],
+      order: [['updatedAt', 'DESC']],
+      limit: parseInt(limit, 10),
+      offset,
+    });
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        total: count,
+        page: parseInt(page, 10),
+        limit: parseInt(limit, 10),
+        totalPages: Math.ceil(count / limit),
+        wallets: rows,
+      },
+    };
+  } catch (error) {
+    console.error('Error in getAdminWalletsList:', error);
+    return {
+      errCode: 1,
+      errMessage: error.message || 'Lỗi khi lấy danh sách ví người dùng',
+    };
+  }
+}
+
+/**
+ * [PHASE 4] Khóa hoặc Mở khóa ví người dùng (Lock/Unlock Wallet)
+ */
+async function toggleWalletStatus(walletId, targetStatus, adminNote = '', adminId = null) {
+  try {
+    if (!walletId) {
+      return { errCode: 1, errMessage: 'Mã ví không hợp lệ' };
+    }
+
+    const validStatuses = ['ACTIVE', 'LOCKED', 'SUSPENDED'];
+    if (!validStatuses.includes(targetStatus)) {
+      return { errCode: 2, errMessage: 'Trạng thái ví không hợp lệ' };
+    }
+
+    const wallet = await db.Wallet.findByPk(walletId);
+    if (!wallet) {
+      return { errCode: 3, errMessage: 'Không tìm thấy ví tương ứng' };
+    }
+
+    const oldStatus = wallet.status;
+    wallet.status = targetStatus;
+    await wallet.save();
+
+    return {
+      errCode: 0,
+      errMessage: 'Cập nhật trạng thái ví thành công',
+      data: {
+        walletId: wallet.id,
+        oldStatus,
+        newStatus: wallet.status,
+        adminNote,
+        adminId,
+        updatedAt: wallet.updatedAt,
+      },
+    };
+  } catch (error) {
+    console.error('Error in toggleWalletStatus:', error);
+    return {
+      errCode: 1,
+      errMessage: error.message || 'Lỗi khi cập nhật trạng thái ví',
+    };
+  }
+}
+
 module.exports = {
   getOrCreateWallet,
   getWalletOverview,
@@ -483,4 +866,9 @@ module.exports = {
   processVNPayDepositIPN,
   verifyVNPayDepositReturn,
   getWalletTransactions,
+  // Phase 4 Admin Services
+  getAdminLiquidityMetrics,
+  getAdminWalletTransactions,
+  getAdminWalletsList,
+  toggleWalletStatus,
 };

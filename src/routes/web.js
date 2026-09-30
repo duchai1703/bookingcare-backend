@@ -272,6 +272,14 @@ const routes = (app) => {
   app.get('/api/v1/statistics/analytics/patients', verifyToken, checkAdminRole, statisticController.getPatientAnalytics);
 
   // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 4] FINANCIAL LIQUIDITY & EXECUTIVE LEDGER CONSOLE — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/financial/liquidity-metrics', verifyToken, checkAdminRole, walletController.handleGetAdminLiquidityMetrics);
+  app.get('/api/v1/admin/financial/ledger-transactions', verifyToken, checkAdminRole, walletController.handleGetAdminWalletTransactions);
+  app.get('/api/v1/admin/financial/wallets', verifyToken, checkAdminRole, walletController.handleGetAdminWalletsList);
+  app.post('/api/v1/admin/financial/wallets/:id/toggle-status', verifyToken, checkAdminRole, walletController.handleToggleWalletStatus);
+
+  // ═══════════════════════════════════════════════════════════════════════
   // [Phase F] PATIENT ENTERPRISE MANAGEMENT & REFUND FLOW — Admin R1
   // ═══════════════════════════════════════════════════════════════════════
   app.get('/api/v1/admin/patients', verifyToken, checkAdminRole, patientManageController.handleGetPatientsList);

@@ -109,10 +109,97 @@ async function handleGetMyTransactions(req, res) {
   }
 }
 
+/**
+ * [PHASE 4] GET /api/v1/admin/financial/liquidity-metrics
+ * Lấy toàn bộ chỉ số giám sát thanh khoản, bảo chứng quỹ & đối soát sổ cái
+ */
+async function handleGetAdminLiquidityMetrics(req, res) {
+  try {
+    const { reserveRatio } = req.query;
+    const result = await walletService.getAdminLiquidityMetrics({ reserveRatio });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminLiquidityMetrics:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 4] GET /api/v1/admin/financial/ledger-transactions
+ * Lấy danh sách giao dịch Sổ cái toàn sàn (Audit Trail & Ledger Explorer)
+ */
+async function handleGetAdminWalletTransactions(req, res) {
+  try {
+    const { page, limit, type, direction, search, startDate, endDate } = req.query;
+    const result = await walletService.getAdminWalletTransactions({
+      page,
+      limit,
+      type,
+      direction,
+      search,
+      startDate,
+      endDate,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminWalletTransactions:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 4] GET /api/v1/admin/financial/wallets
+ * Lấy danh sách ví người dùng trên toàn hệ thống
+ */
+async function handleGetAdminWalletsList(req, res) {
+  try {
+    const { page, limit, status, walletType, search } = req.query;
+    const result = await walletService.getAdminWalletsList({
+      page,
+      limit,
+      status,
+      walletType,
+      search,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminWalletsList:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 4] POST /api/v1/admin/financial/wallets/:id/toggle-status
+ * Khóa hoặc Mở khóa ví người dùng
+ */
+async function handleToggleWalletStatus(req, res) {
+  try {
+    const walletId = req.params.id;
+    const { targetStatus, adminNote } = req.body;
+    const adminId = req.user?.id;
+
+    const result = await walletService.toggleWalletStatus(
+      walletId,
+      targetStatus,
+      adminNote,
+      adminId
+    );
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleToggleWalletStatus:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetMyWallet,
   handleCreateDepositUrl,
   handleVNPayDepositIPN,
   handleVNPayDepositReturn,
   handleGetMyTransactions,
+  // Phase 4 Admin Handlers
+  handleGetAdminLiquidityMetrics,
+  handleGetAdminWalletTransactions,
+  handleGetAdminWalletsList,
+  handleToggleWalletStatus,
 };
