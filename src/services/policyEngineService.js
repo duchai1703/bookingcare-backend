@@ -541,6 +541,190 @@ const getPolicyDetail = async (id) => {
   });
   item.versionHistory = versionHistory;
 
+  // 1. Lấy thông tin thực thể liên quan (Scope Entity: Doctor / Clinic / Global)
+  item.scopeEntity = null;
+  if (item.scopeType === 'DOCTOR' && item.scopeId) {
+    try {
+      const doctor = await db.User.findByPk(item.scopeId, {
+        attributes: ['id', 'firstName', 'lastName', 'email', 'image', 'phoneNumber'],
+        include: [
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId', 'priceId', 'commissionRate'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] }
+            ]
+          },
+          {
+            model: db.Allcode,
+            as: 'positionData',
+            attributes: ['valueVi', 'valueEn']
+          }
+        ]
+      });
+      if (doctor) {
+        item.scopeEntity = {
+          type: 'DOCTOR',
+          id: doctor.id,
+          fullName: `${doctor.lastName || ''} ${doctor.firstName || ''}`.trim(),
+          positionVi: doctor.positionData?.valueVi || '',
+          email: doctor.email,
+          phone: doctor.phoneNumber,
+          image: doctor.image,
+          specialtyName: doctor.doctorInfoData?.specialtyData?.name || 'Đa khoa',
+          clinicName: doctor.doctorInfoData?.clinicData?.name || 'Chưa gán cơ sở',
+          clinicAddress: doctor.doctorInfoData?.clinicData?.address || ''
+        };
+      }
+    } catch (e) {
+      console.error('Error fetching doctor scope entity:', e);
+    }
+  } else if (item.scopeType === 'CLINIC' && item.scopeId) {
+    try {
+      const clinic = await db.Clinic.findByPk(item.scopeId, {
+        attributes: ['id', 'name', 'address', 'image']
+      });
+      if (clinic) {
+        item.scopeEntity = {
+          type: 'CLINIC',
+          id: clinic.id,
+          name: clinic.name,
+          address: clinic.address,
+          image: clinic.image
+        };
+      }
+    } catch (e) {
+      console.error('Error fetching clinic scope entity:', e);
+    }
+  } else {
+    item.scopeEntity = {
+      type: 'GLOBAL',
+      name: 'Toàn hệ thống BookingCare',
+      description: 'Áp dụng cho mọi Cơ sở y tế và Bác sĩ trên toàn quốc'
+    };
+  }
+
+  // 2. Thống kê tài chính lũy kế (Financial Performance Summary)
+  try {
+    const allBookingsStats = await db.Booking.findAll({
+      where: {
+        [Op.or]: [
+          { revenuePolicyId: item.id },
+          { refundPolicyId: item.id }
+        ]
+      },
+      attributes: ['bookingPrice', 'platformFee', 'doctorShare', 'refundAmount', 'statusId', 'paymentStatus']
+    });
+
+    let totalGross = 0;
+    let totalPlatformFee = 0;
+    let totalDoctorShare = 0;
+    let totalRefundAmount = 0;
+    let completedBookings = 0;
+    let cancelledBookings = 0;
+
+    allBookingsStats.forEach((b) => {
+      const price = Number(b.bookingPrice) || 0;
+      const pFee = Number(b.platformFee) || 0;
+      const dShare = Number(b.doctorShare) || 0;
+      const rAmount = Number(b.refundAmount) || 0;
+
+      totalGross += price;
+      totalPlatformFee += pFee;
+      totalDoctorShare += dShare;
+      totalRefundAmount += rAmount;
+
+      if (b.statusId === 'S3') completedBookings++;
+      if (b.statusId === 'S4') cancelledBookings++;
+    });
+
+    item.financialStats = {
+      totalBookings: allBookingsStats.length,
+      completedBookings,
+      cancelledBookings,
+      totalGross,
+      totalPlatformFee,
+      totalDoctorShare,
+      totalRefundAmount
+    };
+
+    // 3. Danh sách tối đa 30 ca đặt khám liên kết gần nhất
+    const recentBookings = await db.Booking.findAll({
+      where: {
+        [Op.or]: [
+          { revenuePolicyId: item.id },
+          { refundPolicyId: item.id }
+        ]
+      },
+      limit: 30,
+      order: [['createdAt', 'DESC']],
+      include: [
+        {
+          model: db.User,
+          as: 'patientData',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber']
+        },
+        {
+          model: db.User,
+          as: 'doctorBookingData',
+          attributes: ['id', 'firstName', 'lastName'],
+          include: [
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              include: [
+                { model: db.Specialty, as: 'specialtyData', attributes: ['name'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['name'] }
+              ]
+            }
+          ]
+        },
+        {
+          model: db.Allcode,
+          as: 'timeTypeBooking',
+          attributes: ['valueVi']
+        },
+        {
+          model: db.Allcode,
+          as: 'statusData',
+          attributes: ['valueVi']
+        }
+      ]
+    });
+
+    item.linkedBookings = recentBookings.map((b) => ({
+      id: b.id,
+      bookingCode: `#BK-${String(b.id).padStart(6, '0')}`,
+      date: b.date,
+      timeSlot: b.timeTypeBooking?.valueVi || b.timeType,
+      patientName: b.patientData ? `${b.patientData.lastName || ''} ${b.patientData.firstName || ''}`.trim() : 'Bệnh nhân',
+      patientPhone: b.patientData?.phoneNumber || '—',
+      doctorName: b.doctorBookingData ? `${b.doctorBookingData.lastName || ''} ${b.doctorBookingData.firstName || ''}`.trim() : 'Bác sĩ',
+      specialtyName: b.doctorBookingData?.doctorInfoData?.specialtyData?.name || 'Đa khoa',
+      clinicName: b.doctorBookingData?.doctorInfoData?.clinicData?.name || 'Phòng khám',
+      bookingPrice: Number(b.bookingPrice) || 0,
+      platformFee: Number(b.platformFee) || 0,
+      doctorShare: Number(b.doctorShare) || 0,
+      refundAmount: Number(b.refundAmount) || 0,
+      statusId: b.statusId,
+      statusLabel: b.statusData?.valueVi || b.statusId,
+      paymentStatus: b.paymentStatus || 'unpaid',
+      createdAt: b.createdAt
+    }));
+  } catch (e) {
+    console.error('Error fetching policy financial stats/bookings:', e);
+    item.financialStats = {
+      totalBookings: linkedBookingCount,
+      totalGross: 0,
+      totalPlatformFee: 0,
+      totalDoctorShare: 0,
+      totalRefundAmount: 0
+    };
+    item.linkedBookings = [];
+  }
+
   return item;
 };
 

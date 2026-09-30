@@ -161,10 +161,10 @@ const getAdminPatientsList = async (query = {}) => {
         totalSpent: parseFloat(p.totalSpent) || 0,
         primaryBankAccount: p.primaryAccountNumber
           ? {
-              bankName: p.primaryBankName,
-              accountNumber: p.primaryAccountNumber,
-              accountHolder: p.primaryAccountHolder,
-            }
+            bankName: p.primaryBankName,
+            accountNumber: p.primaryAccountNumber,
+            accountHolder: p.primaryAccountHolder,
+          }
           : null,
         statusTag,
         statusLabelVi,
@@ -447,11 +447,11 @@ const getAdminPatientWorkspace = async (patientId) => {
           createdAt: user.createdAt,
           primaryBankAccount: primaryBank
             ? {
-                id: primaryBank.id,
-                bankName: primaryBank.bankName,
-                accountNumber: primaryBank.accountNumber,
-                accountHolder: primaryBank.accountHolderName,
-              }
+              id: primaryBank.id,
+              bankName: primaryBank.bankName,
+              accountNumber: primaryBank.accountNumber,
+              accountHolder: primaryBank.accountHolderName,
+            }
             : null,
           bankAccounts: bankAccounts.map((b) => ({
             id: b.id,
