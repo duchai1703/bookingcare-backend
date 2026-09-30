@@ -312,6 +312,7 @@ const routes = (app) => {
   // [Financial Policy Engine] CHÍNH SÁCH PHÍ & HOÀN TIỀN BẤT BIẾN — Admin R1
   // ═══════════════════════════════════════════════════════════════════════
   app.get('/api/v1/admin/policies', verifyToken, checkAdminRole, policyController.getPoliciesList);
+  app.get('/api/v1/admin/doctor-hierarchy-tree', verifyToken, checkAdminRole, policyController.getDoctorHierarchyTree);
   app.get('/api/v1/admin/policies/:id', verifyToken, checkAdminRole, policyController.getPolicyDetail);
   app.post('/api/v1/admin/policies', verifyToken, checkAdminRole, policyController.createPolicy);
   app.post('/api/v1/admin/policies/:id/new-version', verifyToken, checkAdminRole, policyController.createPolicyVersion);

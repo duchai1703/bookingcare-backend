@@ -122,11 +122,30 @@ const seedDefaultPolicies = async (req, res) => {
   }
 };
 
+// GET /api/v1/admin/doctor-hierarchy-tree
+const getDoctorHierarchyTree = async (req, res) => {
+  try {
+    const tree = await policyEngineService.getDoctorHierarchyTree();
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy cây phân cấp bác sĩ - cơ sở - chuyên khoa thành công',
+      data: tree
+    });
+  } catch (error) {
+    console.error('>>> getDoctorHierarchyTree error:', error);
+    return res.status(500).json({
+      errCode: -1,
+      message: error.message || 'Lỗi server khi lấy cây phân cấp bác sĩ'
+    });
+  }
+};
+
 module.exports = {
   getPoliciesList,
   getPolicyDetail,
   createPolicy,
   createPolicyVersion,
   updatePolicyDraft,
-  seedDefaultPolicies
+  seedDefaultPolicies,
+  getDoctorHierarchyTree
 };

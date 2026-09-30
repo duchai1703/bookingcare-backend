@@ -484,6 +484,46 @@ db.Doctor_Onboarding_Request.belongsTo(db.Allcode, {
   constraints: false,
 });
 
+// ===== Financial_Policy & Policy_Target Associations =====
+if (db.Financial_Policy && db.Policy_Target) {
+  db.Financial_Policy.hasMany(db.Policy_Target, {
+    foreignKey: 'policyId',
+    as: 'policyTargets',
+    onDelete: 'CASCADE',
+  });
+  db.Policy_Target.belongsTo(db.Financial_Policy, {
+    foreignKey: 'policyId',
+    as: 'policy',
+  });
+}
+
+if (db.Policy_Target && db.User) {
+  db.Policy_Target.belongsTo(db.User, {
+    foreignKey: 'doctorId',
+    as: 'doctorData',
+  });
+}
+
+if (db.Policy_Target && db.Clinic) {
+  db.Policy_Target.belongsTo(db.Clinic, {
+    foreignKey: 'clinicId',
+    as: 'clinicData',
+  });
+}
+
+if (db.Policy_Target && db.Specialty) {
+  db.Policy_Target.belongsTo(db.Specialty, {
+    foreignKey: 'specialtyId',
+    as: 'specialtyData',
+  });
+}
+
+if (db.Policy_Target && db.Doctor_Assignment) {
+  db.Policy_Target.belongsTo(db.Doctor_Assignment, {
+    foreignKey: 'doctorAssignmentId',
+    as: 'doctorAssignmentData',
+  });
+}
 
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;

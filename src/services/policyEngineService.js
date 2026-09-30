@@ -21,6 +21,46 @@ const resolveActivePolicy = async (policyType, scopeType = 'GLOBAL', scopeId = n
     ]
   };
 
+  // Ưu tiên 0: Kiểm tra bảng Policy_Target phân bổ cho bác sĩ cụ thể
+  if (scopeType === 'DOCTOR' && scopeId) {
+    try {
+      const targetMatch = await db.Policy_Target.findOne({
+        where: { doctorId: parseInt(scopeId, 10) },
+        include: [
+          {
+            model: db.Financial_Policy,
+            as: 'policy',
+            where: {
+              policyType,
+              status: 'ACTIVE',
+              ...dateCondition
+            }
+          }
+        ],
+        order: [
+          [{ model: db.Financial_Policy, as: 'policy' }, 'version', 'DESC'],
+          [{ model: db.Financial_Policy, as: 'policy' }, 'effectiveFrom', 'DESC']
+        ]
+      });
+
+      if (targetMatch && targetMatch.policy) {
+        const targetPol = targetMatch.policy;
+        let parsedRules = {};
+        try {
+          parsedRules = typeof targetPol.rules === 'string' ? JSON.parse(targetPol.rules) : targetPol.rules;
+        } catch (e) {
+          console.error(`[PolicyEngine] Error parsing rules for target policy ${targetPol.id}:`, e);
+        }
+        return {
+          ...targetPol.toJSON(),
+          parsedRules
+        };
+      }
+    } catch (err) {
+      console.error('[PolicyEngine] Error resolving policy from Policy_Target:', err);
+    }
+  }
+
   // Thứ bậc tìm kiếm:
   // Nếu scopeType == DOCTOR -> tìm DOCTOR trước -> nếu không có -> tìm CLINIC của doctor (nếu truyền) -> fallback GLOBAL
   const candidates = [];
@@ -319,6 +359,8 @@ const createPolicy = async (data, adminId) => {
     }
   }
 
+  const targetMode = data.targetMode || (scopeType === 'GLOBAL' ? 'ALL_DOCTORS' : 'SELECTED_DOCTORS');
+
   const newPolicy = await db.Financial_Policy.create({
     code,
     policyType,
@@ -326,6 +368,7 @@ const createPolicy = async (data, adminId) => {
     version: 1,
     scopeType,
     scopeId: scopeId ? parseInt(scopeId, 10) : null,
+    targetMode,
     effectiveFrom: fromDate,
     effectiveTo: toDate,
     status,
@@ -334,6 +377,22 @@ const createPolicy = async (data, adminId) => {
     isLocked: false,
     createdById: adminId
   });
+
+  // Lưu danh sách Policy_Targets nếu có
+  if (targetMode === 'SELECTED_DOCTORS' && Array.isArray(data.selectedDoctorTargets) && data.selectedDoctorTargets.length > 0) {
+    for (const item of data.selectedDoctorTargets) {
+      if (item && item.doctorId) {
+        await db.Policy_Target.create({
+          policyId: newPolicy.id,
+          targetType: 'DOCTOR',
+          doctorId: parseInt(item.doctorId, 10),
+          clinicId: item.clinicId ? parseInt(item.clinicId, 10) : null,
+          specialtyId: item.specialtyId ? parseInt(item.specialtyId, 10) : null,
+          doctorAssignmentId: item.doctorAssignmentId || item.assignmentId ? parseInt(item.doctorAssignmentId || item.assignmentId, 10) : null,
+        });
+      }
+    }
+  }
 
   return newPolicy;
 };
@@ -367,6 +426,8 @@ const createPolicyVersion = async (policyId, updatedData, adminId) => {
     { where: { id: currentPolicy.id } }
   );
 
+  const newTargetMode = updatedData.targetMode || currentPolicy.targetMode || 'ALL_DOCTORS';
+
   // Sinh record mới với version kế tiếp
   const newVersion = await db.Financial_Policy.create({
     code: currentPolicy.code,
@@ -375,6 +436,7 @@ const createPolicyVersion = async (policyId, updatedData, adminId) => {
     version: currentPolicy.version + 1,
     scopeType: currentPolicy.scopeType,
     scopeId: currentPolicy.scopeId,
+    targetMode: newTargetMode,
     effectiveFrom: newEffectiveFrom,
     effectiveTo: newEffectiveTo,
     status: updatedData.status || 'ACTIVE',
@@ -383,6 +445,38 @@ const createPolicyVersion = async (policyId, updatedData, adminId) => {
     isLocked: false,
     createdById: adminId
   });
+
+  // Nhân bản hoặc tạo mới targets cho newVersion
+  if (newTargetMode === 'SELECTED_DOCTORS') {
+    if (Array.isArray(updatedData.selectedDoctorTargets) && updatedData.selectedDoctorTargets.length > 0) {
+      for (const item of updatedData.selectedDoctorTargets) {
+        if (item && item.doctorId) {
+          await db.Policy_Target.create({
+            policyId: newVersion.id,
+            targetType: 'DOCTOR',
+            doctorId: parseInt(item.doctorId, 10),
+            clinicId: item.clinicId ? parseInt(item.clinicId, 10) : null,
+            specialtyId: item.specialtyId ? parseInt(item.specialtyId, 10) : null,
+            doctorAssignmentId: item.doctorAssignmentId || item.assignmentId ? parseInt(item.doctorAssignmentId || item.assignmentId, 10) : null,
+          });
+        }
+      }
+    } else {
+      // Clone từ currentPolicy
+      const oldTargets = await db.Policy_Target.findAll({ where: { policyId: currentPolicy.id } });
+      for (const ot of oldTargets) {
+        await db.Policy_Target.create({
+          policyId: newVersion.id,
+          targetType: ot.targetType,
+          doctorId: ot.doctorId,
+          clinicId: ot.clinicId,
+          specialtyId: ot.specialtyId,
+          doctorAssignmentId: ot.doctorAssignmentId,
+          note: ot.note
+        });
+      }
+    }
+  }
 
   return newVersion;
 };
@@ -725,7 +819,188 @@ const getPolicyDetail = async (id) => {
     item.linkedBookings = [];
   }
 
+  // 4. Lấy danh sách đối tượng Bác sĩ áp dụng (Target Doctors)
+  try {
+    const targets = await db.Policy_Target.findAll({
+      where: { policyId: item.id },
+      include: [
+        {
+          model: db.User,
+          as: 'doctorData',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'image', 'phoneNumber'],
+          include: [
+            {
+              model: db.Allcode,
+              as: 'positionData',
+              attributes: ['valueVi', 'valueEn']
+            }
+          ]
+        },
+        {
+          model: db.Clinic,
+          as: 'clinicData',
+          attributes: ['id', 'name', 'address', 'image']
+        },
+        {
+          model: db.Specialty,
+          as: 'specialtyData',
+          attributes: ['id', 'name']
+        },
+        {
+          model: db.Doctor_Assignment,
+          as: 'doctorAssignmentData',
+          attributes: ['id', 'roomNumber', 'workingStatus']
+        }
+      ]
+    });
+
+    item.targetMode = policy.targetMode || (item.scopeType === 'GLOBAL' ? 'ALL_DOCTORS' : 'SELECTED_DOCTORS');
+    item.targetDoctors = targets.map((t) => ({
+      id: t.id,
+      doctorId: t.doctorId,
+      doctorName: t.doctorData ? `${t.doctorData.lastName || ''} ${t.doctorData.firstName || ''}`.trim() : 'Bác sĩ',
+      positionVi: t.doctorData?.positionData?.valueVi || '',
+      email: t.doctorData?.email || '',
+      image: t.doctorData?.image || null,
+      clinicId: t.clinicId,
+      clinicName: t.clinicData?.name || 'Tất cả cơ sở',
+      specialtyId: t.specialtyId,
+      specialtyName: t.specialtyData?.name || 'Đa khoa',
+      roomNumber: t.doctorAssignmentData?.roomNumber || '',
+      assignmentId: t.doctorAssignmentId
+    }));
+    item.targetCount = item.targetDoctors.length;
+  } catch (err) {
+    console.error('Error fetching policy targets:', err);
+    item.targetMode = policy.targetMode || 'ALL_DOCTORS';
+    item.targetDoctors = [];
+    item.targetCount = 0;
+  }
+
   return item;
+};
+
+/**
+ * 8b. Lấy cây phân cấp Cơ sở y tế -> Chuyên khoa -> Bác sĩ cho bộ chọn phân cấp 2 cột
+ */
+const getDoctorHierarchyTree = async () => {
+  const clinics = await db.Clinic.findAll({
+    attributes: ['id', 'name', 'address', 'image'],
+    order: [['name', 'ASC']]
+  });
+
+  const assignments = await db.Doctor_Assignment.findAll({
+    include: [
+      {
+        model: db.User,
+        as: 'doctorData',
+        attributes: ['id', 'firstName', 'lastName', 'email', 'image', 'phoneNumber'],
+        include: [
+          {
+            model: db.Allcode,
+            as: 'positionData',
+            attributes: ['valueVi', 'valueEn']
+          }
+        ]
+      },
+      {
+        model: db.Specialty,
+        as: 'specialtyData',
+        attributes: ['id', 'name', 'image']
+      },
+      {
+        model: db.Clinic,
+        as: 'clinicData',
+        attributes: ['id', 'name', 'address', 'image']
+      }
+    ],
+    order: [['clinicId', 'ASC'], ['specialtyId', 'ASC']]
+  });
+
+  const clinicMap = new Map();
+  for (const c of clinics) {
+    clinicMap.set(c.id, {
+      id: c.id,
+      name: c.name,
+      address: c.address,
+      image: c.image,
+      specialties: new Map(),
+      doctorCount: 0
+    });
+  }
+
+  for (const a of assignments) {
+    if (!a.doctorData) continue;
+    let clinicNode = clinicMap.get(a.clinicId);
+    if (!clinicNode && a.clinicData) {
+      clinicNode = {
+        id: a.clinicData.id,
+        name: a.clinicData.name,
+        address: a.clinicData.address,
+        image: a.clinicData.image,
+        specialties: new Map(),
+        doctorCount: 0
+      };
+      clinicMap.set(a.clinicData.id, clinicNode);
+    }
+    if (!clinicNode) continue;
+
+    const specId = a.specialtyId || 0;
+    const specName = a.specialtyData?.name || 'Đa khoa';
+
+    if (!clinicNode.specialties.has(specId)) {
+      clinicNode.specialties.set(specId, {
+        id: specId,
+        name: specName,
+        doctors: []
+      });
+    }
+
+    const doctorNode = {
+      assignmentId: a.id,
+      doctorId: a.doctorData.id,
+      fullName: `${a.doctorData.lastName || ''} ${a.doctorData.firstName || ''}`.trim(),
+      positionVi: a.doctorData.positionData?.valueVi || '',
+      email: a.doctorData.email,
+      phone: a.doctorData.phoneNumber,
+      image: a.doctorData.image,
+      roomNumber: a.roomNumber || '',
+      workingStatus: a.workingStatus || 'active',
+      clinicId: clinicNode.id,
+      clinicName: clinicNode.name,
+      specialtyId: specId,
+      specialtyName: specName,
+    };
+
+    clinicNode.specialties.get(specId).doctors.push(doctorNode);
+    clinicNode.doctorCount++;
+  }
+
+  const result = [];
+  for (const c of clinicMap.values()) {
+    if (c.doctorCount === 0) continue;
+    const specialtiesList = [];
+    for (const s of c.specialties.values()) {
+      if (s.doctors.length > 0) {
+        specialtiesList.push({
+          id: s.id,
+          name: s.name,
+          doctorCount: s.doctors.length,
+          doctors: s.doctors
+        });
+      }
+    }
+    result.push({
+      id: c.id,
+      name: c.name,
+      address: c.address,
+      image: c.image,
+      doctorCount: c.doctorCount,
+      specialties: specialtiesList
+    });
+  }
+
+  return result;
 };
 
 /**
@@ -999,4 +1274,5 @@ module.exports = {
   seedDefaultPoliciesIfEmpty,
   getDoctorFinancialTerms,
   setDoctorFinancialTerms,
+  getDoctorHierarchyTree,
 };

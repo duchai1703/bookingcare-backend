@@ -9,6 +9,7 @@ module.exports = (sequelize, DataTypes) => {
     version:       { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 }, // v1, v2, v3...
     scopeType:     { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'GLOBAL' }, // 'GLOBAL' | 'CLINIC' | 'DOCTOR'
     scopeId:       { type: DataTypes.INTEGER, allowNull: true }, // ID đối tượng nếu scope là CLINIC hoặc DOCTOR
+    targetMode:    { type: DataTypes.STRING(30), allowNull: false, defaultValue: 'ALL_DOCTORS' }, // 'ALL_DOCTORS' | 'SELECTED_DOCTORS'
     effectiveFrom: { type: DataTypes.DATE, allowNull: false }, // Thời điểm bắt đầu hiệu lực
     effectiveTo:   { type: DataTypes.DATE, allowNull: true }, // Thời điểm kết thúc hiệu lực (NULL = vô thời hạn)
     status:        { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'ACTIVE' }, // 'DRAFT' | 'ACTIVE' | 'SCHEDULED' | 'EXPIRED' | 'SUPERSEDED'
