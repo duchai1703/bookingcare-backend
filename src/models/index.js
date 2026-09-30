@@ -525,6 +525,34 @@ if (db.Policy_Target && db.Doctor_Assignment) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 🔗 PHÂN HỆ VÍ ĐIỆN TỬ VÀ SỔ CÁI BẤT BIẾN (FINANCIAL WALLET & LEDGER)
+// ═══════════════════════════════════════════════════════════════════════
+if (db.Wallet && db.User) {
+  db.User.hasMany(db.Wallet, { foreignKey: 'ownerId', as: 'wallets' });
+  db.Wallet.belongsTo(db.User, { foreignKey: 'ownerId', as: 'owner' });
+}
+
+if (db.Wallet && db.Wallet_Transaction) {
+  db.Wallet.hasMany(db.Wallet_Transaction, { foreignKey: 'walletId', as: 'transactions' });
+  db.Wallet_Transaction.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
+}
+
+if (db.Wallet && db.Wallet_Hold) {
+  db.Wallet.hasMany(db.Wallet_Hold, { foreignKey: 'walletId', as: 'holds' });
+  db.Wallet_Hold.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
+}
+
+if (db.Booking && db.Wallet_Hold) {
+  db.Booking.hasMany(db.Wallet_Hold, { foreignKey: 'bookingId', as: 'walletHolds' });
+  db.Wallet_Hold.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'booking' });
+}
+
+if (db.Wallet && db.Payment_Transaction) {
+  db.Wallet.hasMany(db.Payment_Transaction, { foreignKey: 'walletId', as: 'paymentTransactions' });
+  db.Payment_Transaction.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

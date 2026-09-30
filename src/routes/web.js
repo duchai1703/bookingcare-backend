@@ -12,6 +12,7 @@ const doctorManageController = require('../controllers/doctorManageController');
 const clinicManageController = require('../controllers/clinicManageController'); // [Clinic Control Center]
 const specialtyManageController = require('../controllers/specialtyManageController'); // [Specialty Intelligence Hub]
 const policyController = require('../controllers/policyController'); // [Financial Policy Engine]
+const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -89,6 +90,9 @@ const routes = (app) => {
   app.post('/api/v1/payment/create-payment-url-by-token', paymentController.createPaymentUrlByToken);
   app.get('/api/v1/payment/vnpay-ipn', paymentController.vnpayIpn);
   app.get('/api/v1/payment/booking-by-token', paymentController.bookingByToken);
+  // [Financial Wallet] VNPay IPN & Return cho nạp tiền ví
+  app.get('/api/v1/payment/vnpay-wallet-ipn', walletController.handleVNPayDepositIPN);
+  app.get('/api/v1/payment/vnpay-wallet-return', walletController.handleVNPayDepositReturn);
 
   // ===== ADMIN ROUTES – Yêu cầu role R1 (SRS REQ-AU-004, 008) =====
 
@@ -158,6 +162,13 @@ const routes = (app) => {
   app.post('/api/v1/patient/bank-accounts', verifyToken, checkPatientRole, patientController.handleAddBankAccount);
   app.put('/api/v1/patient/bank-accounts/:id/primary', verifyToken, checkPatientRole, patientController.handleSetPrimaryBankAccount);
   app.delete('/api/v1/patient/bank-accounts/:id', verifyToken, checkPatientRole, patientController.handleDeleteBankAccount);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Financial Wallet & Ledger] VÍ BOOKINGCARE & SỔ CÁI BẤT BIẾN — Role R3
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/patient/wallet', verifyToken, checkPatientRole, walletController.handleGetMyWallet);
+  app.post('/api/v1/patient/wallet/deposit', verifyToken, checkPatientRole, walletController.handleCreateDepositUrl);
+  app.get('/api/v1/patient/wallet/transactions', verifyToken, checkPatientRole, walletController.handleGetMyTransactions);
 
   // Booking APIs (Design Doc v3.0, Mục 4.1.2)
   // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch

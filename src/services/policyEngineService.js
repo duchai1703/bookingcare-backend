@@ -2,6 +2,7 @@
 // Financial Policy Engine Service — Quản trị Chính sách Phân bổ Doanh thu & Quy định Hoàn tiền Bất biến
 const db = require('../models');
 const { Op } = require('sequelize');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 /**
  * 1. Phân giải chính sách Active hợp lệ theo thời điểm và thứ bậc ưu tiên (DOCTOR -> CLINIC -> GLOBAL)
@@ -861,7 +862,7 @@ const getPolicyDetail = async (id) => {
       doctorName: t.doctorData ? `${t.doctorData.lastName || ''} ${t.doctorData.firstName || ''}`.trim() : 'Bác sĩ',
       positionVi: t.doctorData?.positionData?.valueVi || '',
       email: t.doctorData?.email || '',
-      image: t.doctorData?.image || null,
+      image: t.doctorData?.image ? convertBlobToBase64(t.doctorData.image) : null,
       clinicId: t.clinicId,
       clinicName: t.clinicData?.name || 'Tất cả cơ sở',
       specialtyId: t.specialtyId,
@@ -923,7 +924,7 @@ const getDoctorHierarchyTree = async () => {
       id: c.id,
       name: c.name,
       address: c.address,
-      image: c.image,
+      image: c.image ? convertBlobToBase64(c.image) : null,
       specialties: new Map(),
       doctorCount: 0
     });
@@ -937,7 +938,7 @@ const getDoctorHierarchyTree = async () => {
         id: a.clinicData.id,
         name: a.clinicData.name,
         address: a.clinicData.address,
-        image: a.clinicData.image,
+        image: a.clinicData.image ? convertBlobToBase64(a.clinicData.image) : null,
         specialties: new Map(),
         doctorCount: 0
       };
@@ -963,7 +964,7 @@ const getDoctorHierarchyTree = async () => {
       positionVi: a.doctorData.positionData?.valueVi || '',
       email: a.doctorData.email,
       phone: a.doctorData.phoneNumber,
-      image: a.doctorData.image,
+      image: a.doctorData.image ? convertBlobToBase64(a.doctorData.image) : null,
       roomNumber: a.roomNumber || '',
       workingStatus: a.workingStatus || 'active',
       clinicId: clinicNode.id,
