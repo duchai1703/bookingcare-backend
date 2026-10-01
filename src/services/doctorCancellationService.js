@@ -14,12 +14,14 @@ const { sendDoctorCancellationApologyEmail } = require('./emailService');
 const previewCancellation = async ({
   doctorId,
   clinicId = null,
-  scope = 'DAY', // 'BOOKING' | 'SLOT' | 'DAY' | 'DATE_RANGE'
+  scope = 'DAY', // 'BOOKING' | 'SLOT' | 'DAY' | 'DATE_RANGE' | 'BATCH'
   date = null,
   timeType = null,
   bookingId = null,
   fromDate = null,
   toDate = null,
+  scheduleIds = [],
+  bookingIds = [],
 }) => {
   try {
     if (!doctorId) {
@@ -66,6 +68,43 @@ const previewCancellation = async ({
       }
       scheduleWhere.date = { [Op.between]: [String(fromDate), String(toDate)] };
       bookingWhere.date = { [Op.between]: [String(fromDate), String(toDate)] };
+    } else if (scope === 'BATCH') {
+      const sIds = Array.isArray(scheduleIds) ? scheduleIds.map(Number).filter(Boolean) : [];
+      const bIds = Array.isArray(bookingIds) ? bookingIds.map(Number).filter(Boolean) : [];
+
+      if (sIds.length === 0 && bIds.length === 0) {
+        return { errCode: 2, message: 'Vui lòng chọn ít nhất một ca khám hoặc khung giờ cần hủy!' };
+      }
+
+      if (sIds.length > 0) {
+        scheduleWhere.id = { [Op.in]: sIds };
+      } else {
+        scheduleWhere.id = -1;
+      }
+
+      if (sIds.length > 0 && bIds.length > 0) {
+        const targetSchedules = await db.Schedule.findAll({
+          where: { id: { [Op.in]: sIds }, doctorId: docId },
+          attributes: ['date', 'timeType'],
+        });
+        const slotConditions = targetSchedules.map((s) => ({ date: s.date, timeType: s.timeType }));
+        bookingWhere[Op.or] = [
+          { id: { [Op.in]: bIds } },
+          ...slotConditions,
+        ];
+      } else if (sIds.length > 0) {
+        const targetSchedules = await db.Schedule.findAll({
+          where: { id: { [Op.in]: sIds }, doctorId: docId },
+          attributes: ['date', 'timeType'],
+        });
+        if (targetSchedules.length > 0) {
+          bookingWhere[Op.or] = targetSchedules.map((s) => ({ date: s.date, timeType: s.timeType }));
+        } else {
+          bookingWhere.id = -1;
+        }
+      } else {
+        bookingWhere.id = { [Op.in]: bIds };
+      }
     } else {
       return { errCode: 3, message: 'Phạm vi hủy lịch (scope) không hợp lệ!' };
     }
@@ -163,6 +202,8 @@ const executeCancellation = async ({
   bookingId = null,
   fromDate = null,
   toDate = null,
+  scheduleIds = [],
+  bookingIds = [],
   reason,
   cancelledBy,
   cancelledByRole = 'DOCTOR', // 'DOCTOR' | 'ADMIN'
@@ -224,6 +265,46 @@ const executeCancellation = async ({
       }
       scheduleWhere.date = { [Op.between]: [String(fromDate), String(toDate)] };
       bookingWhere.date = { [Op.between]: [String(fromDate), String(toDate)] };
+    } else if (scope === 'BATCH') {
+      const sIds = Array.isArray(scheduleIds) ? scheduleIds.map(Number).filter(Boolean) : [];
+      const bIds = Array.isArray(bookingIds) ? bookingIds.map(Number).filter(Boolean) : [];
+
+      if (sIds.length === 0 && bIds.length === 0) {
+        await t.rollback();
+        return { errCode: 4, message: 'Vui lòng chọn ít nhất một ca khám hoặc khung giờ cần hủy!' };
+      }
+
+      if (sIds.length > 0) {
+        scheduleWhere.id = { [Op.in]: sIds };
+      } else {
+        scheduleWhere.id = -1;
+      }
+
+      if (sIds.length > 0 && bIds.length > 0) {
+        const targetSchedules = await db.Schedule.findAll({
+          where: { id: { [Op.in]: sIds }, doctorId: docId },
+          attributes: ['date', 'timeType'],
+          transaction: t,
+        });
+        const slotConditions = targetSchedules.map((s) => ({ date: s.date, timeType: s.timeType }));
+        bookingWhere[Op.or] = [
+          { id: { [Op.in]: bIds } },
+          ...slotConditions,
+        ];
+      } else if (sIds.length > 0) {
+        const targetSchedules = await db.Schedule.findAll({
+          where: { id: { [Op.in]: sIds }, doctorId: docId },
+          attributes: ['date', 'timeType'],
+          transaction: t,
+        });
+        if (targetSchedules.length > 0) {
+          bookingWhere[Op.or] = targetSchedules.map((s) => ({ date: s.date, timeType: s.timeType }));
+        } else {
+          bookingWhere.id = -1;
+        }
+      } else {
+        bookingWhere.id = { [Op.in]: bIds };
+      }
     } else {
       await t.rollback();
       return { errCode: 5, message: 'Phạm vi hủy không hợp lệ!' };

@@ -22,7 +22,7 @@ async function handlePreviewCancellation(req, res) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu thông tin bác sĩ (doctorId)' });
     }
 
-    const { clinicId, scope, date, timeType, bookingId, fromDate, toDate } = req.body;
+    const { clinicId, scope, date, timeType, bookingId, fromDate, toDate, scheduleIds, bookingIds } = req.body;
 
     const result = await doctorCancellationService.previewCancellation({
       doctorId,
@@ -33,6 +33,8 @@ async function handlePreviewCancellation(req, res) {
       bookingId,
       fromDate,
       toDate,
+      scheduleIds,
+      bookingIds,
     });
 
     return res.status(200).json(result);
@@ -60,7 +62,7 @@ async function handleExecuteCancellation(req, res) {
       return res.status(400).json({ errCode: 1, message: 'Thiếu thông tin bác sĩ (doctorId)' });
     }
 
-    const { clinicId, scope, date, timeType, bookingId, fromDate, toDate, reason } = req.body;
+    const { clinicId, scope, date, timeType, bookingId, fromDate, toDate, scheduleIds, bookingIds, reason } = req.body;
 
     const result = await doctorCancellationService.executeCancellation({
       doctorId,
@@ -71,6 +73,8 @@ async function handleExecuteCancellation(req, res) {
       bookingId,
       fromDate,
       toDate,
+      scheduleIds,
+      bookingIds,
       reason,
       cancelledBy: user.id,
       cancelledByRole: user.roleId === 'R1' ? 'ADMIN' : 'DOCTOR',
