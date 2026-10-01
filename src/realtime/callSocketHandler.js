@@ -1,11 +1,67 @@
 'use strict';
 
+const db = require('../models');
 const callService = require('../services/callService');
 const callRepository = require('../repositories/callRepository');
 
 // In-memory timer registries for timeouts (safely managed per process)
 const activeRingingTimers = new Map();
 const activeCallMaxTimers = new Map();
+
+/**
+ * Helper: Broadcast finalized CallHistory record to conversation and user rooms
+ */
+async function broadcastCallHistoryRecord(io, sessionData) {
+  if (!sessionData) return;
+  try {
+    let conversationId = sessionData.conversationId;
+    if (!conversationId && sessionData.bookingId) {
+      const conv = await db.Conversation.findOne({
+        where: { bookingId: sessionData.bookingId },
+        attributes: ['id'],
+      });
+      if (conv) {
+        conversationId = conv.id;
+        await db.CallSession.update(
+          { conversationId: conv.id },
+          { where: { callId: sessionData.callId } }
+        );
+      }
+    }
+
+    const payload = {
+      callId: sessionData.callId,
+      callSessionId: sessionData.id,
+      conversationId: conversationId || null,
+      bookingId: sessionData.bookingId,
+      callerId: sessionData.callerId,
+      receiverId: sessionData.receiverId,
+      callType: sessionData.callType,
+      status: sessionData.status,
+      duration: sessionData.duration || 0,
+      startedAt: sessionData.startedAt,
+      endedAt: sessionData.endedAt,
+      createdAt: sessionData.createdAt,
+      caller: sessionData.caller,
+      receiver: sessionData.receiver,
+    };
+
+    if (conversationId) {
+      io.to(`conversation_${conversationId}`).emit('call:history:record', payload);
+    }
+    if (sessionData.callId) {
+      io.to(`call_${sessionData.callId}`).emit('call:history:record', payload);
+    }
+    if (sessionData.callerId) {
+      io.to(`user_${sessionData.callerId}`).emit('call:history:record', payload);
+    }
+    if (sessionData.receiverId) {
+      io.to(`user_${sessionData.receiverId}`).emit('call:history:record', payload);
+    }
+  } catch (err) {
+    console.error('Error broadcasting call history record:', err);
+  }
+}
 
 /**
  * Register WebRTC Call Signaling Handlers on Socket.IO
@@ -55,15 +111,23 @@ function registerCallSocketHandlers(io, socket) {
         try {
           const missedSession = await callService.handleRingingTimeout(callId);
           if (missedSession && missedSession.status === 'MISSED') {
-            io.to(callRoom).emit('call:missed', {
+            const timeoutPayload = {
               callId,
               reason: 'MISSED',
               message: 'Cuộc gọi không có phản hồi.',
-            });
-            io.to(`user_${result.receiverId}`).emit('call:missed', {
-              callId,
-              reason: 'MISSED',
-            });
+            };
+            io.to(callRoom).emit('call:missed', timeoutPayload);
+            io.to(callRoom).emit('call:timeout', timeoutPayload);
+            if (result?.receiverId) {
+              io.to(`user_${result.receiverId}`).emit('call:missed', timeoutPayload);
+              io.to(`user_${result.receiverId}`).emit('call:timeout', timeoutPayload);
+            }
+            if (result?.callerId || user?.id) {
+              const callerId = result?.callerId || user?.id;
+              io.to(`user_${callerId}`).emit('call:missed', timeoutPayload);
+              io.to(`user_${callerId}`).emit('call:timeout', timeoutPayload);
+            }
+            await broadcastCallHistoryRecord(io, missedSession);
           }
         } catch (timerErr) {
           console.error('Error handling ringing timeout for call:', callId, timerErr);
@@ -124,6 +188,9 @@ function registerCallSocketHandlers(io, socket) {
             reason: 'MAX_DURATION_EXCEEDED',
             duration: endedSession.data?.duration,
           });
+          if (endedSession?.data) {
+            await broadcastCallHistoryRecord(io, endedSession.data);
+          }
         } catch (maxErr) {
           console.error('Error handling max duration for call:', callId, maxErr);
         } finally {
@@ -161,11 +228,23 @@ function registerCallSocketHandlers(io, socket) {
       const result = await callService.rejectCall(callId, user, reason);
       const callRoom = `call_${callId}`;
 
-      socket.to(callRoom).emit('call:rejected', {
+      const rejectPayload = {
         callId,
         reason,
         rejectedBy: user.id,
-      });
+      };
+
+      io.to(callRoom).emit('call:rejected', rejectPayload);
+      if (result?.data?.callerId) {
+        io.to(`user_${result.data.callerId}`).emit('call:rejected', rejectPayload);
+      }
+      if (result?.data?.receiverId) {
+        io.to(`user_${result.data.receiverId}`).emit('call:rejected', rejectPayload);
+      }
+
+      if (result?.data) {
+        await broadcastCallHistoryRecord(io, result.data);
+      }
 
       ack({ success: true });
     } catch (err) {
@@ -196,10 +275,18 @@ function registerCallSocketHandlers(io, socket) {
       const result = await callService.cancelCall(callId, user);
 
       const callRoom = `call_${callId}`;
-      socket.to(callRoom).emit('call:cancelled', { callId });
+      const cancelPayload = { callId, reason: 'CANCELLED' };
 
-      if (session?.receiverId) {
-        io.to(`user_${session.receiverId}`).emit('call:cancelled', { callId });
+      io.to(callRoom).emit('call:cancelled', cancelPayload);
+      if (session?.receiverId || result?.data?.receiverId) {
+        io.to(`user_${session?.receiverId || result.data.receiverId}`).emit('call:cancelled', cancelPayload);
+      }
+      if (session?.callerId || result?.data?.callerId) {
+        io.to(`user_${session?.callerId || result.data.callerId}`).emit('call:cancelled', cancelPayload);
+      }
+
+      if (result?.data) {
+        await broadcastCallHistoryRecord(io, result.data);
       }
 
       ack({ success: true });
@@ -236,12 +323,24 @@ function registerCallSocketHandlers(io, socket) {
       const result = await callService.endCall(callId, user, reason);
 
       const callRoom = `call_${callId}`;
-      io.to(callRoom).emit('call:ended', {
+      const endPayload = {
         callId,
         reason,
         endedBy: user.id,
         duration: result.data?.duration,
-      });
+      };
+
+      io.to(callRoom).emit('call:ended', endPayload);
+      if (result?.data?.callerId) {
+        io.to(`user_${result.data.callerId}`).emit('call:ended', endPayload);
+      }
+      if (result?.data?.receiverId) {
+        io.to(`user_${result.data.receiverId}`).emit('call:ended', endPayload);
+      }
+
+      if (result?.data) {
+        await broadcastCallHistoryRecord(io, result.data);
+      }
 
       ack({ success: true, data: result.data });
     } catch (err) {
