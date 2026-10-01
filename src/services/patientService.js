@@ -8,8 +8,17 @@ const { Op } = require('sequelize'); // FIX BE-04
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
-const { sanitizeContent } = require('../utils/sanitizeHtml');
 const policyEngineService = require('./policyEngineService');
+
+// Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null (tránh vi phạm Foreign Key PostgreSQL)
+const normalizeGender = (gender) => {
+  if (!gender) return null;
+  const g = String(gender).trim().toUpperCase();
+  if (g === 'G1' || g === 'M' || g === 'MALE' || g === 'NAM') return 'G1';
+  if (g === 'G2' || g === 'F' || g === 'FEMALE' || g === 'NU' || g === 'NỮ') return 'G2';
+  if (g === 'G3' || g === 'O' || g === 'OTHER' || g === 'KHAC' || g === 'KHÁC') return 'G3';
+  return null;
+};
 
 // ===== BOOK APPOINTMENT (SRS 3.9, REQ-PT-012 → 023) =====
 // [Phase 9.3 FIX] Dual Mode: JWT (primary) + Guest Fallback (deprecated)
@@ -102,7 +111,7 @@ const postBookAppointment = async (data, patientId) => {
           firstName: data.fullName,
           lastName: '',
           roleId: 'R3',
-          gender: data.gender || '',
+          gender: normalizeGender(data.gender),
           address: data.address || '',
           phoneNumber: data.phoneNumber || '',
         },
@@ -283,7 +292,8 @@ const postBookAppointment = async (data, patientId) => {
       patientName: data.fullName,
       patientPhoneNumber: data.phoneNumber,
       patientAddress: data.address || '',
-      patientGender: normalizedGender,
+      patientGender: normalizedGender || normalizeGender(data.gender),
+
       patientBirthday: data.birthday || '',
       bankAccountNumber: data.bankAccountNumber || '',
       bankAccountName: data.bankAccountName || '',
@@ -607,10 +617,10 @@ const editPatientProfile = async (data, patientId) => {
       if (data.lastName !== undefined) user.lastName = sanitizeContent(data.lastName);
     }
 
-    if (data.birthday !== undefined) user.birthday = data.birthday;
+    if (data.birthday !== undefined) user.birthday = data.birthday || null;
     if (data.address !== undefined) user.address = sanitizeContent(data.address);
     if (data.phoneNumber !== undefined) user.phoneNumber = data.phoneNumber;
-    if (data.gender !== undefined) user.gender = data.gender;
+    if (data.gender !== undefined) user.gender = normalizeGender(data.gender);
 
     // ═══════════════════════════════════════════════════════════
     // [SECURITY] Image Validation — Validate MIME + size trước khi lưu

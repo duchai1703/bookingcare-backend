@@ -67,7 +67,7 @@ services:
     networks:
       - backend-net
     ports:
-      - "5433:5432" # Mở cổng PostgreSQL 5433 cho Development (tránh xung đột với PG 14 local)
+      - "5433:5432" # Mở cổng PostgreSQL 5433 cho Development (tránh xung đột port 5432 của Windows service)
     deploy:
       resources:
         limits:
@@ -185,10 +185,11 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 2s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   # ------------------------------------------
   # TẦNG BIÊN PROXY UI: Nginx Web Server điều hướng Frontend

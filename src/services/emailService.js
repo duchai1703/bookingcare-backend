@@ -11,6 +11,9 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+const SENDER_EMAIL = process.env.EMAIL_APP_USERNAME || 'noreply@bookingcare.vn';
+const SENDER_NAME = 'BookingCare';
+
 // Gửi email xác thực lịch hẹn (SRS REQ-PT-016, 017, 018)
 const sendEmailBooking = async (data) => {
   const htmlContent = data.language === 'vi'
@@ -31,12 +34,14 @@ const sendEmailBooking = async (data) => {
        <div><a href="${data.redirectLink}" target="_blank">Confirm appointment</a></div>
        <p>Thank you!</p>`;
 
-  await transporter.sendMail({
-    from: '"BookingCare" <noreply@bookingcare.vn>',
+  const info = await transporter.sendMail({
+    from: `"${SENDER_NAME}" <${SENDER_EMAIL}>`,
     to: data.email,
     subject: data.language === 'vi' ? 'Xác nhận lịch hẹn khám bệnh' : 'Medical Appointment Confirmation',
     html: htmlContent,
   });
+  console.log('>>> [EMAIL_SENT] Booking confirmation email sent to:', data.email, 'MessageId:', info.messageId);
+  return info;
 };
 
 // Gửi kết quả khám kèm file đính kèm (SRS REQ-DR-008, 009, 010)
@@ -58,8 +63,8 @@ const sendEmailRemedy = async (data) => {
   const mimeMatch = data.imageBase64.match(/^data:(image\/[a-zA-Z+]+);base64,/);
   const ext = mimeMatch ? mimeMatch[1].split('/')[1].replace('jpeg', 'jpg') : 'png';
 
-  await transporter.sendMail({
-    from: '"BookingCare" <noreply@bookingcare.vn>',
+  const info = await transporter.sendMail({
+    from: `"${SENDER_NAME}" <${SENDER_EMAIL}>`,
     to: data.email,
     subject: data.language === 'vi' ? 'Kết quả khám bệnh' : 'Medical Examination Results',
     html: htmlContent,
@@ -71,6 +76,8 @@ const sendEmailRemedy = async (data) => {
       },
     ],
   });
+  console.log('>>> [EMAIL_SENT] Remedy email sent to:', data.email, 'MessageId:', info.messageId);
+  return info;
 };
 
 // [Phase 9] Gửi email đặt lại mật khẩu (Password Recovery)
@@ -90,12 +97,14 @@ const sendEmailResetPassword = async (data) => {
        <p>If you did not request a password reset, please ignore this email.</p>
        <p>Thank you!</p>`;
 
-  await transporter.sendMail({
-    from: '"BookingCare" <noreply@bookingcare.vn>',
+  const info = await transporter.sendMail({
+    from: `"${SENDER_NAME}" <${SENDER_EMAIL}>`,
     to: data.email,
     subject: data.language === 'vi' ? 'Đặt lại mật khẩu BookingCare' : 'BookingCare Password Reset',
     html: htmlContent,
   });
+  console.log('>>> [EMAIL_SENT] Reset password email sent to:', data.email, 'MessageId:', info.messageId);
+  return info;
 };
 
 // [Phase 2] Gửi email xin lỗi khi Bác sĩ báo bận / Hủy lịch khám & Xác nhận hoàn tiền Ví 100%
@@ -193,7 +202,7 @@ const sendDoctorCancellationApologyEmail = async (data) => {
 
   try {
     await transporter.sendMail({
-      from: '"BookingCare" <noreply@bookingcare.vn>',
+      from: `"${SENDER_NAME}" <${SENDER_EMAIL}>`,
       to: data.email,
       subject: isVi ? 'Thông báo hủy lịch khám & Hoàn tiền vào Ví BookingCare' : 'Appointment Cancellation & Wallet Refund Notice',
       html: htmlContent,

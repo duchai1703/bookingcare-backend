@@ -5,7 +5,16 @@ const jwt = require('jsonwebtoken');
 const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
-// FIX BE-05: đã xóa genSaltSync — dùng bcrypt.hash() async trực tiếp
+
+// Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null
+const normalizeGender = (gender) => {
+  if (!gender) return null;
+  const g = String(gender).trim().toUpperCase();
+  if (g === 'G1' || g === 'M' || g === 'MALE' || g === 'NAM') return 'G1';
+  if (g === 'G2' || g === 'F' || g === 'FEMALE' || g === 'NU' || g === 'NỮ') return 'G2';
+  if (g === 'G3' || g === 'O' || g === 'OTHER' || g === 'KHAC' || g === 'KHÁC') return 'G3';
+  return null;
+};
 
 // ===== LOGIN + JWT TOKEN (SRS REQ-AU-001, 002, 007, 009) =====
 // [Phase 9] Bổ sung response: phoneNumber, address, gender, image
@@ -133,11 +142,11 @@ const createNewUser = async (data) => {
       lastName: data.lastName,
       address: data.address || '',
       phoneNumber: data.phoneNumber || '',
-      gender: data.gender || '',
+      gender: normalizeGender(data.gender),
       roleId: data.roleId,
       // ✅ [FIX-IMAGE] Strip prefix trước khi lưu vào BLOB
       image: data.image ? stripBase64Prefix(data.image) : '',
-      positionId: data.positionId || '',
+      positionId: data.positionId || null,
     });
     return { errCode: 0, message: 'Tạo người dùng thành công!' };
   } catch (err) {
@@ -160,9 +169,11 @@ const editUser = async (data) => {
     user.lastName = data.lastName || user.lastName;
     user.address = data.address || user.address;
     user.phoneNumber = data.phoneNumber || user.phoneNumber;
-    user.gender = data.gender || user.gender;
+    if (data.gender !== undefined) user.gender = normalizeGender(data.gender) || user.gender;
     user.roleId = data.roleId || user.roleId;
-    user.positionId = data.positionId || user.positionId;
+    if (data.positionId !== undefined) {
+      user.positionId = data.positionId || null;
+    }
     // [Phase 14] Cập nhật trạng thái khóa/kích hoạt
     if (data.isActive !== undefined) {
       user.isActive = Boolean(data.isActive);

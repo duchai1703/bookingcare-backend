@@ -4,7 +4,7 @@
     "password": "StrongPgPass2026",
     "database": "bookingcare",
     "host": "127.0.0.1",
-    "port": 5433,
+    "port": 5432,
     "dialect": "postgres",
     "logging": false
   },
@@ -13,7 +13,7 @@
     "password": "StrongPgPass2026",
     "database": "bookingcare_test",
     "host": "127.0.0.1",
-    "port": 5433,
+    "port": 5432,
     "dialect": "postgres"
   },
   "production": {
@@ -21,7 +21,7 @@
     "password": null,
     "database": "bookingcare_production",
     "host": "127.0.0.1",
-    "port": 5433,
+    "port": 5432,
     "dialect": "postgres"
   }
 }
