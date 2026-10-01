@@ -690,10 +690,15 @@ const TIME_TYPE_END_HOURS = {
 const isSlotInPast = (dateStr, timeType) => {
   try {
     let dateMoment;
-    if (/^\d+$/.test(String(dateStr))) {
-      dateMoment = moment(Number(dateStr));
+    const str = String(dateStr).trim();
+    if (/^\d{8}$/.test(str)) {
+      dateMoment = moment(str, 'YYYYMMDD');
+    } else if (/^\d{11,14}$/.test(str)) {
+      dateMoment = moment(Number(str));
+    } else if (/^\d+$/.test(str)) {
+      dateMoment = moment(Number(str));
     } else {
-      dateMoment = moment(dateStr, ['YYYY-MM-DD', 'YYYY/MM/DD', moment.ISO_8601]);
+      dateMoment = moment(str, ['YYYY-MM-DD', 'YYYY/MM/DD', 'YYYYMMDD', moment.ISO_8601]);
     }
     if (!dateMoment.isValid()) return false;
 

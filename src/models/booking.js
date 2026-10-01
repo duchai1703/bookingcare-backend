@@ -18,12 +18,12 @@ module.exports = (sequelize, DataTypes) => {
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase 11] VNPay Payment Integration — 9 cột mới
     // ═══════════════════════════════════════════════════════════════════════
-    paymentToken: { type: DataTypes.STRING(255), allowNull: true, unique: true },
+    paymentToken: { type: DataTypes.STRING(255), allowNull: true }, // uniqueness enforced by idx_bookings_payment_token_unique (partial index)
     paymentStatus: { type: DataTypes.STRING(30), allowNull: true, defaultValue: 'unpaid' },
     bookingPrice: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
     vnpayTransactionNo: { type: DataTypes.STRING(50), allowNull: true },
     vnp_PayDate: { type: DataTypes.STRING(20), allowNull: true },
-    publicReceiptToken: { type: DataTypes.STRING(100), allowNull: true, unique: true },
+    publicReceiptToken: { type: DataTypes.STRING(100), allowNull: true }, // uniqueness enforced by idx_bookings_public_receipt_token_unique (partial index)
     receiptExpiredAt: { type: DataTypes.DATE, allowNull: true },
     reconcileFirstSeenAt: { type: DataTypes.DATE, allowNull: true },
     lastQuerydrCode: { type: DataTypes.STRING(4), allowNull: true },
@@ -65,7 +65,7 @@ module.exports = (sequelize, DataTypes) => {
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase B] Mã QR khám bệnh bảo mật (Check-in Doctor Mobile App)
     // ═══════════════════════════════════════════════════════════════════════
-    qrToken: { type: DataTypes.STRING(100), allowNull: true, unique: true },
+    qrToken: { type: DataTypes.STRING(100), allowNull: true }, // uniqueness enforced by idx_bookings_qrToken (index in options below)
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Policy Engine] Snapshot Bất biến & Bóc tách Tài chính
