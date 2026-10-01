@@ -45,6 +45,9 @@ module.exports = (sequelize, DataTypes) => {
     cancellationType: { type: DataTypes.STRING(20), allowNull: true }, // 'PATIENT' | 'DOCTOR' | 'CLINIC' | 'SYSTEM' | 'ADMIN'
     cancellationReason: { type: DataTypes.TEXT, allowNull: true },
     cancellationId: { type: DataTypes.UUID, allowNull: true },
+    rescheduledFromBookingId: { type: DataTypes.INTEGER, allowNull: true }, // ID ca khám cũ đã bị hủy
+    rescheduledToBookingId: { type: DataTypes.INTEGER, allowNull: true },   // ID ca khám mới được đặt lại
+    rescheduledAt: { type: DataTypes.DATE, allowNull: true },               // Thời điểm đổi lịch
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
@@ -94,6 +97,8 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['doctorId', 'clinicId', 'date'], name: 'idx_bookings_doctor_clinic_date' },
       { fields: ['cancellationType'], name: 'idx_bookings_cancellationType' },
       { fields: ['cancellationId'], name: 'idx_bookings_cancellationId' },
+      { fields: ['rescheduledFromBookingId'], name: 'idx_bookings_rescheduledFromBookingId' },
+      { fields: ['rescheduledToBookingId'], name: 'idx_bookings_rescheduledToBookingId' },
     ],
   });
   return Booking;

@@ -1423,6 +1423,457 @@ const deletePatientBankAccount = async (patientId, accountId) => {
   }
 };
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════
+ * [Phase 2] SMART RESCHEDULE ENGINE
+ * Lấy các tùy chọn đổi lịch khám thông minh cho ca khám bị Bác sĩ hủy
+ * ═══════════════════════════════════════════════════════════════════════
+ */
+const getRescheduleOptions = async (bookingId, patientId) => {
+  try {
+    if (!bookingId || !patientId) {
+      return { errCode: 1, message: 'Thiếu thông tin lịch hẹn hoặc bệnh nhân!' };
+    }
+
+    // 1. Kiểm tra ca khám cũ & phòng chống IDOR
+    const booking = await db.Booking.findOne({
+      where: { id: Number(bookingId), patientId: Number(patientId) },
+      include: [
+        {
+          model: db.User,
+          as: 'doctorBookingData',
+          attributes: ['id', 'firstName', 'lastName', 'image'],
+          include: [
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              attributes: ['specialtyId', 'clinicId', 'priceId'],
+              include: [
+                { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name', 'image'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+                { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+              ],
+            },
+          ],
+        },
+        {
+          model: db.Allcode,
+          as: 'timeTypeBooking',
+          attributes: ['keyMap', 'valueVi', 'valueEn'],
+        },
+        {
+          model: db.Clinic,
+          as: 'clinicData',
+          attributes: ['id', 'name', 'address'],
+        },
+        {
+          model: db.Doctor_Assignment,
+          as: 'assignmentData',
+          attributes: ['id', 'roomNumber', 'priceId'],
+          include: [
+            { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            { model: db.Allcode, as: 'priceTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          ],
+        },
+      ],
+    });
+
+    if (!booking) {
+      return { errCode: 2, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền truy cập!' };
+    }
+
+    // 2. Kiểm tra điều kiện được đổi lịch
+    if (booking.statusId !== 'S4') {
+      return { errCode: 3, message: 'Chỉ có thể đổi lịch cho ca khám đã bị hủy!' };
+    }
+    if (booking.cancellationType !== 'DOCTOR' && booking.cancellationType !== 'ADMIN') {
+      return {
+        errCode: 4,
+        message: 'Tính năng Đổi lịch khám thông minh được ưu tiên hỗ trợ đặc quyền cho các ca bị hủy do Bác sĩ/Cơ sở y tế báo bận!',
+      };
+    }
+    if (booking.rescheduledToBookingId) {
+      return {
+        errCode: 5,
+        message: `Lịch khám này đã được đổi sang ca khám mới #${booking.rescheduledToBookingId}!`,
+      };
+    }
+
+    const doctorId = booking.doctorId;
+    const specialtyId = booking.doctorBookingData?.doctorInfoData?.specialtyId;
+    const clinicId = booking.clinicId || booking.doctorBookingData?.doctorInfoData?.clinicId;
+
+    // 3. Lấy lịch khám còn trống và đang ACTIVE của chính Bác sĩ này
+    const availableSchedules = await db.Schedule.findAll({
+      where: {
+        doctorId: doctorId,
+        status: 'ACTIVE',
+        [Op.where]: db.sequelize.literal('"currentNumber" < "maxNumber"'),
+      },
+      include: [
+        {
+          model: db.Allcode,
+          as: 'timeTypeData',
+          attributes: ['keyMap', 'valueVi', 'valueEn'],
+        },
+      ],
+      order: [
+        ['date', 'ASC'],
+        ['timeType', 'ASC'],
+      ],
+      limit: 50,
+    });
+
+    // 4. Lấy danh sách bác sĩ thay thế cùng Chuyên khoa (Alternative Doctors)
+    let alternativeDoctors = [];
+    if (specialtyId) {
+      const altDocInfos = await db.Doctor_Info.findAll({
+        where: {
+          specialtyId: specialtyId,
+          doctorId: { [Op.ne]: doctorId },
+        },
+        include: [
+          {
+            model: db.User,
+            as: 'doctorData',
+            attributes: ['id', 'firstName', 'lastName', 'image'],
+          },
+          {
+            model: db.Clinic,
+            as: 'clinicData',
+            attributes: ['id', 'name', 'address'],
+          },
+          {
+            model: db.Allcode,
+            as: 'priceData',
+            attributes: ['keyMap', 'valueVi', 'valueEn'],
+          },
+        ],
+        limit: 4,
+      });
+
+      for (const info of altDocInfos) {
+        if (!info.doctorData) continue;
+        const slots = await db.Schedule.findAll({
+          where: {
+            doctorId: info.doctorId,
+            status: 'ACTIVE',
+            [Op.where]: db.sequelize.literal('"currentNumber" < "maxNumber"'),
+          },
+          include: [{ model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+          order: [['date', 'ASC'], ['timeType', 'ASC']],
+          limit: 10,
+        });
+
+        alternativeDoctors.push({
+          doctor: info.doctorData,
+          clinic: info.clinicData,
+          price: info.priceTypeData,
+          availableSlotsCount: slots.length,
+          upcomingSchedules: slots,
+        });
+      }
+    }
+
+    // 5. Lấy số dư ví hiện tại của bệnh nhân
+    const wallet = await db.Wallet.findOne({
+      where: { ownerId: Number(patientId), walletType: 'PATIENT' },
+    });
+    const walletBalance = wallet ? Number(wallet.availableBalance) || 0 : 0;
+
+    return {
+      errCode: 0,
+      message: 'OK',
+      data: {
+        booking: {
+          id: booking.id,
+          date: booking.date,
+          timeType: booking.timeType,
+          timeTypeName: booking.timeTypeBooking?.valueVi || booking.timeType,
+          bookingPrice: booking.bookingPrice,
+          refundAmount: booking.refundAmount,
+          cancellationType: booking.cancellationType,
+          cancellationReason: booking.cancellationReason,
+          doctor: booking.doctorBookingData,
+          clinic: booking.clinicData || booking.doctorBookingData?.doctorInfoData?.clinicData,
+          specialty: booking.doctorBookingData?.doctorInfoData?.specialtyData,
+          patientName: booking.patientName,
+          patientPhoneNumber: booking.patientPhoneNumber,
+        },
+        doctorSchedules: availableSchedules,
+        alternativeDoctors,
+        patientWallet: {
+          availableBalance: walletBalance,
+          canCoverCurrentPrice: walletBalance >= Number(booking.bookingPrice || 0),
+        },
+      },
+    };
+  } catch (err) {
+    console.error('>>> getRescheduleOptions error:', err);
+    return { errCode: -1, message: 'Lỗi server khi lấy tùy chọn đổi lịch!' };
+  }
+};
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════
+ * [Phase 2] Thực hiện Đổi lịch khám Thông minh (Smart Reschedule Booking)
+ * Thanh toán tức thì qua Ví BookingCare, tạo liên kết 2 ca khám
+ * ═══════════════════════════════════════════════════════════════════════
+ */
+const rescheduleBooking = async (bookingId, patientId, payload = {}) => {
+  const t = await db.sequelize.transaction();
+  try {
+    if (!bookingId || !patientId) {
+      await t.rollback();
+      return { errCode: 1, message: 'Thiếu thông tin lịch hẹn hoặc bệnh nhân!' };
+    }
+    const { newDoctorId, newDate, newTimeType, newClinicId, newDoctorAssignmentId, reason, note } = payload;
+    if (!newDate || !newTimeType) {
+      await t.rollback();
+      return { errCode: 2, message: 'Vui lòng chọn ngày và khung giờ khám mới!' };
+    }
+
+    // 1. Lock và kiểm tra ca khám cũ (Chống Race Condition & IDOR)
+    const oldBooking = await db.Booking.findOne({
+      where: { id: Number(bookingId), patientId: Number(patientId) },
+      lock: t.LOCK.UPDATE,
+      transaction: t,
+    });
+
+    if (!oldBooking) {
+      await t.rollback();
+      return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền thao tác!' };
+    }
+
+    if (oldBooking.statusId !== 'S4') {
+      await t.rollback();
+      return { errCode: 4, message: 'Chỉ có thể đổi lịch cho ca khám đã bị hủy!' };
+    }
+    if (oldBooking.cancellationType !== 'DOCTOR' && oldBooking.cancellationType !== 'ADMIN') {
+      await t.rollback();
+      return {
+        errCode: 5,
+        message: 'Chỉ các ca khám bị Bác sĩ/Cơ sở y tế hủy mới được đổi lịch thông minh miễn phí bằng ví!',
+      };
+    }
+    if (oldBooking.rescheduledToBookingId) {
+      await t.rollback();
+      return {
+        errCode: 6,
+        message: `Lịch khám này đã được đổi sang ca #${oldBooking.rescheduledToBookingId}!`,
+      };
+    }
+
+    const targetDoctorId = newDoctorId ? Number(newDoctorId) : oldBooking.doctorId;
+    const targetDate = String(newDate);
+    const targetTimeType = String(newTimeType);
+
+    // 2. Lock & Kiểm tra Schedule slot mới
+    const targetSchedule = await db.Schedule.findOne({
+      where: {
+        doctorId: targetDoctorId,
+        date: targetDate,
+        timeType: targetTimeType,
+      },
+      lock: t.LOCK.UPDATE,
+      transaction: t,
+    });
+
+    if (!targetSchedule) {
+      await t.rollback();
+      return { errCode: 7, message: 'Khung giờ khám mới không tồn tại!' };
+    }
+    if (targetSchedule.status && targetSchedule.status !== 'ACTIVE') {
+      await t.rollback();
+      return { errCode: 8, message: 'Khung giờ khám mới đang tạm ngừng nhận bệnh nhân!' };
+    }
+    if (targetSchedule.currentNumber >= targetSchedule.maxNumber) {
+      await t.rollback();
+      return { errCode: 9, message: 'Khung giờ khám mới đã hết chỗ! Vui lòng chọn khung giờ khác.' };
+    }
+
+    // 3. Xác định giá khám của ca mới
+    let newBookingPrice = Number(oldBooking.bookingPrice) || 0;
+    let resolvedClinicId = newClinicId ? Number(newClinicId) : (targetSchedule.clinicId || oldBooking.clinicId);
+    let resolvedAssignmentId = newDoctorAssignmentId ? Number(newDoctorAssignmentId) : null;
+
+    if (targetDoctorId !== oldBooking.doctorId) {
+      const docInfo = await db.Doctor_Info.findOne({
+        where: { doctorId: targetDoctorId },
+        include: [{ model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+        transaction: t,
+      });
+      if (docInfo && docInfo.priceData && docInfo.priceData.valueVi) {
+        newBookingPrice = parseInt(docInfo.priceData.valueVi.replace(/[^0-9]/g, ''), 10) || newBookingPrice;
+      }
+      if (!resolvedClinicId && docInfo) {
+        resolvedClinicId = docInfo.clinicId;
+      }
+    }
+
+    // 4. Thanh toán tự động qua Ví BookingCare
+    const patientWallet = await db.Wallet.findOne({
+      where: { ownerId: Number(patientId), walletType: 'PATIENT' },
+      lock: t.LOCK.UPDATE,
+      transaction: t,
+    });
+
+    const currentAvail = patientWallet ? Number(patientWallet.availableBalance) || 0 : 0;
+    const currentReserved = patientWallet ? Number(patientWallet.reservedBalance) || 0 : 0;
+
+    if (!patientWallet || currentAvail < newBookingPrice) {
+      await t.rollback();
+      return {
+        errCode: -10,
+        message: `Số dư ví BookingCare (${currentAvail.toLocaleString('vi-VN')} ₫) không đủ để thanh toán giá khám mới (${newBookingPrice.toLocaleString('vi-VN')} ₫). Vui lòng nạp thêm tiền vào ví!`,
+        data: {
+          currentBalance: currentAvail,
+          requiredAmount: newBookingPrice,
+          missingAmount: Math.max(0, newBookingPrice - currentAvail),
+        },
+      };
+    }
+
+    // Trừ ví & Ký quỹ cọc (Hold)
+    const newAvail = currentAvail - newBookingPrice;
+    const newReserved = currentReserved + newBookingPrice;
+
+    await patientWallet.update(
+      {
+        availableBalance: newAvail,
+        reservedBalance: newReserved,
+      },
+      { transaction: t }
+    );
+
+    // 5. Đóng băng tài chính (Financial Policy Snapshot)
+    let financialData = {
+      revenuePolicyId: null,
+      refundPolicyId: null,
+      policySnapshot: null,
+      platformFee: 0,
+      doctorShare: newBookingPrice,
+      clinicShare: 0,
+    };
+    try {
+      financialData = await policyEngineService.freezeBookingFinancials(
+        {
+          doctorId: targetDoctorId,
+          clinicId: resolvedClinicId,
+          totalAmount: newBookingPrice,
+          bookingDate: targetDate ? new Date(Number(targetDate)) : new Date(),
+        },
+        t
+      );
+    } catch (fErr) {
+      console.error('>>> [PolicyEngine] Error freezing reschedule financials:', fErr);
+    }
+
+    // 6. Tạo ca khám mới (Status S2: Confirmed)
+    const newBooking = await db.Booking.create(
+      {
+        statusId: 'S2',
+        doctorId: targetDoctorId,
+        clinicId: resolvedClinicId,
+        doctorAssignmentId: resolvedAssignmentId,
+        patientId: Number(patientId),
+        date: targetDate,
+        timeType: targetTimeType,
+        token: uuidv4(),
+        paymentToken: crypto.randomUUID(),
+        bookingPrice: newBookingPrice,
+        paymentStatus: 'paid',
+        paymentMethod: 'WALLET',
+        qrToken: `BKQ-${patientId}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
+        reason: reason || oldBooking.reason || 'Đổi lịch khám thông minh',
+        patientName: oldBooking.patientName,
+        patientPhoneNumber: oldBooking.patientPhoneNumber,
+        patientAddress: oldBooking.patientAddress,
+        patientGender: oldBooking.patientGender,
+        patientBirthday: oldBooking.patientBirthday,
+        bankAccountNumber: oldBooking.bankAccountNumber,
+        bankAccountName: oldBooking.bankAccountName,
+        bankName: oldBooking.bankName,
+        revenuePolicyId: financialData.revenuePolicyId,
+        refundPolicyId: financialData.refundPolicyId,
+        policySnapshot: financialData.policySnapshot,
+        platformFee: financialData.platformFee,
+        doctorShare: financialData.doctorShare,
+        clinicShare: financialData.clinicShare,
+        rescheduledFromBookingId: oldBooking.id,
+      },
+      { transaction: t }
+    );
+
+    // Tạo Wallet_Hold cho ca mới
+    await db.Wallet_Hold.create(
+      {
+        walletId: patientWallet.id,
+        bookingId: newBooking.id,
+        amount: newBookingPrice,
+        status: 'HELD',
+        reason: 'BOOKING_RESERVATION',
+      },
+      { transaction: t }
+    );
+
+    // Tạo bút toán Ledger
+    await db.Wallet_Transaction.create(
+      {
+        walletId: patientWallet.id,
+        direction: 'DEBIT',
+        amount: newBookingPrice,
+        balanceAfter: newAvail,
+        transactionType: 'BOOKING_PAYMENT',
+        referenceType: 'BOOKING',
+        referenceId: String(newBooking.id),
+        idempotencyKey: `RESCHEDULE_PAY_${oldBooking.id}_TO_${newBooking.id}`,
+        description: `Thanh toán đổi lịch khám thông minh từ ca #${oldBooking.id} sang ca #${newBooking.id}`,
+        status: 'COMPLETED',
+      },
+      { transaction: t }
+    );
+
+    // 7. Cập nhật ca cũ: đánh dấu đã đổi sang newBooking.id
+    await oldBooking.update(
+      {
+        rescheduledToBookingId: newBooking.id,
+        rescheduledAt: new Date(),
+      },
+      { transaction: t }
+    );
+
+    // 8. Tăng số lượng bệnh nhân của slot mới
+    await targetSchedule.increment('currentNumber', { by: 1, transaction: t });
+
+    await t.commit();
+
+    console.log(
+      `[SMART RESCHEDULE SUCCESS] Old Booking #${oldBooking.id} -> New Booking #${newBooking.id} | Patient #${patientId} | Doctor #${targetDoctorId} | Slot: ${targetTimeType} - Date: ${targetDate}`
+    );
+
+    return {
+      errCode: 0,
+      message: 'Đổi lịch khám thành công! Bạn có thể xem lịch khám mới trong mục Lịch hẹn sắp tới.',
+      data: {
+        oldBookingId: oldBooking.id,
+        newBookingId: newBooking.id,
+        doctorName: oldBooking.doctorBookingData ? `${oldBooking.doctorBookingData.lastName || ''} ${oldBooking.doctorBookingData.firstName || ''}`.trim() : '',
+        date: targetDate,
+        timeType: targetTimeType,
+        bookingPrice: newBookingPrice,
+      },
+    };
+  } catch (error) {
+    await t.rollback();
+    console.error('Error in rescheduleBooking:', error);
+    return {
+      errCode: -1,
+      message: error.message || 'Lỗi server khi thực hiện đổi lịch khám!',
+    };
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -1440,6 +1891,9 @@ module.exports = {
   addPatientBankAccount,
   setPrimaryBankAccount,
   deletePatientBankAccount,
+  // [Phase 2] Smart Reschedule
+  getRescheduleOptions,
+  rescheduleBooking,
 };
 
 

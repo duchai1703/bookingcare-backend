@@ -257,6 +257,38 @@ const handleDeleteBankAccount = async (req, res) => {
   }
 };
 
+// [Phase 2] GET /api/v1/patient/bookings/:id/reschedule-options
+const handleGetRescheduleOptions = async (req, res) => {
+  try {
+    const bookingId = parseInt(req.params.id, 10);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ errCode: 1, message: 'ID lịch hẹn không hợp lệ!' });
+    }
+    const result = await patientService.getRescheduleOptions(bookingId, req.user.id);
+    const httpStatus = result.errCode === 0 ? 200 : (result.errCode === 2 ? 404 : 400);
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleGetRescheduleOptions error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
+// [Phase 2] POST /api/v1/patient/bookings/:id/reschedule
+const handleRescheduleBooking = async (req, res) => {
+  try {
+    const bookingId = parseInt(req.params.id, 10);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ errCode: 1, message: 'ID lịch hẹn không hợp lệ!' });
+    }
+    const result = await patientService.rescheduleBooking(bookingId, req.user.id, req.body);
+    const httpStatus = result.errCode === 0 ? 200 : (result.errCode === 3 ? 404 : 400);
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleRescheduleBooking error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -273,6 +305,9 @@ module.exports = {
   handleAddBankAccount,
   handleSetPrimaryBankAccount,
   handleDeleteBankAccount,
+  // [Phase 2] Smart Reschedule Handlers
+  handleGetRescheduleOptions,
+  handleRescheduleBooking,
 };
 
 

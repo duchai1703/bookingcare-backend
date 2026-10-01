@@ -5,6 +5,7 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const { getOrCreateWallet } = require('./walletService');
+const { sendDoctorCancellationApologyEmail } = require('./emailService');
 
 /**
  * Phân tích & Trả về Impact Preview trước khi thực hiện hủy lịch
@@ -237,7 +238,7 @@ const executeCancellation = async ({
       });
     }
 
-    // 3. Lock & Retrieve Bookings
+    // 3. Lock & Retrieve Bookings (No outer joins with FOR UPDATE in Postgres)
     const bookings = await db.Booking.findAll({
       where: bookingWhere,
       lock: t.LOCK.UPDATE,
@@ -401,6 +402,43 @@ const executeCancellation = async ({
     console.log(
       `[DOCTOR CANCELLATION SUCCESS] ID: ${cancellationRecord.id} | Doctor #${docId} | Scope: ${scope} | Slots: ${schedules.length} | Bookings: ${bookings.length} | Refunded: ${accumulatedRefund.toLocaleString('vi-VN')} VND`
     );
+
+    // [Phase 2] Bắn email xin lỗi & xác nhận hoàn tiền ví cho các bệnh nhân bị ảnh hưởng (asynchronous non-blocking)
+    setImmediate(async () => {
+      for (const b of bookings) {
+        try {
+          const detailB = await db.Booking.findByPk(b.id, {
+            include: [
+              { model: db.User, as: 'patientData', attributes: ['id', 'email', 'firstName', 'lastName'] },
+              { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
+              { model: db.Allcode, as: 'timeTypeBooking', attributes: ['valueVi', 'valueEn'] },
+            ],
+          });
+          if (!detailB) continue;
+
+          const patientEmail = detailB.patientData?.email;
+          if (!patientEmail) continue;
+          const patientName = `${detailB.patientData?.lastName || ''} ${detailB.patientData?.firstName || ''}`.trim() || detailB.patientName || 'Quý khách';
+          const docName = detailB.doctorBookingData ? `${detailB.doctorBookingData.lastName || ''} ${detailB.doctorBookingData.firstName || ''}`.trim() : 'Bác sĩ chuyên khoa';
+          const timeSlot = detailB.timeTypeBooking?.valueVi || detailB.timeType;
+          const apptDate = detailB.date ? (isNaN(detailB.date) ? detailB.date : new Date(Number(detailB.date)).toLocaleDateString('vi-VN')) : '';
+
+          await sendDoctorCancellationApologyEmail({
+            email: patientEmail,
+            patientName,
+            doctorName: docName,
+            appointmentTime: timeSlot,
+            appointmentDate: apptDate,
+            reason: cleanReason,
+            refundAmount: Number(detailB.bookingPrice) || 0,
+            bookingId: detailB.id,
+            rescheduleUrl: `${process.env.URL_REACT || 'http://localhost:3000'}/patient/appointments`,
+          });
+        } catch (mailErr) {
+          console.error(`[BACKGROUND APOLOGY EMAIL FAILED] Booking #${b.id}:`, mailErr.message);
+        }
+      }
+    });
 
     return {
       errCode: 0,

@@ -98,4 +98,115 @@ const sendEmailResetPassword = async (data) => {
   });
 };
 
-module.exports = { sendEmailBooking, sendEmailRemedy, sendEmailResetPassword };
+// [Phase 2] Gửi email xin lỗi khi Bác sĩ báo bận / Hủy lịch khám & Xác nhận hoàn tiền Ví 100%
+const sendDoctorCancellationApologyEmail = async (data) => {
+  if (!data || !data.email) return;
+  const isVi = (data.language || 'vi') === 'vi';
+  const refundFormatted = Number(data.refundAmount || 0).toLocaleString('vi-VN');
+  const rescheduleUrl = data.rescheduleUrl || `${process.env.URL_REACT || 'http://localhost:3000'}/patient/appointments`;
+
+  const htmlContent = isVi
+    ? `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #087f8c; padding: 20px; text-align: center; color: #fff;">
+          <h2 style="margin: 0; font-size: 20px;">BookingCare — Thông Báo Thay Đổi Lịch Khám</h2>
+        </div>
+        <div style="padding: 24px;">
+          <p>Kính gửi quý bệnh nhân <b>${data.patientName || 'Quý khách'}</b>,</p>
+          <p>Chúng tôi vô cùng lấy làm tiếc phải thông báo rằng lịch khám của Quý khách đã bị hủy do Bác sĩ có lịch bận hoặc sự cố y khoa đột xuất.</p>
+          
+          <div style="background-color: #f8fafc; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 16px 0;">
+            <p style="margin: 4px 0;"><b>Bác sĩ:</b> ${data.doctorName || 'Bác sĩ chuyên khoa'}</p>
+            <p style="margin: 4px 0;"><b>Thời gian ban đầu:</b> ${data.appointmentTime || ''} - ${data.appointmentDate || ''}</p>
+            <p style="margin: 4px 0;"><b>Lý do từ bác sĩ:</b> <i style="color: #b91c1c;">"${data.reason || 'Bận đột xuất'}"</i></p>
+          </div>
+
+          <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; padding: 16px; margin: 20px 0;">
+            <h4 style="margin: 0 0 8px 0; color: #047857;">
+              ✔ Chính sách bảo đảm quyền lợi người bệnh
+            </h4>
+            <p style="margin: 4px 0; color: #065f46;">
+              Hệ thống đã tự động <b>hoàn trả 100% tiền khám (${refundFormatted} ₫)</b> về <b>Ví BookingCare</b> của Quý khách ngay tức thì.
+            </p>
+            <p style="margin: 4px 0; font-size: 13px; color: #047857;">
+              Quý khách có thể kiểm tra số dư ví và sử dụng số tiền này để đổi lịch khám mới với 1-Click mà không cần thanh toán thêm.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${rescheduleUrl}" target="_blank" style="background-color: #087f8c; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+              Đổi lịch khám thông minh ngay
+            </a>
+          </div>
+
+          <p style="font-size: 13px; color: #64748b;">
+            Một lần nữa, BookingCare và Bác sĩ xin chân thành cáo lỗi vì sự bất tiện này.
+          </p>
+        </div>
+        <div style="background-color: #f1f5f9; padding: 12px; text-align: center; font-size: 12px; color: #94a3b8;">
+          © BookingCare — Nền tảng Y tế Chăm sóc Sức khỏe Toàn diện
+        </div>
+      </div>
+    `
+    : `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+        <div style="background-color: #087f8c; padding: 20px; text-align: center; color: #fff;">
+          <h2 style="margin: 0; font-size: 20px;">BookingCare — Appointment Cancellation Notice</h2>
+        </div>
+        <div style="padding: 24px;">
+          <p>Dear <b>${data.patientName || 'Valued Patient'}</b>,</p>
+          <p>We deeply regret to inform you that your appointment has been cancelled due to an unforeseen schedule conflict with the doctor.</p>
+          
+          <div style="background-color: #f8fafc; border-left: 4px solid #ef4444; padding: 12px 16px; margin: 16px 0;">
+            <p style="margin: 4px 0;"><b>Doctor:</b> ${data.doctorName || 'Specialist'}</p>
+            <p style="margin: 4px 0;"><b>Scheduled Time:</b> ${data.appointmentTime || ''} - ${data.appointmentDate || ''}</p>
+            <p style="margin: 4px 0;"><b>Doctor's Reason:</b> <i style="color: #b91c1c;">"${data.reason || 'Unforeseen conflict'}"</i></p>
+          </div>
+
+          <div style="background-color: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 6px; padding: 16px; margin: 20px 0;">
+            <h4 style="margin: 0 0 8px 0; color: #047857;">
+              ✔ Patient Protection Policy
+            </h4>
+            <p style="margin: 4px 0; color: #065f46;">
+              <b>100% of your examination fee (${refundFormatted} VND)</b> has been refunded to your <b>BookingCare Wallet</b> immediately.
+            </p>
+            <p style="margin: 4px 0; font-size: 13px; color: #047857;">
+              You can use your wallet balance to easily reschedule your appointment at zero extra cost.
+            </p>
+          </div>
+
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${rescheduleUrl}" target="_blank" style="background-color: #087f8c; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">
+              Reschedule Your Appointment Now
+            </a>
+          </div>
+
+          <p style="font-size: 13px; color: #64748b;">
+            We sincerely apologize for this inconvenience and appreciate your kind understanding.
+          </p>
+        </div>
+        <div style="background-color: #f1f5f9; padding: 12px; text-align: center; font-size: 12px; color: #94a3b8;">
+          © BookingCare Healthcare Platform
+        </div>
+      </div>
+    `;
+
+  try {
+    await transporter.sendMail({
+      from: '"BookingCare" <noreply@bookingcare.vn>',
+      to: data.email,
+      subject: isVi ? 'Thông báo hủy lịch khám & Hoàn tiền vào Ví BookingCare' : 'Appointment Cancellation & Wallet Refund Notice',
+      html: htmlContent,
+    });
+    console.log(`[EMAIL APOLOGY SENT] To: ${data.email} | Booking #${data.bookingId}`);
+  } catch (err) {
+    console.error(`[EMAIL APOLOGY FAILED] To: ${data.email} | Error:`, err.message);
+  }
+};
+
+module.exports = {
+  sendEmailBooking,
+  sendEmailRemedy,
+  sendEmailResetPassword,
+  sendDoctorCancellationApologyEmail,
+};

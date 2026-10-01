@@ -594,6 +594,11 @@ if (db.Booking && db.Doctor_Schedule_Cancellation) {
   db.Doctor_Schedule_Cancellation.hasMany(db.Booking, { foreignKey: 'cancellationId', as: 'cancelledBookings' });
 }
 
+if (db.Booking) {
+  db.Booking.belongsTo(db.Booking, { foreignKey: 'rescheduledFromBookingId', as: 'rescheduledFromBooking' });
+  db.Booking.belongsTo(db.Booking, { foreignKey: 'rescheduledToBookingId', as: 'rescheduledToBooking' });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

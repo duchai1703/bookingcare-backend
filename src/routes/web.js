@@ -184,6 +184,9 @@ const routes = (app) => {
   app.post('/api/v1/bookings', verifyToken, checkPatientRole, patientController.postBookAppointment);
   app.get('/api/v1/patient/bookings', verifyToken, checkPatientRole, patientController.getPatientBookings);
   app.put('/api/v1/patient/bookings/:id/cancel', verifyToken, checkPatientRole, patientController.handleCancelBooking);
+  // [Phase 2] Smart Reschedule APIs — Protected (R3 only)
+  app.get('/api/v1/patient/bookings/:id/reschedule-options', verifyToken, checkPatientRole, patientController.handleGetRescheduleOptions);
+  app.post('/api/v1/patient/bookings/:id/reschedule', verifyToken, checkPatientRole, patientController.handleRescheduleBooking);
 
   // [Phase B] Medical Attachments (Tài liệu đính kèm y tế)
   app.post('/api/v1/patient/bookings/:bookingId/attachments', verifyToken, checkPatientRole, patientController.handleUploadAttachment);
