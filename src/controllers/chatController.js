@@ -86,10 +86,59 @@ const updateConversationStatus = async (req, res) => {
   }
 };
 
+const callService = require('../services/callService');
+const callRepository = require('../repositories/callRepository');
+
+const getIceServers = async (req, res) => {
+  try {
+    const iceServers = callService.getIceServers();
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy cấu hình máy chủ WebRTC ICE thành công.',
+      data: { iceServers },
+    });
+  } catch (err) {
+    console.error('>>> getIceServers error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server khi lấy cấu hình ICE.' });
+  }
+};
+
+const getBookingCallHistory = async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const history = await callRepository.getCallHistoryByBooking(bookingId);
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy lịch sử cuộc gọi thành công.',
+      data: history,
+    });
+  } catch (err) {
+    console.error('>>> getBookingCallHistory error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server khi lấy lịch sử cuộc gọi.' });
+  }
+};
+
+const getActiveCall = async (req, res) => {
+  try {
+    const active = await callRepository.findActiveCallForUser(req.user.id);
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Kiểm tra cuộc gọi hiện tại thành công.',
+      data: active,
+    });
+  } catch (err) {
+    console.error('>>> getActiveCall error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server khi kiểm tra cuộc gọi hiện tại.' });
+  }
+};
+
 module.exports = {
   getUserConversations,
   getOrCreateConversationForBooking,
   getConversationMessages,
   markMessagesAsRead,
   updateConversationStatus,
+  getIceServers,
+  getBookingCallHistory,
+  getActiveCall,
 };

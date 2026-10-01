@@ -377,6 +377,16 @@ const routes = (app) => {
   app.get('/api/v1/chat/conversations/:conversationId/messages', verifyToken, chatController.getConversationMessages);
   app.patch('/api/v1/chat/conversations/:conversationId/read', verifyToken, chatController.markMessagesAsRead);
   app.patch('/api/v1/chat/conversations/:conversationId/status', verifyToken, chatController.updateConversationStatus);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [WebRTC Telemedicine Audio/Video Call] REST APIs (Protected by verifyToken)
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/chat/webrtc/ice-servers', verifyToken, chatController.getIceServers);
+  app.get('/api/v1/call/ice-servers', verifyToken, chatController.getIceServers);
+  app.get('/api/v1/chat/bookings/:bookingId/call-history', verifyToken, chatController.getBookingCallHistory);
+  app.get('/api/v1/call/booking/:bookingId/history', verifyToken, chatController.getBookingCallHistory);
+  app.get('/api/v1/chat/active-call', verifyToken, chatController.getActiveCall);
+  app.get('/api/v1/call/active', verifyToken, chatController.getActiveCall);
 };
 
 module.exports = routes;

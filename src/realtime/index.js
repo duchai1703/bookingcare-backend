@@ -3,6 +3,7 @@
 const { Server } = require('socket.io');
 const socketAuthMiddleware = require('./socketAuthMiddleware');
 const registerChatSocketHandlers = require('./chatSocketHandler');
+const registerCallSocketHandlers = require('./callSocketHandler');
 
 let io = null;
 
@@ -32,6 +33,7 @@ function initSocketIO(httpServer) {
 
   io.on('connection', (socket) => {
     registerChatSocketHandlers(io, socket);
+    registerCallSocketHandlers(io, socket);
   });
 
   console.log('>>> [REALTIME] Socket.IO server initialized successfully on /socket.io/');

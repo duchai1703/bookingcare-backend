@@ -655,6 +655,53 @@ if (db.Conversation && db.ChatMessage) {
   });
 }
 
+// ─────────────────────────────────────────────────────
+// 🔗 [WebRTC Calling] CallSession Associations
+// ─────────────────────────────────────────────────────
+if (db.CallSession) {
+  // Booking ↔ CallSession (1:N)
+  db.Booking.hasMany(db.CallSession, {
+    foreignKey: 'bookingId',
+    as: 'callSessions',
+  });
+  db.CallSession.belongsTo(db.Booking, {
+    foreignKey: 'bookingId',
+    as: 'booking',
+  });
+
+  // Conversation ↔ CallSession (1:N)
+  if (db.Conversation) {
+    db.Conversation.hasMany(db.CallSession, {
+      foreignKey: 'conversationId',
+      as: 'callSessions',
+    });
+    db.CallSession.belongsTo(db.Conversation, {
+      foreignKey: 'conversationId',
+      as: 'conversation',
+    });
+  }
+
+  // User (Caller) ↔ CallSession (1:N)
+  db.User.hasMany(db.CallSession, {
+    foreignKey: 'callerId',
+    as: 'outgoingCalls',
+  });
+  db.CallSession.belongsTo(db.User, {
+    foreignKey: 'callerId',
+    as: 'caller',
+  });
+
+  // User (Receiver) ↔ CallSession (1:N)
+  db.User.hasMany(db.CallSession, {
+    foreignKey: 'receiverId',
+    as: 'incomingCalls',
+  });
+  db.CallSession.belongsTo(db.User, {
+    foreignKey: 'receiverId',
+    as: 'receiver',
+  });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 
