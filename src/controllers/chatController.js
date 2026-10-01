@@ -79,6 +79,33 @@ const updateConversationStatus = async (req, res) => {
     else if (result.errCode === 4) status = 403;
     else if (result.errCode !== 0) status = 400;
 
+    if (result.errCode === 0) {
+      try {
+        const { getIO } = require('../realtime');
+        const io = getIO();
+        const conv = result.data;
+        const convIdNum = parseInt(conversationId, 10);
+        io.to(`conversation_${convIdNum}`).emit('chat:conversation:status', {
+          conversationId: convIdNum,
+          status: convStatus,
+        });
+        if (conv?.patientId) {
+          io.to(`user_${conv.patientId}`).emit('chat:conversation:status', {
+            conversationId: convIdNum,
+            status: convStatus,
+          });
+        }
+        if (conv?.doctorId) {
+          io.to(`user_${conv.doctorId}`).emit('chat:conversation:status', {
+            conversationId: convIdNum,
+            status: convStatus,
+          });
+        }
+      } catch (ioErr) {
+        console.error('Socket broadcast error in updateConversationStatus:', ioErr);
+      }
+    }
+
     return res.status(status).json(result);
   } catch (err) {
     console.error('>>> updateConversationStatus error:', err);
