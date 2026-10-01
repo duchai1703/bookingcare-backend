@@ -706,11 +706,12 @@ const cancelBooking = async (data) => {
     }
 
     // ===== ⭐ [v3.0] FIND + LOCK DÒNG =====
+    // Cho phép hủy cả S1 (chờ xác nhận) và S2 (đã xác nhận)
     const booking = await db.Booking.findOne({
       where: {
         id: data.bookingId,          // ✅ Exact match
         doctorId: data.doctorId,     // ✅ IDOR prevention — doctorId từ JWT
-        statusId: 'S2',             // ✅ State Machine gate
+        statusId: { [db.Sequelize.Op.in]: ['S1', 'S2'] }, // ✅ Cho phép hủy cả S1 và S2
       },
       raw: false,
       transaction: t,
@@ -722,20 +723,28 @@ const cancelBooking = async (data) => {
       return { errCode: 3, message: 'Không tìm thấy lịch hẹn hoặc bạn không có quyền hủy!' };
     }
 
-    // ===== THAO TÁC 1: S2 → S4 (trong transaction t) =====
+    const prevStatus = booking.statusId;
+
+    // ===== THAO TÁC 1: S1/S2 → S4 (trong transaction t) =====
     booking.statusId = 'S4';
+    booking.cancellationType = 'DOCTOR';
+    booking.cancellationReason = data.reason || 'Bác sĩ hủy lịch hẹn';
+    booking.cancelledAt = new Date();
     await booking.save({ transaction: t });
 
-    // ===== THAO TÁC 2: GIẢM currentNumber (trong transaction t) =====
-    await db.Schedule.decrement('currentNumber', {
-      by: 1,
-      where: {
-        doctorId: booking.doctorId,
-        date: booking.date,
-        timeType: booking.timeType,
-      },
-      transaction: t,
-    });
+    // ===== THAO TÁC 2: GIẢM currentNumber (chỉ giảm nếu trước đó ở S2 đã chiếm slot) =====
+    if (prevStatus === 'S2') {
+      await db.Schedule.decrement('currentNumber', {
+        by: 1,
+        where: {
+          doctorId: booking.doctorId,
+          date: booking.date,
+          timeType: booking.timeType,
+          currentNumber: { [db.Sequelize.Op.gt]: 0 },
+        },
+        transaction: t,
+      });
+    }
 
     // ===== COMMIT — Cả 2 thành công → mở khóa =====
     await t.commit();
