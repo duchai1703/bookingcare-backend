@@ -2,12 +2,40 @@
 
 const { Op } = require('sequelize');
 const db = require('../models');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 /**
  * ChatRepository — Data Access Layer for Conversations and ChatMessages
  * Completely decouples Sequelize ORM operations from Business Services and Socket Handlers.
  */
 class ChatRepository {
+  /**
+   * Helper: format conversation and decode user avatar images
+   */
+  formatConversation(conv) {
+    if (!conv) return null;
+    const plain = typeof conv.get === 'function' ? conv.get({ plain: true }) : { ...conv };
+    if (plain.patientUser && plain.patientUser.image) {
+      plain.patientUser.image = convertBlobToBase64(plain.patientUser.image);
+    }
+    if (plain.doctorUser && plain.doctorUser.image) {
+      plain.doctorUser.image = convertBlobToBase64(plain.doctorUser.image);
+    }
+    return plain;
+  }
+
+  /**
+   * Helper: format message and decode sender avatar image
+   */
+  formatMessage(msg) {
+    if (!msg) return null;
+    const plain = typeof msg.get === 'function' ? msg.get({ plain: true }) : { ...msg };
+    if (plain.sender && plain.sender.image) {
+      plain.sender.image = convertBlobToBase64(plain.sender.image);
+    }
+    return plain;
+  }
+
   /**
    * Find conversation by ID with optional associations
    */
@@ -66,7 +94,7 @@ class ChatRepository {
     };
 
     const conv = await db.Conversation.findOne(queryOptions);
-    return conv ? conv.get({ plain: true }) : null;
+    return conv ? this.formatConversation(conv) : null;
   }
 
   /**
@@ -93,7 +121,7 @@ class ChatRepository {
         },
       ],
     });
-    return conv ? conv.get({ plain: true }) : null;
+    return conv ? this.formatConversation(conv) : null;
   }
 
   /**
@@ -187,7 +215,7 @@ class ChatRepository {
       ],
     });
 
-    const plainConversations = conversations.map(c => c.get({ plain: true }));
+    const plainConversations = conversations.map(c => this.formatConversation(c));
 
     // Attach latest message and unread count for each conversation
     for (const conv of plainConversations) {
@@ -255,7 +283,7 @@ class ChatRepository {
       });
 
       return {
-        message: messageWithSender ? messageWithSender.get({ plain: true }) : newMsg.get({ plain: true }),
+        message: messageWithSender ? this.formatMessage(messageWithSender) : this.formatMessage(newMsg),
         isDuplicate: false,
       };
     } catch (err) {
@@ -274,7 +302,7 @@ class ChatRepository {
           ],
         });
         if (raceExisting) {
-          return { message: raceExisting.get({ plain: true }), isDuplicate: true };
+          return { message: this.formatMessage(raceExisting), isDuplicate: true };
         }
       }
       throw err;
@@ -314,7 +342,7 @@ class ChatRepository {
 
     // Convert to plain and sort ASC for client chronological render
     const plainMessages = resultMessages
-      .map(m => m.get({ plain: true }))
+      .map(m => this.formatMessage(m))
       .reverse();
 
     const nextCursor = hasMore && plainMessages.length > 0 ? plainMessages[0].createdAt : null;
