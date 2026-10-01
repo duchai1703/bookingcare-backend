@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const db = require('./models');
 const routes = require('./routes/web');
 const redisClient = require('./utils/redisClient');
+const { initSocketIO, closeSocketIO } = require('./realtime');
 
 const app = express();
 
@@ -148,6 +149,9 @@ async function executeEnterpriseGracefulShutdown(signal) {
       });
     }
 
+    // Bước 2b: Phóng thích ngắt kết nối toàn bộ Socket.IO clients
+    await closeSocketIO();
+
     // Bước 3: Trì hoãn 10 giây phóng thích kết nối luồng Stream SSE AI
     console.log('[SHUTDOWN STEP 3] Waiting 10s delay to release up to 15 SSE AI Active stream connections.');
     await new Promise(resolve => setTimeout(resolve, 10000));
@@ -230,6 +234,9 @@ async function startServer() {
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`>>> Production Hardened App Backend is running on port ${PORT} (0.0.0.0)`);
     });
+
+    // Giai đoạn 5: Khởi tạo Socket.IO Real-time Engine
+    initSocketIO(server);
 
     // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
     server.maxRequestsPerSocket = 10000;

@@ -639,6 +639,12 @@ const sendRemedy = async (data) => {
 
     // ===== 5. UPDATE STATUS S2 → S3 =====
     booking.statusId = 'S3'; // State Machine: S2 → S3 (Đã khám xong)
+    // [Post-Consultation 7-Day Window] Thiết lập mốc thời gian hoàn tất khám & thời hạn 168 giờ
+    if (!booking.consultationCompletedAt) {
+      const now = new Date();
+      booking.consultationCompletedAt = now;
+      booking.followUpExpiresAt = new Date(now.getTime() + 168 * 3600 * 1000); // Chính xác 168 giờ (7 ngày)
+    }
     await booking.save({ transaction: t });
 
     // ═══════════════════════════════════════════════════════════
@@ -1032,6 +1038,12 @@ const saveDoctorEncounter = async (bookingId, doctorId, data) => {
     } else if (data.action === 'complete') {
       updateFields.encounterStatus = 'completed';
       updateFields.statusId = 'S3'; // Chuyển sang Đã khám xong
+      // [Post-Consultation 7-Day Window] Thiết lập mốc thời gian hoàn tất khám & thời hạn 168 giờ
+      if (!booking.consultationCompletedAt) {
+        const now = new Date();
+        updateFields.consultationCompletedAt = now;
+        updateFields.followUpExpiresAt = new Date(now.getTime() + 168 * 3600 * 1000); // 168 giờ
+      }
     } else if (data.encounterStatus !== undefined) {
       updateFields.encounterStatus = data.encounterStatus;
     }

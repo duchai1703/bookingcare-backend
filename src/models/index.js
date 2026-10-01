@@ -599,6 +599,62 @@ if (db.Booking) {
   db.Booking.belongsTo(db.Booking, { foreignKey: 'rescheduledToBookingId', as: 'rescheduledToBooking' });
 }
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Real-time Chat] Doctor–Patient Post-Consultation Chat Associations
+// ─────────────────────────────────────────────────────
+if (db.Conversation && db.ChatMessage) {
+  // Booking ↔ Conversation (1:1)
+  db.Booking.hasOne(db.Conversation, {
+    foreignKey: 'bookingId',
+    as: 'conversationData',
+  });
+  db.Conversation.belongsTo(db.Booking, {
+    foreignKey: 'bookingId',
+    as: 'bookingData',
+  });
+
+  // User (Patient) ↔ Conversation (1:N)
+  db.User.hasMany(db.Conversation, {
+    foreignKey: 'patientId',
+    as: 'patientConversations',
+  });
+  db.Conversation.belongsTo(db.User, {
+    foreignKey: 'patientId',
+    as: 'patientUser',
+  });
+
+  // User (Doctor) ↔ Conversation (1:N)
+  db.User.hasMany(db.Conversation, {
+    foreignKey: 'doctorId',
+    as: 'doctorConversations',
+  });
+  db.Conversation.belongsTo(db.User, {
+    foreignKey: 'doctorId',
+    as: 'doctorUser',
+  });
+
+  // Conversation ↔ ChatMessage (1:N)
+  db.Conversation.hasMany(db.ChatMessage, {
+    foreignKey: 'conversationId',
+    as: 'messages',
+    onDelete: 'CASCADE',
+  });
+  db.ChatMessage.belongsTo(db.Conversation, {
+    foreignKey: 'conversationId',
+    as: 'conversation',
+  });
+
+  // User (Sender) ↔ ChatMessage (1:N)
+  db.User.hasMany(db.ChatMessage, {
+    foreignKey: 'senderId',
+    as: 'sentChatMessages',
+  });
+  db.ChatMessage.belongsTo(db.User, {
+    foreignKey: 'senderId',
+    as: 'sender',
+  });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

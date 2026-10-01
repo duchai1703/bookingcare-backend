@@ -367,6 +367,16 @@ const routes = (app) => {
   app.post('/api/v1/admin/doctor-onboarding/:id/request-changes', verifyToken, checkAdminRole, doctorOnboardingController.requestChanges);
   app.post('/api/v1/admin/doctor-onboarding/:id/reject', verifyToken, checkAdminRole, doctorOnboardingController.rejectOnboarding);
   app.post('/api/v1/admin/doctor-onboarding/:id/approve', verifyToken, checkAdminRole, doctorOnboardingController.approveOnboarding);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor–Patient Post-Consultation Chat] REST APIs (Protected by verifyToken)
+  // ═══════════════════════════════════════════════════════════════════════
+  const chatController = require('../controllers/chatController');
+  app.get('/api/v1/chat/conversations', verifyToken, chatController.getUserConversations);
+  app.post('/api/v1/chat/bookings/:bookingId/conversation', verifyToken, chatController.getOrCreateConversationForBooking);
+  app.get('/api/v1/chat/conversations/:conversationId/messages', verifyToken, chatController.getConversationMessages);
+  app.patch('/api/v1/chat/conversations/:conversationId/read', verifyToken, chatController.markMessagesAsRead);
+  app.patch('/api/v1/chat/conversations/:conversationId/status', verifyToken, chatController.updateConversationStatus);
 };
 
 module.exports = routes;

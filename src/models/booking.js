@@ -82,6 +82,12 @@ module.exports = (sequelize, DataTypes) => {
     // ═══════════════════════════════════════════════════════════════════════
     clinicId: { type: DataTypes.INTEGER, allowNull: true },
     doctorAssignmentId: { type: DataTypes.INTEGER, allowNull: true },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // [Post-Consultation 7-Day Window] Thời điểm hoàn tất khám & Hạn hỗ trợ
+    // ═══════════════════════════════════════════════════════════════════════
+    consultationCompletedAt: { type: DataTypes.DATE, allowNull: true },
+    followUpExpiresAt: { type: DataTypes.DATE, allowNull: true },
   }, {
     // [v3.0] Đánh index cho các cột truy vấn thường xuyên
     indexes: [
