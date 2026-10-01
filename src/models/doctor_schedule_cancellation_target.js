@@ -47,6 +47,14 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING(20),
       defaultValue: 'SUCCESS', // 'SUCCESS' | 'FAILED' | 'SKIPPED'
     },
+    reopenedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    reopenedBy: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     note: {
       type: DataTypes.STRING(255),
       allowNull: true,

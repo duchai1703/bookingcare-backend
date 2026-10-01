@@ -153,6 +153,10 @@ const routes = (app) => {
   app.post('/api/v1/doctor-cancellations/execute', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleExecuteCancellation);
   app.get('/api/v1/doctor-cancellations/history', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetCancellationHistory);
   app.get('/api/v1/doctor-cancellations/:id', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetCancellationDetail);
+  app.post('/api/v1/doctor-cancellations/reopen-schedule', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleReopenSchedule);
+  app.get('/api/v1/doctor-cancellations/doctor-reliability', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetDoctorReliability);
+  app.get('/api/v1/doctor-cancellations/doctor-reliability/:id', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetDoctorReliability);
+  app.get('/api/v1/doctor-cancellations/analytics', verifyToken, checkAdminRole, doctorCancellationController.handleGetCancellationAnalytics);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase 9.2] PATIENT ROUTES – Yêu cầu role R3 (verifyToken + checkPatientRole)

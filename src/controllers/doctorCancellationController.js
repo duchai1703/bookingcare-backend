@@ -134,9 +134,101 @@ async function handleGetCancellationDetail(req, res) {
   }
 }
 
+/**
+ * POST /api/v1/doctor-cancellations/reopen-schedule
+ * Khôi phục / Mở lại khung giờ khám đã từng bị báo bận (Reopen Slot)
+ */
+async function handleReopenSchedule(req, res) {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ errCode: -1, message: 'Chưa đăng nhập' });
+    }
+
+    const { scheduleId, reason } = req.body;
+    if (!scheduleId) {
+      return res.status(400).json({ errCode: 1, message: 'Thiếu mã khung giờ (scheduleId) cần mở lại!' });
+    }
+
+    const result = await doctorCancellationService.reopenSchedule({
+      scheduleId: Number(scheduleId),
+      doctorId: user.roleId === 'R2' ? user.id : req.body.doctorId,
+      userRole: user.roleId,
+      userId: user.id,
+      reason,
+    });
+
+    const statusCode = result.errCode === 0 ? 200 : result.errCode === 403 ? 403 : 400;
+    return res.status(statusCode).json(result);
+  } catch (error) {
+    console.error('Error in handleReopenSchedule:', error);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server nội bộ' });
+  }
+}
+
+/**
+ * GET /api/v1/doctor-cancellations/doctor-reliability/:id?
+ * Lấy điểm số độ tin cậy và thống kê chất lượng của bác sĩ
+ */
+async function handleGetDoctorReliability(req, res) {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ errCode: -1, message: 'Chưa đăng nhập' });
+    }
+
+    let doctorId = req.params.id || req.query.doctorId;
+    if (user.roleId === 'R2') {
+      doctorId = user.id;
+    }
+
+    if (!doctorId) {
+      return res.status(400).json({ errCode: 1, message: 'Thiếu mã bác sĩ (doctorId)' });
+    }
+
+    const days = req.query.days ? parseInt(req.query.days, 10) : 30;
+    const result = await doctorCancellationService.getDoctorReliabilityScore(doctorId, { days });
+
+    const statusCode = result.errCode === 0 ? 200 : 400;
+    return res.status(statusCode).json(result);
+  } catch (error) {
+    console.error('Error in handleGetDoctorReliability:', error);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server nội bộ' });
+  }
+}
+
+/**
+ * GET /api/v1/doctor-cancellations/analytics
+ * Báo cáo thống kê toàn diện & Quản trị độ tin cậy toàn sàn (Admin)
+ */
+async function handleGetCancellationAnalytics(req, res) {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ errCode: -1, message: 'Chưa đăng nhập' });
+    }
+
+    const { startDate, endDate, clinicId, doctorId } = req.query;
+    const result = await doctorCancellationService.getCancellationAnalytics({
+      startDate,
+      endDate,
+      clinicId,
+      doctorId,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetCancellationAnalytics:', error);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server nội bộ' });
+  }
+}
+
 module.exports = {
   handlePreviewCancellation,
   handleExecuteCancellation,
   handleGetCancellationHistory,
   handleGetCancellationDetail,
+  handleReopenSchedule,
+  handleGetDoctorReliability,
+  handleGetCancellationAnalytics,
 };
