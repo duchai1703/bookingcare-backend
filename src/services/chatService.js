@@ -225,6 +225,13 @@ class ChatService {
         limit,
       });
 
+      // Fetch finalized call history for timeline integration
+      const callHistory = await callRepository.getCallHistoryByConversation(
+        conversationId,
+        access.conversation.bookingId
+      );
+      result.callHistory = callHistory || [];
+
       const isFollowUpActive = this.isFollowUpWindowActive(access.conversation.bookingData);
       return {
         errCode: 0,
@@ -235,6 +242,7 @@ class ChatService {
           isReadOnly: !isFollowUpActive || access.conversation.status === 'CLOSED',
           consultationCompletedAt: access.conversation.bookingData?.consultationCompletedAt,
           followUpExpiresAt: access.conversation.bookingData?.followUpExpiresAt,
+          callHistory: callHistory || [],
         },
       };
     } catch (err) {

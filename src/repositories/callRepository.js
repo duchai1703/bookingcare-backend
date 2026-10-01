@@ -2,11 +2,27 @@
 
 const { Op } = require('sequelize');
 const db = require('../models');
+const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 
 /**
  * CallRepository — Data Access Layer for WebRTC Call Sessions
  */
 class CallRepository {
+  /**
+   * Helper: format call session and decode avatars
+   */
+  formatCallSession(session) {
+    if (!session) return null;
+    const plain = typeof session.get === 'function' ? session.get({ plain: true }) : { ...session };
+    if (plain.caller && plain.caller.image) {
+      plain.caller.image = convertBlobToBase64(plain.caller.image);
+    }
+    if (plain.receiver && plain.receiver.image) {
+      plain.receiver.image = convertBlobToBase64(plain.receiver.image);
+    }
+    return plain;
+  }
+
   /**
    * Find CallSession by UUID callId with associations
    */
@@ -43,7 +59,7 @@ class CallRepository {
     };
 
     const session = await db.CallSession.findOne(query);
-    return session ? session.get({ plain: true }) : null;
+    return session ? this.formatCallSession(session) : null;
   }
 
   /**
@@ -83,7 +99,7 @@ class CallRepository {
         return null;
       }
 
-      return session.get({ plain: true });
+      return this.formatCallSession(session);
     }
 
     return null;
@@ -101,11 +117,26 @@ class CallRepository {
    * Update CallSession status atomically
    */
   async updateCallStatus(callId, updateData, transaction = null) {
-    const session = await db.CallSession.findOne({ where: { callId }, transaction });
+    const session = await db.CallSession.findOne({
+      where: { callId },
+      include: [
+        {
+          model: db.User,
+          as: 'caller',
+          attributes: ['id', 'email', 'firstName', 'lastName', 'image', 'roleId'],
+        },
+        {
+          model: db.User,
+          as: 'receiver',
+          attributes: ['id', 'email', 'firstName', 'lastName', 'image', 'roleId'],
+        },
+      ],
+      transaction,
+    });
     if (!session) return null;
 
     await session.update(updateData, { transaction });
-    return session.get({ plain: true });
+    return this.formatCallSession(session);
   }
 
   /**
@@ -153,7 +184,41 @@ class CallRepository {
       order: [['createdAt', 'DESC']],
       limit,
     });
-    return sessions.map(s => s.get({ plain: true }));
+    return sessions.map(s => this.formatCallSession(s));
+  }
+
+  /**
+   * Get finalized call history for a conversation / booking
+   */
+  async getCallHistoryByConversation(conversationId, bookingId = null, limit = 50) {
+    const orConditions = [];
+    if (conversationId) orConditions.push({ conversationId });
+    if (bookingId) orConditions.push({ bookingId });
+
+    if (orConditions.length === 0) return [];
+
+    const terminalStatuses = ['CONNECTED', 'ENDED', 'REJECTED', 'MISSED', 'CANCELLED', 'FAILED', 'EXPIRED'];
+    const sessions = await db.CallSession.findAll({
+      where: {
+        [Op.or]: orConditions,
+        status: { [Op.in]: terminalStatuses },
+      },
+      include: [
+        {
+          model: db.User,
+          as: 'caller',
+          attributes: ['id', 'firstName', 'lastName', 'image', 'roleId'],
+        },
+        {
+          model: db.User,
+          as: 'receiver',
+          attributes: ['id', 'firstName', 'lastName', 'image', 'roleId'],
+        },
+      ],
+      order: [['createdAt', 'ASC']],
+      limit,
+    });
+    return sessions.map(s => this.formatCallSession(s));
   }
 }
 
