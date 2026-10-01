@@ -69,6 +69,10 @@ const postBookAppointment = async (data, patientId) => {
       await t.rollback();
       return { errCode: 3, message: 'Khung giờ khám không tồn tại!' };
     }
+    if (schedule.status && schedule.status !== 'ACTIVE') {
+      await t.rollback();
+      return { errCode: 4, message: 'Khung giờ khám này bác sĩ đã báo bận / ngừng tiếp nhận lịch hẹn!' };
+    }
     if (schedule.currentNumber >= schedule.maxNumber) {
       await t.rollback();
       return { errCode: 4, message: 'Khung giờ này đã hết chỗ!' };

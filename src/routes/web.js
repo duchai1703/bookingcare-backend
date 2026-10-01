@@ -13,6 +13,7 @@ const clinicManageController = require('../controllers/clinicManageController');
 const specialtyManageController = require('../controllers/specialtyManageController'); // [Specialty Intelligence Hub]
 const policyController = require('../controllers/policyController'); // [Financial Policy Engine]
 const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
+const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -144,6 +145,14 @@ const routes = (app) => {
   app.post('/api/v1/doctor/schedules/copy', verifyToken, checkDoctorRole, doctorController.copyDoctorSchedule);
   app.post('/api/v1/doctor/schedules/recurring', verifyToken, checkDoctorRole, doctorController.createRecurringSchedule);
   app.patch('/api/v1/doctor/schedules/:id/toggle-close', verifyToken, checkDoctorRole, doctorController.toggleCloseScheduleSlot);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor Schedule Cancellation & Compensation Engine] — Admin & Doctor
+  // ═══════════════════════════════════════════════════════════════════════
+  app.post('/api/v1/doctor-cancellations/preview', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handlePreviewCancellation);
+  app.post('/api/v1/doctor-cancellations/execute', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleExecuteCancellation);
+  app.get('/api/v1/doctor-cancellations/history', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetCancellationHistory);
+  app.get('/api/v1/doctor-cancellations/:id', verifyToken, checkAdminOrDoctorRole, doctorCancellationController.handleGetCancellationDetail);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase 9.2] PATIENT ROUTES – Yêu cầu role R3 (verifyToken + checkPatientRole)

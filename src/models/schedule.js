@@ -8,6 +8,7 @@ module.exports = (sequelize, DataTypes) => {
     timeType:      { type: DataTypes.STRING(10), allowNull: false },
     maxNumber:     { type: DataTypes.INTEGER, defaultValue: 10 },
     currentNumber: { type: DataTypes.INTEGER, defaultValue: 0 },
+    status:        { type: DataTypes.STRING(20), allowNull: false, defaultValue: 'ACTIVE' }, // 'ACTIVE' | 'CLOSED_BY_DOCTOR' | 'CANCELLED'
   }, {
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase 11 — Guard #44] Composite Unique Constraint

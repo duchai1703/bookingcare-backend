@@ -553,6 +553,47 @@ if (db.Wallet && db.Payment_Transaction) {
   db.Payment_Transaction.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 🩺 Doctor Schedule Cancellation & Compensation Engine Associations
+// ═══════════════════════════════════════════════════════════════════════
+if (db.Doctor_Schedule_Cancellation && db.Doctor_Schedule_Cancellation_Target) {
+  db.Doctor_Schedule_Cancellation.hasMany(db.Doctor_Schedule_Cancellation_Target, {
+    foreignKey: 'cancellationId',
+    as: 'targets',
+    onDelete: 'CASCADE',
+  });
+  db.Doctor_Schedule_Cancellation_Target.belongsTo(db.Doctor_Schedule_Cancellation, {
+    foreignKey: 'cancellationId',
+    as: 'cancellation',
+  });
+}
+
+if (db.Doctor_Schedule_Cancellation && db.User) {
+  db.Doctor_Schedule_Cancellation.belongsTo(db.User, { foreignKey: 'doctorId', as: 'doctorData' });
+  db.Doctor_Schedule_Cancellation.belongsTo(db.User, { foreignKey: 'cancelledBy', as: 'cancelledByUserData' });
+}
+
+if (db.Doctor_Schedule_Cancellation && db.Clinic) {
+  db.Doctor_Schedule_Cancellation.belongsTo(db.Clinic, { foreignKey: 'clinicId', as: 'clinicData' });
+}
+
+if (db.Doctor_Schedule_Cancellation_Target && db.Booking) {
+  db.Doctor_Schedule_Cancellation_Target.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'bookingData' });
+}
+
+if (db.Doctor_Schedule_Cancellation_Target && db.Schedule) {
+  db.Doctor_Schedule_Cancellation_Target.belongsTo(db.Schedule, { foreignKey: 'scheduleId', as: 'scheduleData' });
+}
+
+if (db.Doctor_Schedule_Cancellation_Target && db.User) {
+  db.Doctor_Schedule_Cancellation_Target.belongsTo(db.User, { foreignKey: 'patientId', as: 'patientData' });
+}
+
+if (db.Booking && db.Doctor_Schedule_Cancellation) {
+  db.Booking.belongsTo(db.Doctor_Schedule_Cancellation, { foreignKey: 'cancellationId', as: 'doctorCancellationData' });
+  db.Doctor_Schedule_Cancellation.hasMany(db.Booking, { foreignKey: 'cancellationId', as: 'cancelledBookings' });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

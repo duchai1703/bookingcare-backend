@@ -42,6 +42,9 @@ module.exports = (sequelize, DataTypes) => {
     refundedAt: { type: DataTypes.DATE, allowNull: true },
     paymentMethod: { type: DataTypes.STRING(30), allowNull: true, defaultValue: 'VNPAY' }, // 'WALLET' | 'VNPAY'
     cancelledAt: { type: DataTypes.DATE, allowNull: true },
+    cancellationType: { type: DataTypes.STRING(20), allowNull: true }, // 'PATIENT' | 'DOCTOR' | 'CLINIC' | 'SYSTEM' | 'ADMIN'
+    cancellationReason: { type: DataTypes.TEXT, allowNull: true },
+    cancellationId: { type: DataTypes.UUID, allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
     // [Phase A] BookingCare v2.0 — Thông tin khám bệnh (Doctor ghi nhận)
@@ -89,6 +92,8 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['clinicId'], name: 'idx_bookings_clinicId' },
       { fields: ['doctorAssignmentId'], name: 'idx_bookings_doctorAssignmentId' },
       { fields: ['doctorId', 'clinicId', 'date'], name: 'idx_bookings_doctor_clinic_date' },
+      { fields: ['cancellationType'], name: 'idx_bookings_cancellationType' },
+      { fields: ['cancellationId'], name: 'idx_bookings_cancellationId' },
     ],
   });
   return Booking;

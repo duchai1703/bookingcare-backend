@@ -360,8 +360,8 @@ const getScheduleByDate = async (doctorId, date, includeAll = false, clinicId = 
       return { errCode: 0, data: enriched };
     }
 
-    // Patient sees only available
-    const result = schedules.filter((s) => s.currentNumber < s.maxNumber);
+    // Patient sees only available & active slots
+    const result = schedules.filter((s) => s.currentNumber < s.maxNumber && s.status === 'ACTIVE');
     return { errCode: 0, data: result };
   } catch (err) {
     console.error('>>> getScheduleByDate error:', err);
