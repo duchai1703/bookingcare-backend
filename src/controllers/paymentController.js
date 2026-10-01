@@ -32,12 +32,12 @@ function sortObject(obj) {
   }
   return sorted;
 }
-// ═══ ENV Constants ═══
-const VNP_TMN_CODE = process.env.VNP_TMN_CODE;
-const VNP_HASH_SECRET = process.env.VNP_HASH_SECRET;
-const VNP_URL = process.env.VNP_URL;
-const VNP_RETURN_URL = process.env.VNP_RETURN_URL;
-const VNP_API_URL = process.env.VNP_API_URL;
+// ═══ ENV Constants (dynamic getters) ═══
+const getVnpTmnCode = () => process.env.VNP_TMN_CODE;
+const getVnpHashSecret = () => process.env.VNP_HASH_SECRET;
+const getVnpUrl = () => process.env.VNP_URL;
+const getVnpReturnUrl = () => process.env.VNP_RETURN_URL;
+const getVnpApiUrl = () => process.env.VNP_API_URL;
 
 // ═══ Isolation Level shorthand ═══
 const READ_COMMITTED = Sequelize.Transaction.ISOLATION_LEVELS.READ_COMMITTED;
@@ -63,14 +63,14 @@ function buildVnpayUrl(paymentToken, amount, ipAddr, updatedAt) {
   const params = {
     vnp_Version: '2.1.0',
     vnp_Command: 'pay',
-    vnp_TmnCode: VNP_TMN_CODE,
+    vnp_TmnCode: getVnpTmnCode(),
     vnp_Amount: amount * 100,
     vnp_CurrCode: 'VND',
     vnp_TxnRef: paymentToken,
     vnp_OrderInfo: cleanOrderInfo,
     vnp_OrderType: 'other',
     vnp_Locale: 'vn',
-    vnp_ReturnUrl: VNP_RETURN_URL,
+    vnp_ReturnUrl: getVnpReturnUrl(),
     vnp_IpAddr: ipAddr || '127.0.0.1',
     vnp_CreateDate: createDate,
     vnp_ExpireDate: expireDate, // [NEW LOGIC VNPAY-MAIL]: Lỗi 27
@@ -78,11 +78,11 @@ function buildVnpayUrl(paymentToken, amount, ipAddr, updatedAt) {
   const sorted = sortObject(params);
   const signData = qs.stringify(sorted, { encode: false });
   const hash = crypto
-    .createHmac('sha512', VNP_HASH_SECRET)
+    .createHmac('sha512', getVnpHashSecret())
     .update(Buffer.from(signData, 'utf-8'))
     .digest('hex');
   const urlQuery = qs.stringify(sorted, { encode: false });
-  return `${VNP_URL}?${urlQuery}&vnp_SecureHash=${hash}`;
+  return `${getVnpUrl()}?${urlQuery}&vnp_SecureHash=${hash}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -125,7 +125,7 @@ async function createPaymentUrl(req, res) {
     if (!res.writableEnded) {
       ac.abort();
       if (idempotencyKey)
-        idempotencyStore.delete(idempotencyKey).catch(() => {});
+        idempotencyStore.delete(idempotencyKey).catch(() => { });
     }
   });
 
@@ -144,14 +144,14 @@ async function createPaymentUrl(req, res) {
     if (err.message === 'TIMEOUT' && !isResponded) {
       isResponded = true;
       if (idempotencyKey)
-        idempotencyStore.delete(idempotencyKey).catch(() => {});
+        idempotencyStore.delete(idempotencyKey).catch(() => { });
       res.set('Retry-After', '3');
       return res.status(503).json({ errCode: -3 });
     }
     if (!isResponded) {
       isResponded = true;
       if (idempotencyKey)
-        idempotencyStore.delete(idempotencyKey).catch(() => {});
+        idempotencyStore.delete(idempotencyKey).catch(() => { });
       return res.status(500).json({ errCode: -1 });
     }
   } finally {
@@ -293,14 +293,14 @@ async function createPaymentUrl(req, res) {
         try {
           await idempotencyStore.setDone(idempotencyKey, payload);
         } catch (e) {
-          idempotencyStore.delete(idempotencyKey).catch(() => {});
+          idempotencyStore.delete(idempotencyKey).catch(() => { });
         }
       }
       writeResponse(payload);
     } catch (err) {
       if (t && !t.finished) await t.rollback();
       if (idempotencyKey)
-        idempotencyStore.delete(idempotencyKey).catch(() => {});
+        idempotencyStore.delete(idempotencyKey).catch(() => { });
       writeResponse({ errCode: -1 }, 500);
     }
     function writeResponse(body, status = 200) {
@@ -343,7 +343,7 @@ async function vnpayIpn(req, res) {
     const sorted = sortObject(params);
     const signData = qs.stringify(sorted, { encode: false });
     const expected = crypto
-      .createHmac('sha512', VNP_HASH_SECRET)
+      .createHmac('sha512', getVnpHashSecret())
       .update(Buffer.from(signData, 'utf-8'))
       .digest('hex');
 
@@ -541,7 +541,7 @@ async function vnpayQuerydr(booking) {
     vnp_RequestId: vnp_RequestId,
     vnp_Version: '2.1.0',
     vnp_Command: 'querydr',
-    vnp_TmnCode: VNP_TMN_CODE,
+    vnp_TmnCode: getVnpTmnCode(),
     vnp_TxnRef: booking.paymentToken,
     vnp_OrderInfo: `Truy van don hang ${booking.paymentToken}`.replace(
       /[^a-zA-Z0-9 ]/g,
@@ -553,7 +553,7 @@ async function vnpayQuerydr(booking) {
     vnp_CreateDate: moment().tz('Asia/Ho_Chi_Minh').format('YYYYMMDDHHmmss'),
     vnp_IpAddr: '127.0.0.1',
   };
-  
+
   const signData = [
     params.vnp_RequestId,
     params.vnp_Version,
@@ -567,11 +567,11 @@ async function vnpayQuerydr(booking) {
   ].join('|');
 
   params.vnp_SecureHash = crypto
-    .createHmac('sha512', VNP_HASH_SECRET)
+    .createHmac('sha512', getVnpHashSecret())
     .update(Buffer.from(signData, 'utf-8'))
     .digest('hex');
 
-  const resp = await axios.post(VNP_API_URL, params, { timeout: 10000 });
+  const resp = await axios.post(getVnpApiUrl(), params, { timeout: 10000 });
   const code = resp.data?.vnp_TransactionStatus;
 
   // ✅ [v20.1 FIX-1] Computed Property Name — ép string key, chống auto-format
@@ -797,7 +797,7 @@ async function cleanupS1(req, res) {
     if (lockAcquired)
       await db.sequelize
         .query("SELECT pg_advisory_unlock(hashtext('cron_cleanup_s1'))")
-        .catch(() => {});
+        .catch(() => { });
   }
 }
 
@@ -857,13 +857,13 @@ async function bookingByToken(req, res) {
 
     const safeName = String(
       (booking.patientData?.lastName || '') +
-        ' ' +
-        (booking.patientData?.firstName || ''),
+      ' ' +
+      (booking.patientData?.firstName || ''),
     ).trim();
     const rawDoc = String(
       (booking.doctorBookingData?.lastName || '') +
-        ' ' +
-        (booking.doctorBookingData?.firstName || ''),
+      ' ' +
+      (booking.doctorBookingData?.firstName || ''),
     ).trim();
 
     res.json({
@@ -893,11 +893,11 @@ function maskName(n) {
   return p.length <= 1
     ? p[0][0] + '***'
     : p[0] +
-        ' ' +
-        p
-          .slice(1)
-          .map((x) => x[0] + '***')
-          .join(' ');
+    ' ' +
+    p
+      .slice(1)
+      .map((x) => x[0] + '***')
+      .join(' ');
 }
 
 module.exports = {

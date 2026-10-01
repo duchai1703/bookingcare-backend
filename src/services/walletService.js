@@ -9,11 +9,11 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const VNPAY_ALLOWED_KEYS = require('../utils/vnpayAllowedKeys');
 
-// VNPay Environment Variables
-const VNP_TMN_CODE = process.env.VNP_TMN_CODE;
-const VNP_HASH_SECRET = process.env.VNP_HASH_SECRET;
-const VNP_URL = process.env.VNP_URL;
-const VNP_RETURN_URL = process.env.VNP_RETURN_URL || 'http://localhost:3000/patient/wallet';
+// VNPay Environment Variables (dynamic lookup from process.env)
+const getVnpTmnCode = () => process.env.VNP_TMN_CODE;
+const getVnpHashSecret = () => process.env.VNP_HASH_SECRET;
+const getVnpUrl = () => process.env.VNP_URL || 'https://sandbox.vnpayment.vn/paymentv2/vpcpay.html';
+const getVnpReturnUrl = () => process.env.VNP_RETURN_URL || 'http://localhost:3000/patient/wallet';
 
 function sortObject(obj) {
   const sorted = {};
@@ -157,15 +157,26 @@ async function createDepositPaymentUrl(userId, { amount, ipAddr, bankCode }) {
     const createDate = moment().tz('Asia/Ho_Chi_Minh').format('YYYYMMDDHHmmss');
     const expireDate = moment().tz('Asia/Ho_Chi_Minh').add(15, 'minutes').format('YYYYMMDDHHmmss');
 
+    // Strip IPv6 (::1, ::ffff:127.0.0.1) về IPv4 chuẩn cho VNPay
+    let clientIp = ipAddr || '127.0.0.1';
+    if (clientIp && clientIp.includes(':')) {
+      if (clientIp.includes('::ffff:')) {
+        clientIp = clientIp.split('::ffff:')[1];
+      } else {
+        clientIp = '127.0.0.1';
+      }
+    }
+
     const cleanOrderInfo = `Nap tien vi BookingCare ${txnRef}`.replace(/[^a-zA-Z0-9 ]/g, '');
 
     // Return URL dẫn về trang ví của bệnh nhân
-    const returnUrl = `${VNP_RETURN_URL}?type=wallet_deposit&txnRef=${txnRef}`;
+    const walletBaseUrl = process.env.URL_REACT || 'http://localhost:3000';
+    const returnUrl = `${walletBaseUrl}/patient/wallet`;
 
     const params = {
       vnp_Version: '2.1.0',
       vnp_Command: 'pay',
-      vnp_TmnCode: VNP_TMN_CODE,
+      vnp_TmnCode: getVnpTmnCode(),
       vnp_Amount: Math.round(numAmount * 100),
       vnp_CurrCode: 'VND',
       vnp_TxnRef: txnRef,
@@ -173,7 +184,7 @@ async function createDepositPaymentUrl(userId, { amount, ipAddr, bankCode }) {
       vnp_OrderType: 'other',
       vnp_Locale: 'vn',
       vnp_ReturnUrl: returnUrl,
-      vnp_IpAddr: ipAddr || '127.0.0.1',
+      vnp_IpAddr: clientIp,
       vnp_CreateDate: createDate,
       vnp_ExpireDate: expireDate,
     };
@@ -185,12 +196,12 @@ async function createDepositPaymentUrl(userId, { amount, ipAddr, bankCode }) {
     const sorted = sortObject(params);
     const signData = qs.stringify(sorted, { encode: false });
     const hash = crypto
-      .createHmac('sha512', VNP_HASH_SECRET)
+      .createHmac('sha512', getVnpHashSecret())
       .update(Buffer.from(signData, 'utf-8'))
       .digest('hex');
 
     const urlQuery = qs.stringify(sorted, { encode: false });
-    const paymentUrl = `${VNP_URL}?${urlQuery}&vnp_SecureHash=${hash}`;
+    const paymentUrl = `${getVnpUrl()}?${urlQuery}&vnp_SecureHash=${hash}`;
 
     return {
       errCode: 0,
@@ -227,14 +238,18 @@ async function processVNPayDepositIPN(vnp_Params) {
       return { RspCode: '97', Message: 'Invalid signature format' };
     }
 
-    const params = Object.assign(Object.create(null), vnp_Params);
-    delete params['vnp_SecureHash'];
-    delete params['vnp_SecureHashType'];
+    // Chỉ lấy các param bắt đầu bằng vnp_ (bỏ qua vnp_SecureHash và vnp_SecureHashType)
+    const params = {};
+    for (const key of Object.keys(vnp_Params)) {
+      if (key.startsWith('vnp_') && key !== 'vnp_SecureHash' && key !== 'vnp_SecureHashType') {
+        params[key] = vnp_Params[key];
+      }
+    }
 
     const sorted = sortObject(params);
     const signData = qs.stringify(sorted, { encode: false });
     const expectedHash = crypto
-      .createHmac('sha512', VNP_HASH_SECRET)
+      .createHmac('sha512', getVnpHashSecret())
       .update(Buffer.from(signData, 'utf-8'))
       .digest('hex');
 
@@ -386,14 +401,18 @@ async function verifyVNPayDepositReturn(vnp_Params) {
     }
 
     const receivedHash = vnp_Params['vnp_SecureHash'];
-    const params = Object.assign(Object.create(null), vnp_Params);
-    delete params['vnp_SecureHash'];
-    delete params['vnp_SecureHashType'];
+    // Chỉ lấy các param bắt đầu bằng vnp_ (bỏ qua vnp_SecureHash và vnp_SecureHashType)
+    const params = {};
+    for (const key of Object.keys(vnp_Params)) {
+      if (key.startsWith('vnp_') && key !== 'vnp_SecureHash' && key !== 'vnp_SecureHashType') {
+        params[key] = vnp_Params[key];
+      }
+    }
 
     const sorted = sortObject(params);
     const signData = qs.stringify(sorted, { encode: false });
     const expectedHash = crypto
-      .createHmac('sha512', VNP_HASH_SECRET)
+      .createHmac('sha512', getVnpHashSecret())
       .update(Buffer.from(signData, 'utf-8'))
       .digest('hex');
 
@@ -412,6 +431,12 @@ async function verifyVNPayDepositReturn(vnp_Params) {
     const paymentTx = await db.Payment_Transaction.findOne({
       where: { txnRef },
     });
+
+    // Nếu thanh toán thành công và transaction còn PENDING (do IPN chưa kịp gọi hoặc máy local không mở ngrok)
+    // Tự động kích hoạt đối soát và cộng tiền an toàn với Idempotency Guard
+    if (isSuccess && paymentTx && paymentTx.status === 'PENDING') {
+      await processVNPayDepositIPN(vnp_Params);
+    }
 
     return {
       errCode: 0,
