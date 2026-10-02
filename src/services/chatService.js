@@ -99,6 +99,7 @@ class ChatService {
   /**
    * Idempotently get or create a conversation for a Booking
    * Bắt buộc Booking phải ở trạng thái S3 (Bác sĩ đã hoàn tất khám)
+   * [Phase 3] Tự động truyền familyMemberId nếu booking là cho người thân
    */
   async getOrCreateConversationForBooking(bookingId, user) {
     try {
@@ -106,7 +107,7 @@ class ChatService {
         return { errCode: 1, message: 'Thiếu mã lịch khám (bookingId).' };
       }
 
-      // 1. Fetch Booking
+      // 1. Fetch Booking + family member data
       const booking = await db.Booking.findOne({
         where: { id: bookingId },
         include: [
@@ -114,6 +115,12 @@ class ChatService {
             model: db.Allcode,
             as: 'statusData',
             attributes: ['valueEn', 'valueVi'],
+          },
+          {
+            model: db.Family_Member,
+            as: 'familyMemberData',
+            attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber', 'medicalHistory'],
+            required: false,
           },
         ],
       });
@@ -152,6 +159,21 @@ class ChatService {
         return { errCode: 4, message: 'Vai trò người dùng không hợp lệ.' };
       }
 
+      // [Phase 3] Xây dựng familyContext để hiển thị Medical Banner
+      const isFamilyBooking = booking.bookingFor === 'FAMILY' && booking.familyMemberId;
+      const familyMember = booking.familyMemberData || null;
+      const familyContext = isFamilyBooking && familyMember
+        ? {
+            isFamilyBooking: true,
+            familyMemberId: booking.familyMemberId,
+            patientName: familyMember.fullName || 'Người thân',
+            relationship: familyMember.relationship || 'RELATIVE',
+            gender: familyMember.gender || null,
+            birthday: familyMember.birthday || null,
+            medicalHistory: familyMember.medicalHistory || null,
+          }
+        : { isFamilyBooking: false };
+
       // 4. Check if conversation already exists
       const existing = await chatRepository.findConversationByBookingId(booking.id);
       const isWindowActive = this.isFollowUpWindowActive(booking);
@@ -166,6 +188,7 @@ class ChatService {
             followUpExpiresAt: booking.followUpExpiresAt,
             isFollowUpActive: isWindowActive,
             isReadOnly: !isWindowActive || existing.status === 'CLOSED',
+            familyContext,
           },
           created: false,
         };
@@ -182,11 +205,12 @@ class ChatService {
         };
       }
 
-      // 6. Create new conversation
+      // 6. Create new conversation — truyền familyMemberId nếu là family booking
       const { conversation, created } = await chatRepository.getOrCreateConversation({
         bookingId: booking.id,
         patientId: booking.patientId,
         doctorId: booking.doctorId,
+        familyMemberId: isFamilyBooking ? booking.familyMemberId : null,
       });
 
       return {
@@ -198,6 +222,7 @@ class ChatService {
           followUpExpiresAt: booking.followUpExpiresAt,
           isFollowUpActive: true,
           isReadOnly: false,
+          familyContext,
         },
         created,
       };

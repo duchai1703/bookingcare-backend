@@ -32,6 +32,11 @@ module.exports = (sequelize, DataTypes) => {
         key: 'id',
       },
     },
+    // [Phase 3] Phân tách Chat theo Người thân — null = bản thân chủ tài khoản
+    familyMemberId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     status: {
       type: DataTypes.STRING(20),
       allowNull: false,

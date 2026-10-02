@@ -126,8 +126,9 @@ class ChatRepository {
 
   /**
    * Idempotent Get or Create Conversation for a Booking
+   * [Phase 3] Nhận familyMemberId để gắn với người thân cụ thể khi booking là FAMILY
    */
-  async getOrCreateConversation({ bookingId, patientId, doctorId }) {
+  async getOrCreateConversation({ bookingId, patientId, doctorId, familyMemberId = null }) {
     const existing = await this.findConversationByBookingId(bookingId);
     if (existing) {
       return { conversation: existing, created: false };
@@ -140,6 +141,7 @@ class ChatRepository {
           bookingId,
           patientId,
           doctorId,
+          familyMemberId: familyMemberId || null,
           status: 'OPEN',
           lastMessageAt: new Date(),
         },

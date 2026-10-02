@@ -9,6 +9,7 @@ const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const policyEngineService = require('./policyEngineService');
+const { sanitizeContent } = require('../utils/sanitizeHtml');
 
 // Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null (tránh vi phạm Foreign Key PostgreSQL)
 const normalizeGender = (gender) => {
