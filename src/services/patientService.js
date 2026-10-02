@@ -230,13 +230,64 @@ const postBookAppointment = async (data, patientId) => {
     }
 
     // Chuẩn hóa giới tính để đảm bảo hợp lệ theo Allcode (G1: Nam, G2: Nữ, G3: Khác)
-    let normalizedGender = null;
-    if (data.gender === 'G1' || data.gender === 'M' || data.gender === 'MALE' || data.gender === 'Nam') {
-      normalizedGender = 'G1';
-    } else if (data.gender === 'G2' || data.gender === 'F' || data.gender === 'FEMALE' || data.gender === 'Nữ') {
-      normalizedGender = 'G2';
-    } else if (data.gender === 'G3' || data.gender === 'OTHER') {
-      normalizedGender = 'G3';
+    const toAllcodeGender = (g) => {
+      if (!g) return 'G1';
+      const upper = String(g).toUpperCase();
+      if (['G1', 'M', 'MALE', 'NAM'].includes(upper)) return 'G1';
+      if (['G2', 'F', 'FEMALE', 'NỮ', 'NU'].includes(upper)) return 'G2';
+      return 'G3';
+    };
+    let normalizedGender = toAllcodeGender(data.gender);
+
+    // ═══════════════════════════════════════════════════════════
+    // [Family Members & Dependents] Phân giải đối tượng khám (Bản thân hay Người thân)
+    // ═══════════════════════════════════════════════════════════
+    let bookingFor = data.bookingFor === 'FAMILY' ? 'FAMILY' : 'SELF';
+    let familyMemberId = data.familyMemberId ? Number(data.familyMemberId) : null;
+    let relationship = data.relationship || null;
+    let clinicalPatientName = data.fullName;
+    let clinicalPatientGender = normalizedGender;
+    let clinicalPatientBirthday = data.birthday || '';
+    let clinicalPatientAddress = data.address || '';
+    let clinicalPatientPhone = data.phoneNumber || '';
+
+    if (bookingFor === 'FAMILY') {
+      if (familyMemberId) {
+        // [IDOR Check]: Đảm bảo hồ sơ người thân thuộc về tài khoản người đặt (resolvedPatientId)
+        const famMember = await db.Family_Member.findOne({
+          where: { id: familyMemberId, userId: resolvedPatientId },
+          transaction: t,
+        });
+        if (!famMember) {
+          await t.rollback();
+          return { errCode: 404, message: 'Không tìm thấy hồ sơ người thân hoặc bạn không có quyền truy cập!' };
+        }
+        clinicalPatientName = famMember.fullName || clinicalPatientName;
+        clinicalPatientGender = toAllcodeGender(famMember.gender || clinicalPatientGender);
+        clinicalPatientBirthday = famMember.birthday || clinicalPatientBirthday;
+        relationship = famMember.relationship || relationship;
+        if (famMember.address) clinicalPatientAddress = famMember.address;
+        if (famMember.phoneNumber) clinicalPatientPhone = famMember.phoneNumber;
+      } else if (data.newFamilyMember && resolvedPatientId) {
+        // Hỗ trợ tạo nhanh hồ sơ người thân ngay trong bước đặt lịch
+        const newFam = await db.Family_Member.create({
+          userId: resolvedPatientId,
+          fullName: data.newFamilyMember.fullName || data.fullName,
+          relationship: data.newFamilyMember.relationship || data.relationship || 'OTHER',
+          gender: toAllcodeGender(data.newFamilyMember.gender || normalizedGender),
+          birthday: data.newFamilyMember.birthday || data.birthday || null,
+          phoneNumber: data.newFamilyMember.phoneNumber || data.phoneNumber || null,
+          address: data.newFamilyMember.address || data.address || null,
+          nationalId: data.newFamilyMember.nationalId || null,
+          medicalHistory: data.newFamilyMember.medicalHistory || null,
+          notes: data.newFamilyMember.notes || null,
+        }, { transaction: t });
+        familyMemberId = newFam.id;
+        relationship = newFam.relationship;
+        clinicalPatientName = newFam.fullName;
+        clinicalPatientGender = toAllcodeGender(newFam.gender);
+        clinicalPatientBirthday = newFam.birthday;
+      }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -277,6 +328,9 @@ const postBookAppointment = async (data, patientId) => {
       clinicId: resolvedClinicId,
       doctorAssignmentId: resolvedAssignment?.id || null,
       patientId: resolvedPatientId,
+      bookingFor: bookingFor,
+      familyMemberId: familyMemberId,
+      relationship: relationship,
       date: data.date,
       timeType: data.timeType,
       token: token,
@@ -289,12 +343,12 @@ const postBookAppointment = async (data, patientId) => {
       // [Phase B] QR Token cho Mobile Doctor check-in
       qrToken: `BKQ-${resolvedPatientId || 'GUEST'}-${crypto.randomBytes(8).toString('hex').toUpperCase()}`,
       reason: data.reason || '',
-      patientName: data.fullName,
-      patientPhoneNumber: data.phoneNumber,
-      patientAddress: data.address || '',
-      patientGender: normalizedGender || normalizeGender(data.gender),
+      patientName: clinicalPatientName,
+      patientPhoneNumber: clinicalPatientPhone || data.phoneNumber,
+      patientAddress: clinicalPatientAddress || data.address || '',
+      patientGender: clinicalPatientGender,
 
-      patientBirthday: data.birthday || '',
+      patientBirthday: clinicalPatientBirthday,
       bankAccountNumber: data.bankAccountNumber || '',
       bankAccountName: data.bankAccountName || '',
       bankName: data.bankName || '',
@@ -730,6 +784,17 @@ const getPatientBookings = async (patientId, query) => {
       whereClause.statusId = { [Op.in]: status.split(',') };
     }
 
+    // Filter theo đối tượng khám: Bản thân hay Người thân cụ thể
+    if (query.familyMemberId) {
+      if (query.familyMemberId === 'SELF') {
+        whereClause.bookingFor = 'SELF';
+      } else {
+        whereClause.familyMemberId = Number(query.familyMemberId);
+      }
+    } else if (query.bookingFor) {
+      whereClause.bookingFor = query.bookingFor;
+    }
+
     const { count, rows } = await db.Booking.findAndCountAll({
       where: whereClause,
       limit: safeLimit,
@@ -755,6 +820,12 @@ const getPatientBookings = async (patientId, query) => {
               ],
             },
           ],
+        },
+        // [Family Members] Thông tin người thân (nếu đặt cho người thân)
+        {
+          model: db.Family_Member,
+          as: 'familyMemberData',
+          attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber', 'medicalHistory'],
         },
         // Allcode: trạng thái booking (Chờ xác nhận, Đã xác nhận, Đã khám, Đã hủy)
         { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },

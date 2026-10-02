@@ -1,6 +1,8 @@
 // src/controllers/policyController.js
-// Thin Controller cho Financial Policy Engine
+// Thin Controller cho Financial Policy Engine & Flexible SLA Audit Subsystem
 const policyEngineService = require('../services/policyEngineService');
+const withdrawalPolicyService = require('../services/withdrawalPolicyService');
+const policyAuditService = require('../services/policyAuditService');
 
 // GET /api/v1/admin/policies
 const getPoliciesList = async (req, res) => {
@@ -140,6 +142,119 @@ const getDoctorHierarchyTree = async (req, res) => {
   }
 };
 
+// ═══════════════════════════════════════════════════════════════════════
+// ⏱️ Dynamic Withdrawal SLA Policy & Audit Trail Endpoints
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /api/v1/policies/withdrawal-sla (Admin / Patient)
+const getActiveWithdrawalPolicy = async (req, res) => {
+  try {
+    const policy = await withdrawalPolicyService.getActiveWithdrawalPolicy();
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy chính sách SLA rút tiền thành công',
+      data: policy,
+    });
+  } catch (error) {
+    console.error('>>> getActiveWithdrawalPolicy error:', error);
+    return res.status(500).json({
+      errCode: -1,
+      message: error.message || 'Lỗi server khi lấy chính sách rút tiền',
+    });
+  }
+};
+
+// PUT /api/v1/admin/policies/withdrawal-sla (Admin R1)
+const updateWithdrawalPolicy = async (req, res) => {
+  try {
+    const adminId = req.user ? req.user.id : 1;
+    const ipAddress = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
+    const userAgent = req.headers['user-agent'] || 'Admin API';
+
+    const result = await withdrawalPolicyService.updateWithdrawalPolicy({
+      adminId,
+      defaultSlaDays: req.body.defaultSlaDays,
+      allowCustomDays: req.body.allowCustomDays,
+      minSlaDays: req.body.minSlaDays,
+      maxSlaDays: req.body.maxSlaDays,
+      isBusinessDaysOnly: req.body.isBusinessDaysOnly,
+      tiers: req.body.tiers,
+      policyNoticeVi: req.body.policyNoticeVi,
+      description: req.body.description,
+      reason: req.body.reason,
+      ipAddress,
+      userAgent,
+    });
+
+    return res.status(200).json({
+      errCode: 0,
+      message: result.message,
+      data: result.policy,
+    });
+  } catch (error) {
+    console.error('>>> updateWithdrawalPolicy error:', error);
+    return res.status(400).json({
+      errCode: 1,
+      message: error.message || 'Lỗi khi cập nhật chính sách rút tiền',
+    });
+  }
+};
+
+// GET /api/v1/admin/policies/withdrawal-sla/versions (Admin R1)
+const getWithdrawalPolicyVersions = async (req, res) => {
+  try {
+    const versions = await withdrawalPolicyService.getAllWithdrawalPolicyVersions();
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy lịch sử các phiên bản chính sách rút tiền thành công',
+      data: versions,
+    });
+  } catch (error) {
+    console.error('>>> getWithdrawalPolicyVersions error:', error);
+    return res.status(500).json({
+      errCode: -1,
+      message: error.message || 'Lỗi server khi lấy lịch sử phiên bản',
+    });
+  }
+};
+
+// GET /api/v1/policies/calculate-sla?amount=xxx (Patient / Doctor Modal Dynamic Preview)
+const calculateWithdrawalSlaPreview = async (req, res) => {
+  try {
+    const amount = Number(req.query.amount) || 0;
+    const calculation = await withdrawalPolicyService.calculateWithdrawalSla(amount, new Date());
+    return res.status(200).json({
+      errCode: 0,
+      message: 'OK',
+      data: calculation,
+    });
+  } catch (error) {
+    console.error('>>> calculateWithdrawalSlaPreview error:', error);
+    return res.status(500).json({
+      errCode: -1,
+      message: error.message || 'Lỗi khi tính toán thời hạn SLA rút tiền',
+    });
+  }
+};
+
+// GET /api/v1/admin/policies/audit-logs (Admin R1)
+const getPolicyAuditLogs = async (req, res) => {
+  try {
+    const logs = await policyAuditService.getAuditLogs(req.query);
+    return res.status(200).json({
+      errCode: 0,
+      message: 'Lấy nhật ký kiểm toán chính sách thành công',
+      ...logs,
+    });
+  } catch (error) {
+    console.error('>>> getPolicyAuditLogs error:', error);
+    return res.status(500).json({
+      errCode: -1,
+      message: error.message || 'Lỗi server khi lấy nhật ký kiểm toán',
+    });
+  }
+};
+
 module.exports = {
   getPoliciesList,
   getPolicyDetail,
@@ -147,5 +262,11 @@ module.exports = {
   createPolicyVersion,
   updatePolicyDraft,
   seedDefaultPolicies,
-  getDoctorHierarchyTree
+  getDoctorHierarchyTree,
+  // SLA & Audit Subsystem
+  getActiveWithdrawalPolicy,
+  updateWithdrawalPolicy,
+  getWithdrawalPolicyVersions,
+  calculateWithdrawalSlaPreview,
+  getPolicyAuditLogs,
 };

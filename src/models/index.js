@@ -568,6 +568,25 @@ if (db.User && db.Withdrawal_Request) {
   db.Withdrawal_Request.belongsTo(db.User, { foreignKey: 'adminId', as: 'admin' });
 }
 
+if (db.Financial_Policy && db.Withdrawal_Request) {
+  db.Financial_Policy.hasMany(db.Withdrawal_Request, { foreignKey: 'policyId', as: 'withdrawalRequests' });
+  db.Withdrawal_Request.belongsTo(db.Financial_Policy, { foreignKey: 'policyId', as: 'appliedPolicy' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 📜 Immutable Policy Audit Trail Associations
+// ═══════════════════════════════════════════════════════════════════════
+if (db.Policy_Audit_Log) {
+  if (db.User) {
+    db.Policy_Audit_Log.belongsTo(db.User, { foreignKey: 'adminId', as: 'admin' });
+    db.User.hasMany(db.Policy_Audit_Log, { foreignKey: 'adminId', as: 'policyAuditLogs' });
+  }
+  if (db.Financial_Policy) {
+    db.Policy_Audit_Log.belongsTo(db.Financial_Policy, { foreignKey: 'policyId', as: 'financialPolicy' });
+    db.Financial_Policy.hasMany(db.Policy_Audit_Log, { foreignKey: 'policyId', as: 'auditLogs' });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 🩺 Doctor Schedule Cancellation & Compensation Engine Associations
 // ═══════════════════════════════════════════════════════════════════════
@@ -714,6 +733,31 @@ if (db.CallSession) {
   db.CallSession.belongsTo(db.User, {
     foreignKey: 'receiverId',
     as: 'receiver',
+  });
+}
+
+// ─────────────────────────────────────────────────────
+// 🔗 [Family Members] Sổ Y Bạ Gia Đình (HL7 FHIR RelatedPerson)
+// ─────────────────────────────────────────────────────
+if (db.Family_Member && db.User) {
+  db.User.hasMany(db.Family_Member, {
+    foreignKey: 'userId',
+    as: 'familyMembers',
+  });
+  db.Family_Member.belongsTo(db.User, {
+    foreignKey: 'userId',
+    as: 'guardian',
+  });
+}
+
+if (db.Family_Member && db.Booking) {
+  db.Family_Member.hasMany(db.Booking, {
+    foreignKey: 'familyMemberId',
+    as: 'bookings',
+  });
+  db.Booking.belongsTo(db.Family_Member, {
+    foreignKey: 'familyMemberId',
+    as: 'familyMemberData',
   });
 }
 

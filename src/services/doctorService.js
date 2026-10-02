@@ -557,6 +557,10 @@ const getListPatientForDoctor = async (doctorId, date, statusId, clinicId = null
             { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
         },
+        {
+          model: db.Family_Member,
+          as: 'familyMemberData',
+        },
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'genderBookingData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
         { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
@@ -904,6 +908,10 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
           ],
         },
         {
+          model: db.Family_Member,
+          as: 'familyMemberData',
+        },
+        {
           model: db.User,
           as: 'doctorBookingData',
           attributes: ['id', 'firstName', 'lastName'],
@@ -941,10 +949,11 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
 
     const plain = booking.toJSON ? booking.toJSON() : booking;
 
-    // Tính tuổi bệnh nhân
+    // Tính tuổi bệnh nhân (ưu tiên ngày sinh hồ sơ người thân)
     let patientAge = null;
-    if (plain.patientBirthday) {
-      const birthYear = parseInt(plain.patientBirthday.substring(0, 4), 10);
+    const effectiveBirthday = plain.familyMemberData?.birthday || plain.patientBirthday;
+    if (effectiveBirthday) {
+      const birthYear = parseInt(effectiveBirthday.substring(0, 4), 10);
       if (!isNaN(birthYear)) {
         patientAge = new Date().getFullYear() - birthYear;
       }

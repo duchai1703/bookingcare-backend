@@ -14,6 +14,7 @@ const specialtyManageController = require('../controllers/specialtyManageControl
 const policyController = require('../controllers/policyController'); // [Financial Policy Engine]
 const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
 const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
+const familyMemberController = require('../controllers/familyMemberController'); // [Family Members & Dependents]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -191,6 +192,10 @@ const routes = (app) => {
   app.post('/api/v1/doctor/wallet/withdrawal', verifyToken, checkDoctorRole, walletController.handleRequestDoctorWithdrawal);
   app.get('/api/v1/doctor/wallet/withdrawals', verifyToken, checkDoctorRole, walletController.handleGetDoctorWithdrawalRequests);
 
+  // [SLA Policy Public / Patient Preview]
+  app.get('/api/v1/policies/withdrawal-sla', policyController.getActiveWithdrawalPolicy);
+  app.get('/api/v1/policies/calculate-sla', policyController.calculateWithdrawalSlaPreview);
+
   // Booking APIs (Design Doc v3.0, Mục 4.1.2)
   // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch
   app.post('/api/v1/bookings', verifyToken, checkPatientRole, patientController.postBookAppointment);
@@ -205,6 +210,15 @@ const routes = (app) => {
   app.get('/api/v1/patient/bookings/:bookingId/attachments', verifyToken, patientController.handleGetAttachments);
   app.get('/api/v1/patient/bookings/:bookingId/attachments/:attachmentId/download', verifyToken, patientController.handleDownloadAttachment);
   app.delete('/api/v1/patient/bookings/:bookingId/attachments/:attachmentId', verifyToken, checkPatientRole, patientController.handleDeleteAttachment);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Family Members & Dependents] SỔ Y BẠ GIA ĐÌNH — Role R3
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/patient/family-members', verifyToken, checkPatientRole, familyMemberController.handleGetFamilyMembers);
+  app.get('/api/v1/patient/family-members/:id', verifyToken, checkPatientRole, familyMemberController.handleGetFamilyMemberById);
+  app.post('/api/v1/patient/family-members', verifyToken, checkPatientRole, familyMemberController.handleCreateFamilyMember);
+  app.put('/api/v1/patient/family-members/:id', verifyToken, checkPatientRole, familyMemberController.handleUpdateFamilyMember);
+  app.delete('/api/v1/patient/family-members/:id', verifyToken, checkPatientRole, familyMemberController.handleDeleteFamilyMember);
 
   // Review API (Design Doc v3.0, Mục 4.1.3) — Protected, R3 only
   app.post('/api/v1/reviews', verifyToken, checkPatientRole, reviewController.submitReview);
@@ -305,6 +319,18 @@ const routes = (app) => {
   // [Phase 3] Admin Withdrawal Management APIs
   app.get('/api/v1/admin/financial/withdrawals', verifyToken, checkAdminRole, walletController.handleGetAdminWithdrawalRequests);
   app.post('/api/v1/admin/financial/withdrawals/:id/process', verifyToken, checkAdminRole, walletController.handleAdminProcessWithdrawal);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Financial Policy Engine & Flexible SLA Audit Subsystem] — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/policies', verifyToken, checkAdminRole, policyController.getPoliciesList);
+  app.get('/api/v1/admin/policies/:id', verifyToken, checkAdminRole, policyController.getPolicyDetail);
+  app.post('/api/v1/admin/policies', verifyToken, checkAdminRole, policyController.createPolicy);
+  app.post('/api/v1/admin/policies/:id/version', verifyToken, checkAdminRole, policyController.createPolicyVersion);
+  app.put('/api/v1/admin/policies/:id/draft', verifyToken, checkAdminRole, policyController.updatePolicyDraft);
+  app.get('/api/v1/admin/policies-withdrawal-sla/versions', verifyToken, checkAdminRole, policyController.getWithdrawalPolicyVersions);
+  app.put('/api/v1/admin/policies-withdrawal-sla', verifyToken, checkAdminRole, policyController.updateWithdrawalPolicy);
+  app.get('/api/v1/admin/policies-audit-logs', verifyToken, checkAdminRole, policyController.getPolicyAuditLogs);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase F] PATIENT ENTERPRISE MANAGEMENT & REFUND FLOW — Admin R1

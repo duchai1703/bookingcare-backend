@@ -98,6 +98,27 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         comment: 'Thời điểm người dùng tự hủy yêu cầu',
       },
+      appliedSlaDays: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        defaultValue: 7,
+        comment: 'Số ngày SLA áp dụng cho yêu cầu rút tiền này',
+      },
+      promisedPayoutDate: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        comment: 'Thời điểm cam kết hoàn tất chuyển khoản cho người dùng',
+      },
+      policyId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        comment: 'ID chính sách SLA được áp dụng (Financial_Policies)',
+      },
+      policySnapshot: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        comment: 'Snapshot nguyên văn cấu hình chính sách tại thời điểm tạo yêu cầu',
+      },
     },
     {
       tableName: 'Withdrawal_Requests',

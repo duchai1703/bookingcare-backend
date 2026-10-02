@@ -16,6 +16,13 @@ module.exports = (sequelize, DataTypes) => {
     patientBirthday: { type: DataTypes.STRING(20), allowNull: true },
 
     // ═══════════════════════════════════════════════════════════════════════
+    // [Family Booking & Dependents] Đặt lịch cho người thân (HL7 FHIR)
+    // ═══════════════════════════════════════════════════════════════════════
+    bookingFor: { type: DataTypes.STRING(20), allowNull: true, defaultValue: 'SELF' }, // 'SELF' | 'FAMILY'
+    familyMemberId: { type: DataTypes.INTEGER, allowNull: true }, // FK to family_members.id
+    relationship: { type: DataTypes.STRING(50), allowNull: true }, // 'CHILD' | 'PARENT' | 'SPOUSE' | 'OTHER'
+
+    // ═══════════════════════════════════════════════════════════════════════
     // [Phase 11] VNPay Payment Integration — 9 cột mới
     // ═══════════════════════════════════════════════════════════════════════
     paymentToken: { type: DataTypes.STRING(255), allowNull: true }, // uniqueness enforced by idx_bookings_payment_token_unique (partial index)
@@ -105,6 +112,7 @@ module.exports = (sequelize, DataTypes) => {
       { fields: ['cancellationId'], name: 'idx_bookings_cancellationId' },
       { fields: ['rescheduledFromBookingId'], name: 'idx_bookings_rescheduledFromBookingId' },
       { fields: ['rescheduledToBookingId'], name: 'idx_bookings_rescheduledToBookingId' },
+      { fields: ['familyMemberId'], name: 'idx_bookings_familyMemberId' },
     ],
   });
   return Booking;

@@ -8,6 +8,7 @@ const moment = require('moment-timezone');
 const { Op } = require('sequelize');
 const db = require('../models');
 const VNPAY_ALLOWED_KEYS = require('../utils/vnpayAllowedKeys');
+const withdrawalPolicyService = require('./withdrawalPolicyService');
 
 // VNPay Environment Variables (dynamic lookup from process.env)
 const getVnpTmnCode = () => process.env.VNP_TMN_CODE;
@@ -981,6 +982,9 @@ async function requestWithdrawal(userId, { amount, patientBankAccountId, bankInf
         { transaction: t }
       );
 
+      // Tính toán Cam kết Thời hạn Giải ngân Linh hoạt (Dynamic SLA) theo Chính sách hệ thống
+      const slaCalc = await withdrawalPolicyService.calculateWithdrawalSla(numAmount, new Date());
+
       const withdrawalRequest = await db.Withdrawal_Request.create(
         {
           walletId: lockedWallet.id,
@@ -992,14 +996,20 @@ async function requestWithdrawal(userId, { amount, patientBankAccountId, bankInf
           status: 'PENDING',
           userNote: userNote ? userNote.trim() : null,
           requestedAt: new Date(),
+          appliedSlaDays: slaCalc.appliedSlaDays,
+          promisedPayoutDate: slaCalc.promisedPayoutDate,
+          policyId: slaCalc.policyId,
+          policySnapshot: slaCalc.policySnapshot,
         },
         { transaction: t }
       );
 
       await t.commit();
+
+      const promisedDateStr = new Date(slaCalc.promisedPayoutDate).toLocaleDateString('vi-VN');
       return {
         errCode: 0,
-        errMessage: 'Yêu cầu rút tiền đã được gửi thành công. Quản trị viên sẽ xử lý trong vòng 24 giờ.',
+        errMessage: `Yêu cầu rút tiền đã được gửi thành công. Thời gian xử lý cam kết trong ${slaCalc.appliedSlaDays} ngày (dự kiến hoàn tất trước ngày ${promisedDateStr}).`,
         data: withdrawalRequest,
       };
     } catch (innerErr) {
@@ -1211,11 +1221,34 @@ async function getAdminWithdrawalRequests({
           'rejectedCount',
         ],
         [
+          db.sequelize.fn(
+            'SUM',
+            db.sequelize.literal("CASE WHEN status = 'PENDING' AND \"promisedPayoutDate\" IS NOT NULL AND \"promisedPayoutDate\" < NOW() THEN 1 ELSE 0 END")
+          ),
+          'overdueCount',
+        ],
+        [
           db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.literal("CASE WHEN status = 'PENDING' THEN amount ELSE 0 END")), 0),
           'pendingAmount',
         ],
       ],
       raw: true,
+    });
+
+    const nowTime = new Date().getTime();
+    const enrichedRequests = rows.map((req) => {
+      const item = req.toJSON();
+      item.isOverdue = Boolean(
+        item.status === 'PENDING' &&
+        item.promisedPayoutDate &&
+        nowTime > new Date(item.promisedPayoutDate).getTime()
+      );
+      try {
+        item.parsedPolicySnapshot = item.policySnapshot ? JSON.parse(item.policySnapshot) : null;
+      } catch {
+        item.parsedPolicySnapshot = null;
+      }
+      return item;
     });
 
     return {
@@ -1226,12 +1259,13 @@ async function getAdminWithdrawalRequests({
         page: parseInt(page, 10),
         limit: parseInt(limit, 10),
         totalPages: Math.ceil(count / limit),
-        requests: rows,
+        requests: enrichedRequests,
         stats: {
           totalRequests: parseInt(stats?.totalRequests || 0, 10),
           pendingCount: parseInt(stats?.pendingCount || 0, 10),
           transferredCount: parseInt(stats?.transferredCount || 0, 10),
           rejectedCount: parseInt(stats?.rejectedCount || 0, 10),
+          overdueCount: parseInt(stats?.overdueCount || 0, 10),
           pendingAmount: Number(stats?.pendingAmount || 0),
         },
       },
