@@ -688,7 +688,8 @@ const getDoctorCapacityDetail = async (from, to) => {
 
   const totalDoctors = formattedDoctors.length;
   const totalSlots = formattedDoctors.reduce((acc, d) => acc + d.totalSlots, 0);
-  const occupiedSlots = formattedDoctors.reduce((acc, d) => acc + d.occupiedSlots, 0);
+  // [BUG FIX] Field từ SQL là bookedSlots, không phải occupiedSlots (gây NaN → màn hình trắng FE)
+  const occupiedSlots = formattedDoctors.reduce((acc, d) => acc + d.bookedSlots, 0);
   const avgUtilization = totalSlots > 0 ? Number(((occupiedSlots / totalSlots) * 100).toFixed(1)) : 0;
 
   return {
