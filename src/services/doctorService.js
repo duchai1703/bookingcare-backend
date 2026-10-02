@@ -302,7 +302,10 @@ const getScheduleByDate = async (doctorId, date, includeAll = false, clinicId = 
     };
 
     if (clinicId) {
-      whereCondition.clinicId = Number(clinicId);
+      whereCondition[db.Sequelize.Op.or] = [
+        { clinicId: Number(clinicId) },
+        { clinicId: null },
+      ];
     }
 
     // ✅ [FIX] Ép kiểu date → String để tránh lỗi PostgreSQL "character varying = bigint"
@@ -1838,6 +1841,15 @@ const getDoctorPractices = async (doctorId) => {
       ],
       raw: false,
       nest: true,
+    });
+
+    assignments.forEach((item) => {
+      if (item.clinicData && item.clinicData.image) {
+        item.clinicData.setDataValue('image', convertBlobToBase64(item.clinicData.image));
+      }
+      if (item.specialtyData && item.specialtyData.image) {
+        item.specialtyData.setDataValue('image', convertBlobToBase64(item.specialtyData.image));
+      }
     });
 
     return {
