@@ -191,12 +191,235 @@ async function handleToggleWalletStatus(req, res) {
   }
 }
 
+/**
+ * [PHASE 3] POST /api/v1/patient/wallet/withdrawal
+ * Bệnh nhân gửi yêu cầu rút tiền từ Ví về tài khoản ngân hàng
+ */
+async function handleRequestWithdrawal(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const { amount, patientBankAccountId, bankInfo, userNote } = req.body;
+    const result = await walletService.requestWithdrawal(userId, {
+      amount,
+      patientBankAccountId,
+      bankInfo,
+      userNote,
+      walletType: 'PATIENT',
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleRequestWithdrawal:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] GET /api/v1/patient/wallet/withdrawals
+ * Lấy lịch sử yêu cầu rút tiền của bệnh nhân
+ */
+async function handleGetMyWithdrawalRequests(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const { page, limit, status } = req.query;
+    const result = await walletService.getMyWithdrawalRequests(userId, {
+      page,
+      limit,
+      status,
+      walletType: 'PATIENT',
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetMyWithdrawalRequests:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] POST /api/v1/patient/wallet/withdrawals/:id/cancel
+ * Bệnh nhân hủy yêu cầu rút tiền đang chờ xử lý
+ */
+async function handleCancelMyWithdrawalRequest(req, res) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const requestId = req.params.id;
+    const result = await walletService.cancelMyWithdrawalRequest(userId, requestId, 'PATIENT');
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleCancelMyWithdrawalRequest:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] GET /api/v1/doctor/wallet
+ * Bác sĩ xem tổng quan Ví Bác sĩ
+ */
+async function handleGetDoctorWallet(req, res) {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const wallet = await walletService.getOrCreateWallet(doctorId, 'DOCTOR');
+    const available = Number(wallet.availableBalance) || 0;
+    const reserved = Number(wallet.reservedBalance) || 0;
+
+    const recentTx = await walletService.getWalletTransactions(doctorId, {
+      page: 1,
+      limit: 10,
+    });
+
+    return res.status(200).json({
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        walletId: wallet.id,
+        doctorId,
+        walletType: 'DOCTOR',
+        availableBalance: available,
+        reservedBalance: reserved,
+        totalBalance: available + reserved,
+        status: wallet.status,
+        recentTransactions: recentTx.data?.transactions || [],
+      },
+    });
+  } catch (error) {
+    console.error('Error in handleGetDoctorWallet:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] POST /api/v1/doctor/wallet/withdrawal
+ * Bác sĩ yêu cầu rút tiền từ Ví Bác sĩ
+ */
+async function handleRequestDoctorWithdrawal(req, res) {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const { amount, bankInfo, userNote } = req.body;
+    const result = await walletService.requestWithdrawal(doctorId, {
+      amount,
+      bankInfo,
+      userNote,
+      walletType: 'DOCTOR',
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleRequestDoctorWithdrawal:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] GET /api/v1/doctor/wallet/withdrawals
+ * Bác sĩ xem danh sách yêu cầu rút tiền của mình
+ */
+async function handleGetDoctorWithdrawalRequests(req, res) {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const { page, limit, status } = req.query;
+    const result = await walletService.getMyWithdrawalRequests(doctorId, {
+      page,
+      limit,
+      status,
+      walletType: 'DOCTOR',
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetDoctorWithdrawalRequests:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] GET /api/v1/admin/financial/withdrawals
+ * Admin tra cứu danh sách yêu cầu rút tiền toàn sàn
+ */
+async function handleGetAdminWithdrawalRequests(req, res) {
+  try {
+    const { page, limit, status, search, startDate, endDate } = req.query;
+    const result = await walletService.getAdminWithdrawalRequests({
+      page,
+      limit,
+      status,
+      search,
+      startDate,
+      endDate,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminWithdrawalRequests:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] POST /api/v1/admin/financial/withdrawals/:id/process
+ * Admin phê duyệt chuyển khoản hoặc từ chối yêu cầu rút tiền
+ */
+async function handleAdminProcessWithdrawal(req, res) {
+  try {
+    const adminId = req.user?.id;
+    const requestId = req.params.id;
+    const { action, adminNote, bankTransactionRef, receiptImage } = req.body;
+
+    const result = await walletService.adminProcessWithdrawal(adminId, {
+      requestId,
+      action,
+      adminNote,
+      bankTransactionRef,
+      receiptImage,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleAdminProcessWithdrawal:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetMyWallet,
   handleCreateDepositUrl,
   handleVNPayDepositIPN,
   handleVNPayDepositReturn,
   handleGetMyTransactions,
+  // Phase 3 Withdrawal Handlers
+  handleRequestWithdrawal,
+  handleGetMyWithdrawalRequests,
+  handleCancelMyWithdrawalRequest,
+  handleGetDoctorWallet,
+  handleRequestDoctorWithdrawal,
+  handleGetDoctorWithdrawalRequests,
+  handleGetAdminWithdrawalRequests,
+  handleAdminProcessWithdrawal,
   // Phase 4 Admin Handlers
   handleGetAdminLiquidityMetrics,
   handleGetAdminWalletTransactions,

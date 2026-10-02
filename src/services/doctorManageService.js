@@ -5,6 +5,7 @@ const { Op } = require('sequelize');
 const moment = require('moment');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 const policyEngineService = require('./policyEngineService');
+const walletService = require('./walletService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. MASTER: Lấy danh sách bác sĩ kèm các chỉ số vận hành, tài chính & bộ lọc
@@ -629,6 +630,15 @@ const createDoctorPayout = async ({
       adminId,
       paidAt: new Date(),
     });
+
+    // [PHASE 3] Nếu thanh toán qua phương thức Ví Bác sĩ (wallet), tự động nạp tiền vào Ví và ghi sổ cái bất biến
+    if (paymentMethod === 'wallet') {
+      try {
+        await walletService.creditDoctorSettlementToWallet(settlement);
+      } catch (walletErr) {
+        console.error('Lỗi khi credit tiền vào ví bác sĩ:', walletErr);
+      }
+    }
 
     return {
       errCode: 0,

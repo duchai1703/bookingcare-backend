@@ -182,6 +182,14 @@ const routes = (app) => {
   app.get('/api/v1/patient/wallet', verifyToken, checkPatientRole, walletController.handleGetMyWallet);
   app.post('/api/v1/patient/wallet/deposit', verifyToken, checkPatientRole, walletController.handleCreateDepositUrl);
   app.get('/api/v1/patient/wallet/transactions', verifyToken, checkPatientRole, walletController.handleGetMyTransactions);
+  // [Phase 3] Patient Withdrawal APIs
+  app.post('/api/v1/patient/wallet/withdrawal', verifyToken, checkPatientRole, walletController.handleRequestWithdrawal);
+  app.get('/api/v1/patient/wallet/withdrawals', verifyToken, checkPatientRole, walletController.handleGetMyWithdrawalRequests);
+  app.post('/api/v1/patient/wallet/withdrawals/:id/cancel', verifyToken, checkPatientRole, walletController.handleCancelMyWithdrawalRequest);
+  // [Phase 3] Doctor Wallet & Withdrawal APIs
+  app.get('/api/v1/doctor/wallet', verifyToken, checkDoctorRole, walletController.handleGetDoctorWallet);
+  app.post('/api/v1/doctor/wallet/withdrawal', verifyToken, checkDoctorRole, walletController.handleRequestDoctorWithdrawal);
+  app.get('/api/v1/doctor/wallet/withdrawals', verifyToken, checkDoctorRole, walletController.handleGetDoctorWithdrawalRequests);
 
   // Booking APIs (Design Doc v3.0, Mục 4.1.2)
   // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch
@@ -294,6 +302,9 @@ const routes = (app) => {
   app.get('/api/v1/admin/financial/ledger-transactions', verifyToken, checkAdminRole, walletController.handleGetAdminWalletTransactions);
   app.get('/api/v1/admin/financial/wallets', verifyToken, checkAdminRole, walletController.handleGetAdminWalletsList);
   app.post('/api/v1/admin/financial/wallets/:id/toggle-status', verifyToken, checkAdminRole, walletController.handleToggleWalletStatus);
+  // [Phase 3] Admin Withdrawal Management APIs
+  app.get('/api/v1/admin/financial/withdrawals', verifyToken, checkAdminRole, walletController.handleGetAdminWithdrawalRequests);
+  app.post('/api/v1/admin/financial/withdrawals/:id/process', verifyToken, checkAdminRole, walletController.handleAdminProcessWithdrawal);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase F] PATIENT ENTERPRISE MANAGEMENT & REFUND FLOW — Admin R1

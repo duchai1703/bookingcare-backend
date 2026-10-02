@@ -553,6 +553,21 @@ if (db.Wallet && db.Payment_Transaction) {
   db.Payment_Transaction.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
 }
 
+if (db.Wallet && db.Withdrawal_Request) {
+  db.Wallet.hasMany(db.Withdrawal_Request, { foreignKey: 'walletId', as: 'withdrawalRequests' });
+  db.Withdrawal_Request.belongsTo(db.Wallet, { foreignKey: 'walletId', as: 'wallet' });
+}
+
+if (db.PatientBankAccount && db.Withdrawal_Request) {
+  db.PatientBankAccount.hasMany(db.Withdrawal_Request, { foreignKey: 'patientBankAccountId', as: 'withdrawalRequests' });
+  db.Withdrawal_Request.belongsTo(db.PatientBankAccount, { foreignKey: 'patientBankAccountId', as: 'bankAccount' });
+}
+
+if (db.User && db.Withdrawal_Request) {
+  db.User.hasMany(db.Withdrawal_Request, { foreignKey: 'adminId', as: 'processedWithdrawals' });
+  db.Withdrawal_Request.belongsTo(db.User, { foreignKey: 'adminId', as: 'admin' });
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // 🩺 Doctor Schedule Cancellation & Compensation Engine Associations
 // ═══════════════════════════════════════════════════════════════════════
