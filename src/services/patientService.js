@@ -10,6 +10,7 @@ const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const policyEngineService = require('./policyEngineService');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
+const notificationService = require('./notificationService');
 
 // Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null (tránh vi phạm Foreign Key PostgreSQL)
 const normalizeGender = (gender) => {
@@ -460,6 +461,44 @@ const postBookAppointment = async (data, patientId) => {
       console.warn('>>> [EMAIL_WARNING] Không gửi được email xác thực:', emailErr.message);
     }
 
+    // Gửi thông báo cho Bác sĩ về lịch khám mới
+    try {
+      await notificationService.createAndSendNotification({
+        recipientId: data.doctorId,
+        type: 'BOOKING_CREATED',
+        title: 'Lịch khám mới',
+        message: `Bệnh nhân ${data.fullName} đã đặt lịch khám vào ${computedTimeString ? computedTimeString + ' - ' : ''}${computedDateString}.`,
+        entityType: 'BOOKING',
+        entityId: newBooking.id,
+        data: {
+          bookingId: newBooking.id,
+          patientName: data.fullName,
+          date: computedDateString,
+          time: computedTimeString,
+        },
+      });
+
+      // Gửi thông báo cho Bệnh nhân xác nhận đã đặt lịch
+      if (resolvedPatientId) {
+        await notificationService.createAndSendNotification({
+          recipientId: resolvedPatientId,
+          type: 'BOOKING_CREATED',
+          title: 'Đặt lịch khám thành công',
+          message: `Lịch hẹn với ${computedDoctorName} vào ${computedTimeString ? computedTimeString + ' - ' : ''}${computedDateString} đã được ghi nhận.`,
+          entityType: 'BOOKING',
+          entityId: newBooking.id,
+          data: {
+            bookingId: newBooking.id,
+            doctorName: computedDoctorName,
+            date: computedDateString,
+            time: computedTimeString,
+          },
+        });
+      }
+    } catch (notifErr) {
+      console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo đặt khám:', notifErr.message);
+    }
+
     const response = {
       errCode: 0,
       message: isWalletPayment
@@ -577,6 +616,37 @@ const postVerifyBookAppointment = async (data) => {
 
     // ===== 4. COMMIT — Cả 2 thao tác thành công =====
     await t.commit();
+
+    // Gửi thông báo xác nhận cho Bác sĩ và Bệnh nhân
+    try {
+      await notificationService.createAndSendNotification({
+        recipientId: booking.doctorId,
+        type: 'BOOKING_CONFIRMED',
+        title: 'Lịch khám đã được xác nhận',
+        message: `Bệnh nhân đã xác thực lịch hẹn #${booking.id}.`,
+        entityType: 'BOOKING',
+        entityId: booking.id,
+        data: {
+          bookingId: booking.id,
+        },
+      });
+
+      if (booking.patientId) {
+        await notificationService.createAndSendNotification({
+          recipientId: booking.patientId,
+          type: 'BOOKING_CONFIRMED',
+          title: 'Lịch khám đã xác nhận thành công',
+          message: `Lịch hẹn #${booking.id} của bạn đã được xác nhận.`,
+          entityType: 'BOOKING',
+          entityId: booking.id,
+          data: {
+            bookingId: booking.id,
+          },
+        });
+      }
+    } catch (notifErr) {
+      console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo xác nhận lịch:', notifErr.message);
+    }
 
     // [NEW LOGIC VNPAY-MAIL]: Trả data cho Frontend hiển thị UI thanh toán
     return {
@@ -1050,6 +1120,45 @@ const cancelBooking = async (data, patientId) => {
       const successMessage = isWalletRefund
         ? `Hủy lịch hẹn thành công! Số tiền ${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} đ (${refundCalc.appliedRefundPercent}%) đã được tự động hoàn ngay vào Ví BookingCare của bạn.`
         : 'Hủy lịch hẹn thành công!';
+
+      // Gửi thông báo cho Bác sĩ về việc hủy lịch hẹn
+      try {
+        await notificationService.createAndSendNotification({
+          recipientId: booking.doctorId,
+          type: 'BOOKING_CANCELLED',
+          title: 'Lịch hẹn đã bị hủy',
+          message: `Bệnh nhân đã hủy lịch hẹn #${booking.id}.`,
+          entityType: 'BOOKING',
+          entityId: booking.id,
+          data: {
+            bookingId: booking.id,
+            cancelledBy: 'PATIENT',
+          },
+        });
+      } catch (notifErr) {
+        console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hủy lịch cho bác sĩ:', notifErr.message);
+      }
+
+      // Nếu có hoàn tiền vào ví, gửi thông báo cho Bệnh nhân
+      if (isWalletRefund) {
+        try {
+          await notificationService.createAndSendNotification({
+            recipientId: booking.patientId,
+            type: 'REFUND_COMPLETED',
+            title: 'Hoàn tiền vào ví BookingCare',
+            message: `Hệ thống đã hoàn ${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} đ (${refundCalc.appliedRefundPercent}%) cho lịch hẹn #${booking.id}.`,
+            entityType: 'BOOKING',
+            entityId: booking.id,
+            data: {
+              bookingId: booking.id,
+              refundAmount: refundCalc.refundAmount,
+              refundRate: refundCalc.appliedRefundPercent,
+            },
+          });
+        } catch (notifErr) {
+          console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hoàn tiền:', notifErr.message);
+        }
+      }
 
       return {
         errCode: 0,
@@ -1929,6 +2038,26 @@ const rescheduleBooking = async (bookingId, patientId, payload = {}) => {
     await targetSchedule.increment('currentNumber', { by: 1, transaction: t });
 
     await t.commit();
+
+    // Gửi thông báo đổi lịch khám cho Bác sĩ
+    try {
+      await notificationService.createAndSendNotification({
+        recipientId: targetDoctorId,
+        type: 'BOOKING_RESCHEDULED',
+        title: 'Thay đổi lịch khám',
+        message: `Lịch hẹn #${oldBooking.id} đã được đổi sang lịch hẹn #${newBooking.id} (Ngày: ${targetDate}).`,
+        entityType: 'BOOKING',
+        entityId: newBooking.id,
+        data: {
+          oldBookingId: oldBooking.id,
+          newBookingId: newBooking.id,
+          date: targetDate,
+          timeType: targetTimeType,
+        },
+      });
+    } catch (notifErr) {
+      console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo đổi lịch cho bác sĩ:', notifErr.message);
+    }
 
     console.log(
       `[SMART RESCHEDULE SUCCESS] Old Booking #${oldBooking.id} -> New Booking #${newBooking.id} | Patient #${patientId} | Doctor #${targetDoctorId} | Slot: ${targetTimeType} - Date: ${targetDate}`

@@ -1,6 +1,7 @@
 'use strict';
 
 const chatService = require('../services/chatService');
+const notificationService = require('../services/notificationService');
 
 const getUserConversations = async (req, res) => {
   try {
@@ -100,6 +101,26 @@ const updateConversationStatus = async (req, res) => {
             conversationId: convIdNum,
             status: convStatus,
           });
+        }
+
+        // Nếu bác sĩ mở lại cuộc trò chuyện (status === 'OPEN'), gửi thông báo cho Bệnh nhân
+        if (convStatus === 'OPEN' && conv?.patientId) {
+          try {
+            await notificationService.createAndSendNotification({
+              recipientId: conv.patientId,
+              type: 'CONVERSATION_REOPENED',
+              title: 'Cuộc trò chuyện đã được mở lại',
+              message: 'Bác sĩ đã mở lại cuộc hội thoại tư vấn sau khám với bạn.',
+              entityType: 'CONVERSATION',
+              entityId: convIdNum,
+              data: {
+                conversationId: convIdNum,
+                doctorId: conv.doctorId,
+              },
+            });
+          } catch (notifErr) {
+            console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo mở lại hội thoại:', notifErr.message);
+          }
         }
       } catch (ioErr) {
         console.error('Socket broadcast error in updateConversationStatus:', ioErr);

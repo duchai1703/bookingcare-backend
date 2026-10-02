@@ -15,6 +15,7 @@ const policyController = require('../controllers/policyController'); // [Financi
 const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
 const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
 const familyMemberController = require('../controllers/familyMemberController'); // [Family Members & Dependents]
+const notificationController = require('../controllers/notificationController'); // [Global Notification Engine]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -422,6 +423,15 @@ const routes = (app) => {
   app.get('/api/v1/call/ice-servers', verifyToken, chatController.getIceServers);
   app.get('/api/v1/chat/bookings/:bookingId/call-history', verifyToken, chatController.getBookingCallHistory);
   app.get('/api/v1/call/booking/:bookingId/history', verifyToken, chatController.getBookingCallHistory);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Notifications] Cross-Portal Global Notification Engine
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/notifications', verifyToken, notificationController.getNotifications);
+  app.get('/api/v1/notifications/unread-count', verifyToken, notificationController.getUnreadCount);
+  app.patch('/api/v1/notifications/mark-all-read', verifyToken, notificationController.markAllAsRead);
+  app.patch('/api/v1/notifications/:id/read', verifyToken, notificationController.markAsRead);
+
   // ═══════════════════════════════════════════════════════════════════════
   // [Dev Endpoint] Dynamic Rolling Seed trigger (Thủ công hoặc tự động)
   // ═══════════════════════════════════════════════════════════════════════

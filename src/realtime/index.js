@@ -32,6 +32,7 @@ function initSocketIO(httpServer) {
   io.use(socketAuthMiddleware);
 
   io.on('connection', (socket) => {
+    console.log(`>>> [REALTIME] Client connected: ${socket.id} | User ID: ${socket.user?.id} (${socket.user?.email})`);
     registerChatSocketHandlers(io, socket);
     registerCallSocketHandlers(io, socket);
   });

@@ -761,6 +761,20 @@ if (db.Family_Member && db.Booking) {
   });
 }
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Notifications] Global Notification System
+// ─────────────────────────────────────────────────────
+if (db.Notification && db.User) {
+  db.User.hasMany(db.Notification, {
+    foreignKey: 'recipientId',
+    as: 'notifications',
+  });
+  db.Notification.belongsTo(db.User, {
+    foreignKey: 'recipientId',
+    as: 'recipient',
+  });
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

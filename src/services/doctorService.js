@@ -8,6 +8,7 @@ const { sanitizeContent } = require('../utils/sanitizeHtml');
 const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
+const notificationService = require('./notificationService');
 
 // ===== GET TOP DOCTOR (SRS REQ-PT-003) =====
 const getTopDoctorHome = async (limit) => {
@@ -695,6 +696,25 @@ const sendRemedy = async (data) => {
       console.warn('>>> [EMAIL_WARNING] Không gửi được email remedy:', emailErr.message);
     }
 
+    // Gửi thông báo hoàn tất ca khám cho Bệnh nhân
+    try {
+      await notificationService.createAndSendNotification({
+        recipientId: booking.patientId,
+        type: 'CONSULTATION_COMPLETED',
+        title: 'Kết quả khám bệnh & Đơn thuốc',
+        message: `Bác sĩ ${data.doctorName || ''} đã gửi kết quả khám cho lịch hẹn #${booking.id}. Kênh tư vấn 7 ngày đã sẵn sàng.`,
+        entityType: 'BOOKING',
+        entityId: booking.id,
+        data: {
+          bookingId: booking.id,
+          doctorId: data.doctorId,
+          doctorName: data.doctorName || 'Bác sĩ',
+        },
+      });
+    } catch (notifErr) {
+      console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hoàn tất khám cho bệnh nhân:', notifErr.message);
+    }
+
     return { errCode: 0, message: 'Gửi kết quả khám thành công!' };
   } catch (err) {
     if (!t.finished) await t.rollback();
@@ -761,6 +781,26 @@ const cancelBooking = async (data) => {
 
     // ===== COMMIT — Cả 2 thành công → mở khóa =====
     await t.commit();
+
+    // Gửi thông báo hủy lịch cho Bệnh nhân
+    try {
+      await notificationService.createAndSendNotification({
+        recipientId: booking.patientId,
+        type: 'BOOKING_CANCELLED',
+        title: 'Lịch hẹn đã bị bác sĩ hủy',
+        message: `Bác sĩ đã hủy lịch hẹn #${booking.id}. Lý do: ${booking.cancellationReason || 'Bác sĩ bận việc đột xuất'}.`,
+        entityType: 'BOOKING',
+        entityId: booking.id,
+        data: {
+          bookingId: booking.id,
+          doctorId: data.doctorId,
+          reason: booking.cancellationReason,
+          cancelledBy: 'DOCTOR',
+        },
+      });
+    } catch (notifErr) {
+      console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hủy lịch cho bệnh nhân:', notifErr.message);
+    }
 
     return { errCode: 0, message: 'Hủy lịch hẹn thành công!' };
   } catch (err) {

@@ -7,6 +7,7 @@ const moment = require('moment');
 const db = require('../models');
 const { getOrCreateWallet } = require('./walletService');
 const { sendDoctorCancellationApologyEmail } = require('./emailService');
+const notificationService = require('./notificationService');
 
 /**
  * Phân tích & Trả về Impact Preview trước khi thực hiện hủy lịch
@@ -516,8 +517,25 @@ const executeCancellation = async ({
             bookingId: detailB.id,
             rescheduleUrl: `${process.env.URL_REACT || 'http://localhost:3000'}/patient/appointments`,
           });
+
+          // Gửi thông báo realtime & persistent cho bệnh nhân
+          await notificationService.createAndSendNotification({
+            recipientId: detailB.patientId,
+            type: 'BOOKING_CANCELLED',
+            title: 'Lịch hẹn bị hủy bởi Bác sĩ',
+            message: `Bác sĩ ${docName} đã hủy lịch hẹn #${detailB.id}. Số tiền ${Number(detailB.bookingPrice || 0).toLocaleString('vi-VN')} đ đã được hoàn 100% vào Ví của bạn.`,
+            entityType: 'BOOKING',
+            entityId: detailB.id,
+            data: {
+              bookingId: detailB.id,
+              doctorId: docId,
+              refundAmount: detailB.bookingPrice,
+              reason: cleanReason,
+              cancelledBy: 'DOCTOR',
+            },
+          });
         } catch (mailErr) {
-          console.error(`[BACKGROUND APOLOGY EMAIL FAILED] Booking #${b.id}:`, mailErr.message);
+          console.error(`[BACKGROUND APOLOGY EMAIL/NOTIF FAILED] Booking #${b.id}:`, mailErr.message);
         }
       }
     });

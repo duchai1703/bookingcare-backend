@@ -128,6 +128,30 @@ function registerCallSocketHandlers(io, socket) {
               io.to(`user_${callerId}`).emit('call:timeout', timeoutPayload);
             }
             await broadcastCallHistoryRecord(io, missedSession);
+
+            // Send persistent notification for receiver
+            try {
+              const notificationService = require('../services/notificationService');
+              const callerName = user?.fullName || `${user?.lastName || ''} ${user?.firstName || ''}`.trim() || 'Người dùng';
+              const isVideo = String(missedSession.callType).toUpperCase() === 'VIDEO';
+              await notificationService.createAndSendNotification({
+                recipientId: result.receiverId,
+                type: 'MISSED_CALL',
+                title: 'Cuộc gọi nhỡ sau khám',
+                message: `Bạn có cuộc gọi ${isVideo ? 'video' : 'thoại'} nhỡ từ ${callerName}.`,
+                entityType: 'CALL',
+                entityId: callId,
+                data: {
+                  callId,
+                  bookingId: missedSession.bookingId,
+                  callType: missedSession.callType,
+                  callerId: user?.id,
+                  callerName,
+                },
+              });
+            } catch (notifyErr) {
+              console.warn('[CALL NOTIFICATION WARNING] Failed to send missed call notification:', notifyErr.message);
+            }
           }
         } catch (timerErr) {
           console.error('Error handling ringing timeout for call:', callId, timerErr);

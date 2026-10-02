@@ -9,6 +9,7 @@ const { Op } = require('sequelize');
 const db = require('../models');
 const VNPAY_ALLOWED_KEYS = require('../utils/vnpayAllowedKeys');
 const withdrawalPolicyService = require('./withdrawalPolicyService');
+const notificationService = require('./notificationService');
 
 // VNPay Environment Variables (dynamic lookup from process.env)
 const getVnpTmnCode = () => process.env.VNP_TMN_CODE;
@@ -359,6 +360,26 @@ async function processVNPayDepositIPN(vnp_Params) {
 
         await t.commit();
         console.log(`[WALLET DEPOSIT SUCCESS] Wallet #${wallet.id} credited +${depositAmount} VND. New balance: ${newAvailableBalance}`);
+
+        // Gửi thông báo realtime & persistent nạp tiền thành công cho chủ ví
+        try {
+          await notificationService.createAndSendNotification({
+            recipientId: wallet.ownerId,
+            type: 'PAYMENT_SUCCESS',
+            title: 'Nạp tiền vào ví thành công',
+            message: `Ví BookingCare của bạn đã được cộng +${Number(depositAmount).toLocaleString('vi-VN')} đ qua cổng VNPay.`,
+            entityType: 'WALLET',
+            entityId: wallet.id,
+            data: {
+              walletId: wallet.id,
+              amount: depositAmount,
+              newBalance: newAvailableBalance,
+            },
+          });
+        } catch (notifErr) {
+          console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo nạp tiền:', notifErr.message);
+        }
+
         return { RspCode: '00', Message: 'Confirm Success' };
       } else {
         // Giao dịch thanh toán thất bại từ phía người dùng / VNPay
@@ -1006,6 +1027,32 @@ async function requestWithdrawal(userId, { amount, patientBankAccountId, bankInf
 
       await t.commit();
 
+      // Gửi thông báo cho Admin về yêu cầu rút tiền mới cần duyệt
+      try {
+        const admins = await db.User.findAll({
+          where: { roleId: 'R1' },
+          attributes: ['id'],
+        });
+        for (const admin of admins) {
+          await notificationService.createAndSendNotification({
+            recipientId: admin.id,
+            type: 'WITHDRAWAL_REQUESTED',
+            title: 'Yêu cầu rút tiền mới',
+            message: `Có yêu cầu rút ${numAmount.toLocaleString('vi-VN')} đ về tài khoản ${resolvedBankName} (${resolvedAccountNumber}) cần xử lý.`,
+            entityType: 'WALLET',
+            entityId: withdrawalRequest.id,
+            data: {
+              withdrawalId: withdrawalRequest.id,
+              amount: numAmount,
+              bankName: resolvedBankName,
+              accountNumber: resolvedAccountNumber,
+            },
+          });
+        }
+      } catch (adminNotifErr) {
+        console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo rút tiền cho Admin:', adminNotifErr.message);
+      }
+
       const promisedDateStr = new Date(slaCalc.promisedPayoutDate).toLocaleDateString('vi-VN');
       return {
         errCode: 0,
@@ -1379,6 +1426,26 @@ async function adminProcessWithdrawal(adminId, { requestId, action, adminNote, b
         );
 
         await t.commit();
+
+        // Gửi thông báo chuyển khoản rút tiền thành công cho Bác sĩ
+        try {
+          await notificationService.createAndSendNotification({
+            recipientId: lockedWallet.ownerId,
+            type: 'WITHDRAWAL_PROCESSED',
+            title: 'Rút tiền thành công',
+            message: `Yêu cầu rút ${amountVal.toLocaleString('vi-VN')} đ về tài khoản ${withdrawal.bankName} (${withdrawal.accountNumber}) đã được chuyển khoản thành công.`,
+            entityType: 'WALLET',
+            entityId: lockedWallet.id,
+            data: {
+              withdrawalId: withdrawal.id,
+              amount: amountVal,
+              status: 'TRANSFERRED',
+            },
+          });
+        } catch (notifErr) {
+          console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo rút tiền thành công:', notifErr.message);
+        }
+
         return {
           errCode: 0,
           errMessage: 'Xác nhận chuyển khoản và cập nhật sổ cái thành công!',
@@ -1411,6 +1478,26 @@ async function adminProcessWithdrawal(adminId, { requestId, action, adminNote, b
         );
 
         await t.commit();
+
+        // Gửi thông báo từ chối rút tiền cho Bác sĩ
+        try {
+          await notificationService.createAndSendNotification({
+            recipientId: lockedWallet.ownerId,
+            type: 'WITHDRAWAL_PROCESSED',
+            title: 'Yêu cầu rút tiền bị từ chối',
+            message: `Yêu cầu rút ${amountVal.toLocaleString('vi-VN')} đ đã bị từ chối. Lý do: ${adminNote.trim()}. Số tiền đã được hoàn lại vào số dư khả dụng.`,
+            entityType: 'WALLET',
+            entityId: lockedWallet.id,
+            data: {
+              withdrawalId: withdrawal.id,
+              amount: amountVal,
+              status: 'REJECTED',
+            },
+          });
+        } catch (notifErr) {
+          console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo từ chối rút tiền:', notifErr.message);
+        }
+
         return {
           errCode: 0,
           errMessage: 'Từ chối yêu cầu rút tiền thành công. Số tiền đã được hoàn trả về số dư khả dụng.',

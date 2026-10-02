@@ -16,6 +16,7 @@ const idempotencyStore = require('../utils/idempotencyStore');
 const generateReceiptToken = require('../utils/generateReceiptToken');
 const sanitizeLog = require('../utils/sanitizeLog');
 const VNPAY_ALLOWED_KEYS = require('../utils/vnpayAllowedKeys');
+const notificationService = require('../services/notificationService');
 
 function sortObject(obj) {
   let sorted = {};
@@ -416,6 +417,34 @@ async function vnpayIpn(req, res) {
         sendBookingEmail(booking).catch((e) =>
           console.error('[EMAIL]', sanitizeLog(e, null)),
         );
+
+        // Gửi thông báo cho Bác sĩ và Bệnh nhân
+        (async () => {
+          try {
+            await notificationService.createAndSendNotification({
+              recipientId: booking.doctorId,
+              type: 'BOOKING_CONFIRMED',
+              title: 'Lịch khám đã thanh toán',
+              message: `Lịch hẹn #${booking.id} đã hoàn tất thanh toán VNPay và được xác nhận.`,
+              entityType: 'BOOKING',
+              entityId: booking.id,
+              data: { bookingId: booking.id },
+            });
+            if (booking.patientId) {
+              await notificationService.createAndSendNotification({
+                recipientId: booking.patientId,
+                type: 'PAYMENT_SUCCESS',
+                title: 'Thanh toán thành công',
+                message: `Thanh toán thành công cho lịch khám #${booking.id}.`,
+                entityType: 'PAYMENT',
+                entityId: booking.id,
+                data: { bookingId: booking.id, amount: booking.bookingPrice },
+              });
+            }
+          } catch (notifErr) {
+            console.warn('[NOTIFICATION WARNING]', notifErr.message);
+          }
+        })();
       } else {
         // ═══ Thanh toán THẤT BẠI ═══
         // ✅ [v20.0 F3] LOCK ORDER EXCEPTION (IPN only):
