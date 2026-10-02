@@ -238,6 +238,16 @@ async function startServer() {
     // Giai đoạn 5: Khởi tạo Socket.IO Real-time Engine
     initSocketIO(server);
 
+    // Giai đoạn 6: Tự động chạy Dynamic Rolling Seeder (đảm bảo luôn có slot & lịch hẹn 7 ngày tới)
+    if (process.env.NODE_ENV !== 'production' || process.env.AUTO_SEED_ROLLING === 'true') {
+      try {
+        const dynamicSeedService = require('./services/dynamicSeedService');
+        await dynamicSeedService.ensureRollingSchedulesAndBookings();
+      } catch (seedErr) {
+        console.warn('[DYNAMIC SEED WARNING] Dynamic seed failed non-fatally:', seedErr.message);
+      }
+    }
+
     // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
     server.maxRequestsPerSocket = 10000;
   } catch (err) {

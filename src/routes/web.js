@@ -396,8 +396,41 @@ const routes = (app) => {
   app.get('/api/v1/call/ice-servers', verifyToken, chatController.getIceServers);
   app.get('/api/v1/chat/bookings/:bookingId/call-history', verifyToken, chatController.getBookingCallHistory);
   app.get('/api/v1/call/booking/:bookingId/history', verifyToken, chatController.getBookingCallHistory);
-  app.get('/api/v1/chat/active-call', verifyToken, chatController.getActiveCall);
-  app.get('/api/v1/call/active', verifyToken, chatController.getActiveCall);
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Dev Endpoint] Dynamic Rolling Seed trigger (Thủ công hoặc tự động)
+  // ═══════════════════════════════════════════════════════════════════════
+  app.post('/api/v1/dev/ensure-live-slots', async (req, res) => {
+    try {
+      const dynamicSeedService = require('../services/dynamicSeedService');
+      const stats = await dynamicSeedService.ensureRollingSchedulesAndBookings();
+      return res.status(200).json({
+        errCode: 0,
+        message: 'Bù đắp slot khám và dữ liệu kiểm thử 7 ngày tới thành công!',
+        data: stats,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        errCode: -1,
+        message: err.message,
+      });
+    }
+  });
+  app.get('/api/v1/dev/ensure-live-slots', async (req, res) => {
+    try {
+      const dynamicSeedService = require('../services/dynamicSeedService');
+      const stats = await dynamicSeedService.ensureRollingSchedulesAndBookings();
+      return res.status(200).json({
+        errCode: 0,
+        message: 'Bù đắp slot khám và dữ liệu kiểm thử 7 ngày tới thành công!',
+        data: stats,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        errCode: -1,
+        message: err.message,
+      });
+    }
+  });
 };
 
 module.exports = routes;

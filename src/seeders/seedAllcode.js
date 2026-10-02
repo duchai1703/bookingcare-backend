@@ -437,15 +437,162 @@ const seed = async () => {
       console.log(`✅ Doctor Commission Logs: ${commissionLogArray.length} audit records`);
     }
 
+    // ═══════════ 13. DOCTOR_ASSIGNMENTS & CLINIC_SPECIALTIES (Multi-Facility) ═══════════
+    const assignmentArray = [];
+    const clinicSpecialtySet = new Set();
+    const clinicSpecialtyArray = [];
+
+    for (let i = 0; i < doctorUsers.length; i++) {
+      const doc = doctorUsers[i];
+      const info = doctorInfoArray[i];
+      const clinicId = info.clinicId;
+      const specialtyId = info.specialtyId;
+
+      const csKey = `${clinicId}_${specialtyId}`;
+      if (!clinicSpecialtySet.has(csKey)) {
+        clinicSpecialtySet.add(csKey);
+        clinicSpecialtyArray.push({
+          clinicId,
+          specialtyId,
+          status: 'active',
+          targetCapacity: 60,
+          description: `Chuyên khoa công tác tại cơ sở ${clinicId}`,
+        });
+      }
+
+      assignmentArray.push({
+        doctorId: doc.id,
+        clinicId,
+        specialtyId,
+        roomNumber: `Phòng ${201 + (i % 25)} - Tòa Nhà A`,
+        priceId: info.priceId || 'PRI2',
+        commissionRate: 15.00,
+        workingStatus: 'active',
+        isPrimary: true,
+        startDate: '2025-01-01',
+        note: 'Bác sĩ chuyên khoa khám chữa bệnh thường trực tại cơ sở',
+      });
+    }
+
+    if (clinicSpecialtyArray.length > 0) {
+      await db.Clinic_Specialty.bulkCreate(clinicSpecialtyArray, { ignoreDuplicates: true });
+      console.log(`✅ Clinic_Specialties: ${clinicSpecialtyArray.length} records`);
+    }
+
+    if (assignmentArray.length > 0) {
+      await db.Doctor_Assignment.bulkCreate(assignmentArray);
+      console.log(`✅ Doctor_Assignments: ${assignmentArray.length} records`);
+    }
+
+    // ═══════════ 14. FINANCIAL POLICIES & WALLETS (Immutable Ledger) ═══════════
+    const refundRule = JSON.stringify({
+      cancelBeforeHours24: 100,
+      cancelBeforeHours2: 50,
+      cancelUnderHours2: 0,
+      doctorCancelRefund: 100,
+      compensationRate: 10,
+    });
+    const revRule = JSON.stringify({
+      standardRate: 15.0,
+      tier1Rate: 12.0,
+      tier2Rate: 10.0,
+    });
+
+    await db.Financial_Policy.bulkCreate([
+      {
+        code: 'POL_REFUND_DEFAULT',
+        policyType: 'REFUND_RULE',
+        name: 'Chính sách Hoàn tiền & Hủy lịch Mặc định Toàn hệ thống',
+        version: 1,
+        scopeType: 'GLOBAL',
+        targetMode: 'ALL_DOCTORS',
+        effectiveFrom: new Date('2025-01-01'),
+        status: 'ACTIVE',
+        rules: refundRule,
+        description: 'Bảo vệ quyền lợi đặt khám và hoàn phí minh bạch cho người bệnh',
+        isLocked: false,
+        createdById: 1,
+      },
+      {
+        code: 'POL_REVENUE_DEFAULT',
+        policyType: 'REVENUE_SHARE',
+        name: 'Chính sách Phân bổ Doanh thu Tiêu chuẩn 15%',
+        version: 1,
+        scopeType: 'GLOBAL',
+        targetMode: 'ALL_DOCTORS',
+        effectiveFrom: new Date('2025-01-01'),
+        status: 'ACTIVE',
+        rules: revRule,
+        description: 'Tỷ lệ chiết khấu nền tảng tiêu chuẩn áp dụng cho mạng lưới bác sĩ',
+        isLocked: false,
+        createdById: 1,
+      },
+    ]);
+    console.log('✅ Financial Policies: 2 policies created');
+
+    const walletArray = [];
+    for (const pat of patientUsers) {
+      walletArray.push({
+        ownerId: pat.id,
+        walletType: 'PATIENT',
+        currency: 'VND',
+        availableBalance: 2500000.00,
+        reservedBalance: 0.00,
+        status: 'ACTIVE',
+      });
+    }
+    for (const doc of doctorUsers) {
+      walletArray.push({
+        ownerId: doc.id,
+        walletType: 'DOCTOR',
+        currency: 'VND',
+        availableBalance: 8500000.00,
+        reservedBalance: 0.00,
+        status: 'ACTIVE',
+      });
+    }
+    await db.Wallet.bulkCreate(walletArray, { ignoreDuplicates: true });
+    console.log(`✅ Wallets: ${walletArray.length} wallets initialized`);
+
+    // ═══════════ 15. CALL SESSIONS (WebRTC) ═══════════
+    const callSessionArray = [];
+    for (let i = 0; i < Math.min(10, createdBookings.length); i++) {
+      const b = createdBookings[i];
+      if (b.statusId === 'S2' || b.statusId === 'S3') {
+        callSessionArray.push({
+          callId: `CALL-SEED-${b.id}`,
+          bookingId: b.id,
+          callerId: b.patientId,
+          receiverId: b.doctorId,
+          callType: 'VIDEO',
+          status: b.statusId === 'S3' ? 'ENDED' : 'RINGING',
+          startedAt: new Date(Date.now() - 3600000),
+          endedAt: b.statusId === 'S3' ? new Date(Date.now() - 1800000) : null,
+          duration: b.statusId === 'S3' ? 1800 : 0,
+          endReason: b.statusId === 'S3' ? 'NORMAL_COMPLETION' : null,
+        });
+      }
+    }
+    if (callSessionArray.length > 0) {
+      await db.CallSession.bulkCreate(callSessionArray);
+      console.log(`✅ Call Sessions: ${callSessionArray.length} WebRTC sessions`);
+    }
+
+    // ═══════════ 16. DYNAMIC ROLLING SEED (7 NGÀY TỚI & LIVE BOOKINGS) ═══════════
+    const dynamicSeedService = require('../services/dynamicSeedService');
+    await dynamicSeedService.ensureRollingSchedulesAndBookings();
+    console.log('✅ Dynamic Rolling Seed: today and 7-day rolling window ensured');
+
     // ═══════════ SUMMARY ═══════════
     const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
     const totalRecords = allcodeData.length + 1 + doctorUsers.length + patientUsers.length
       + specialties.length + clinics.length + doctorInfoArray.length
-      + scheduleArray.length + createdBookings.length + reviewArray.length + bankAccountArray.length;
+      + scheduleArray.length + createdBookings.length + reviewArray.length + bankAccountArray.length
+      + assignmentArray.length + clinicSpecialtyArray.length + walletArray.length + callSessionArray.length;
 
     console.log('');
     console.log('╔══════════════════════════════════════════════════╗');
-    console.log('║   🚀 SUPER SEEDER v4.5 (Analytics) — COMPLETE    ║');
+    console.log('║   🚀 SUPER SEEDER v5.0 (Live Rolling) — COMPLETE  ║');
     console.log('╠══════════════════════════════════════════════════╣');
     console.log(`║  Allcode       : ${String(allcodeData.length).padStart(6)} records              ║`);
     console.log(`║  Admin         :      1 account               ║`);
@@ -454,6 +601,8 @@ const seed = async () => {
     console.log(`║  Specialties   : ${String(specialties.length).padStart(6)} records              ║`);
     console.log(`║  Clinics       : ${String(clinics.length).padStart(6)} records              ║`);
     console.log(`║  Doctor_Info   : ${String(doctorInfoArray.length).padStart(6)} records              ║`);
+    console.log(`║  Assignments   : ${String(assignmentArray.length).padStart(6)} records              ║`);
+    console.log(`║  Wallets       : ${String(walletArray.length).padStart(6)} records              ║`);
     console.log(`║  Schedules     : ${String(scheduleArray.length).padStart(6)} records              ║`);
     console.log(`║  Bookings      : ${String(createdBookings.length).padStart(6)} records              ║`);
     console.log(`║  Bank Accounts : ${String(bankAccountArray.length).padStart(6)} records              ║`);
