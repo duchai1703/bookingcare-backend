@@ -16,6 +16,7 @@ const INTENTS = {
   BOOKING_QUERY: 'BOOKING_QUERY',
   CANCEL_BOOKING_QUERY: 'CANCEL_BOOKING_QUERY',
   RESCHEDULE_QUERY: 'RESCHEDULE_QUERY',
+  PAYMENT_QUERY: 'PAYMENT_QUERY',
   MY_BOOKING_QUERY: 'MY_BOOKING_QUERY',
   SLOT_QUERY: 'SLOT_QUERY',
   DOCTOR_QUERY: 'DOCTOR_QUERY',
@@ -95,6 +96,11 @@ function classifyIntent(input, hasImageArg = false) {
   // 6. Ý định Đổi lịch hẹn (RESCHEDULE_QUERY)
   if (/(đổi\s*lịch(\s*hẹn|\s*khám)?|dời\s*lịch|chuyển\s*ngày\s*khám|đổi\s*sang\s*ngày\s*khác)/i.test(lower)) {
     return { intent: INTENTS.RESCHEDULE_QUERY, confidence: 0.9, extractedEntities };
+  }
+
+  // 6.1. Ý định Thanh toán / Trạng thái thanh toán (PAYMENT_QUERY)
+  if (/(thanh\s*toán|trả\s*tiền|link\s*thanh\s*toán|đã\s*thanh\s*toán\s*chưa|còn\s*phải\s*thanh\s*toán|vnpay|cổng\s*thanh\s*toán)/i.test(lower)) {
+    return { intent: INTENTS.PAYMENT_QUERY, confidence: 0.95, extractedEntities };
   }
 
   // 7. Ý định Đặt lịch khám (BOOKING_QUERY)

@@ -519,6 +519,13 @@ async function handleGetMyBookings(args, userId, signal) {
   if (signal?.aborted) return { error: 'Đã hủy' };
 
   const whereClause = { patientId: safeUserId };
+  const queryBookingId = args.bookingId || args.bookingCode;
+  if (queryBookingId) {
+    const rawId = String(queryBookingId).replace(/[^\d]/g, '');
+    if (rawId) {
+      whereClause.id = parseInt(rawId, 10);
+    }
+  }
   if (args.status) {
     const safeStatus = Array.from(String(args.status)).slice(0, 500).join('');
     whereClause.statusId = { [Op.in]: safeStatus.split(',') };
@@ -1482,6 +1489,1041 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
   }
 }
 
+/**
+ * Chuẩn bị phiếu xác nhận hủy lịch (Cancellation Draft) — Phase 06B
+ * BẮT BUỘC: IDOR check, Policy check, Refund preview, Zero DB write, HMAC draftToken
+ */
+async function handlePrepareCancellationDraft(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để thực hiện hủy lịch.' };
+  }
+
+  // 1. Resolve Booking ID
+  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  if (!bookingId || isNaN(bookingId)) {
+    // Nếu user không truyền bookingId, tìm lịch hẹn sắp tới gần nhất (S1, S1.5, S2)
+    const latestActiveBooking = await db.Booking.findOne({
+      where: {
+        patientId: safeUserId,
+        statusId: { [Op.in]: ['S1', 'S1.5', 'S2'] },
+      },
+      order: [['date', 'ASC'], ['id', 'DESC']],
+      lock: false,
+    });
+    if (!latestActiveBooking) {
+      return {
+        status: 'error',
+        error: 'no_active_booking',
+        message: 'Bạn hiện không có lịch khám sắp tới nào đang hoạt động để hủy.',
+      };
+    }
+    bookingId = latestActiveBooking.id;
+  }
+
+  // 2. Fetch Booking with full details & IDOR check
+  const booking = await db.Booking.findOne({
+    where: { id: bookingId },
+    include: [
+      {
+        model: db.User,
+        as: 'doctorBookingData',
+        attributes: ['id', 'firstName', 'lastName'],
+        include: [
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId', 'priceId'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            ],
+          },
+        ],
+      },
+      { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+    ],
+    lock: false,
+  });
+
+  if (!booking) {
+    return {
+      status: 'error',
+      error: 'booking_not_found',
+      message: 'Không tìm thấy thông tin lịch hẹn yêu cầu.',
+    };
+  }
+
+  // IDOR Protection: Bệnh nhân chỉ được thao tác trên lịch của chính mình
+  if (Number(booking.patientId) !== safeUserId) {
+    return {
+      status: 'error',
+      error: 'unauthorized_booking',
+      message: 'Bạn không có quyền thao tác hoặc hủy lịch khám của bệnh nhân khác.',
+    };
+  }
+
+  // 3. Status checks
+  if (booking.statusId === 'S4') {
+    return {
+      status: 'already_cancelled',
+      alreadyCancelled: true,
+      error: 'already_cancelled',
+      message: `Lịch hẹn #${booking.id} này đã được hủy trước đó rồi.`,
+      bookingId: booking.id,
+      booking: {
+        id: booking.id,
+        statusId: 'S4',
+        cancelledAt: booking.cancelledAt,
+      },
+      cancelledAt: booking.cancelledAt,
+    };
+  }
+
+  if (booking.statusId === 'S3') {
+    return {
+      status: 'error',
+      error: 'consultation_completed',
+      message: `Lịch hẹn #${booking.id} đã hoàn tất buổi khám, không thể hủy.`,
+      bookingId: booking.id,
+    };
+  }
+
+  if (!['S1', 'S1.5', 'S2'].includes(booking.statusId)) {
+    return {
+      status: 'error',
+      error: 'booking_not_cancellable',
+      message: `Lịch hẹn #${booking.id} đang ở trạng thái không thể hủy.`,
+      bookingId: booking.id,
+    };
+  }
+
+  // 4. Calculate Refund Preview using policyEngineService
+  const policyEngineService = require('./policyEngineService');
+  const now = new Date();
+  const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
+
+  const isPaid = booking.statusId === 'S2' || booking.paymentStatus === 'paid';
+  const refundPreview = {
+    isPaid,
+    refundable: isPaid && refundCalc.refundAmount > 0,
+    isRefundable: isPaid && refundCalc.refundAmount > 0,
+    hoursBeforeAppointment: refundCalc.hoursBefore,
+    appliedRefundPercent: isPaid ? refundCalc.appliedRefundPercent : 0,
+    refundRate: isPaid ? refundCalc.appliedRefundPercent : 0,
+    estimatedRefundAmount: isPaid ? refundCalc.refundAmount : 0,
+    formattedRefundAmount: isPaid && refundCalc.refundAmount > 0
+      ? `${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} VNĐ`
+      : (isPaid ? '0 VNĐ' : 'Chưa thanh toán (0 VNĐ)'),
+    refundMethod: isPaid ? (booking.paymentMethod === 'WALLET' ? 'Ví BookingCare' : 'Tài khoản ngân hàng') : 'Không áp dụng',
+    policyNotice: isPaid
+      ? (refundCalc.refundAmount > 0
+        ? `Theo chính sách hủy trước ${refundCalc.hoursBefore} giờ, bạn được hoàn ${refundCalc.appliedRefundPercent}% số tiền khám (${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} VNĐ).`
+        : 'Theo chính sách, lịch hẹn hủy quá sát giờ khám nên không đủ điều kiện hoàn tiền.')
+      : 'Lịch hẹn chưa thanh toán nên khi hủy sẽ không phát sinh hoàn tiền.',
+    policyMessage: isPaid
+      ? (refundCalc.refundAmount > 0
+        ? `Theo chính sách hủy trước ${refundCalc.hoursBefore} giờ, bạn được hoàn ${refundCalc.appliedRefundPercent}% số tiền khám.`
+        : 'Lịch hẹn hủy quá sát giờ khám nên không đủ điều kiện hoàn tiền.')
+      : 'Lịch hẹn chưa thanh toán.',
+  };
+
+  // 5. Date & Time formatting
+  const rawDate = parseInt(booking.date, 10);
+  const parsedDate = new Date(!isNaN(rawDate) && rawDate > 1000000000 ? rawDate : booking.date);
+  const dateFormatted = !isNaN(parsedDate.getTime())
+    ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
+    : booking.date;
+
+  const doctorName = booking.doctorBookingData
+    ? `${booking.doctorBookingData.lastName || ''} ${booking.doctorBookingData.firstName || ''}`.trim()
+    : 'Bác sĩ';
+  const specialtyName = booking.doctorBookingData?.doctorInfoData?.specialtyData?.name || 'Chuyên khoa';
+  const clinicName = booking.doctorBookingData?.doctorInfoData?.clinicData?.name || 'Phòng khám';
+  const clinicAddress = booking.doctorBookingData?.doctorInfoData?.clinicData?.address || '';
+  const timeLabel = booking.timeTypeBooking?.valueVi || booking.timeType;
+
+  // 6. Generate Cancellation Draft with HMAC Token
+  const cancellationDraftStore = require('../utils/aiBookingDraftStore');
+  const draft = cancellationDraftStore.createCancellationDraft({
+    bookingId: booking.id,
+    patientId: safeUserId,
+    bookingCode: `#BK-${booking.id}`,
+    doctor: {
+      doctorId: booking.doctorId,
+      name: doctorName,
+      specialtyName,
+      clinicName,
+      clinicAddress,
+    },
+    schedule: {
+      date: booking.date,
+      dateFormatted,
+      timeType: booking.timeType,
+      timeLabel,
+    },
+    patient: {
+      patientId: safeUserId,
+      patientName: booking.patientName || 'Bệnh nhân',
+    },
+    bookingPrice: booking.bookingPrice,
+    statusId: booking.statusId,
+    statusLabel: booking.statusData?.valueVi || booking.statusId,
+    paymentStatus: booking.paymentStatus,
+    refundPreview,
+    cancellationReason: args.cancellationReason || args.reason || '',
+  });
+
+  return {
+    status: 'success',
+    type: 'BOOKING_CANCEL_DRAFT',
+    draft,
+  };
+}
+
+/**
+ * Xác nhận thực hiện hủy lịch hẹn (Explicit Cancellation Confirmation) — Phase 06B
+ * BẮT BUỘC: HMAC Token verify, Revalidation, Reuse patientService.cancelBooking
+ */
+async function handleConfirmCancelBooking(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để xác nhận hủy lịch.' };
+  }
+
+  const { draftId, confirmationToken, reason } = args;
+  if (!draftId || !confirmationToken) {
+    return {
+      status: 'error',
+      error: 'missing_token',
+      message: 'Thiếu mã bản nháp hoặc mã xác thực hủy lịch.',
+    };
+  }
+
+  // 1. Consume HMAC Token
+  const cancellationDraftStore = require('../utils/aiBookingDraftStore');
+  const tokenResult = cancellationDraftStore.consumeCancellationToken(draftId, confirmationToken, safeUserId);
+  if (!tokenResult.valid) {
+    return {
+      status: 'error',
+      error: tokenResult.reason ? tokenResult.reason.toLowerCase() : 'invalid_token',
+      message: tokenResult.message || 'Mã xác nhận hủy lịch không hợp lệ hoặc đã hết hạn.',
+    };
+  }
+  const draft = tokenResult.draft;
+
+  // 2. In-flight Concurrency Lock
+  const lockKey = `ai_cancel_${draft.bookingId}`;
+  const lockAcquired = await idempotencyStore.setInProgress(lockKey);
+  if (!lockAcquired) {
+    return {
+      status: 'error',
+      error: 'duplicate_request',
+      message: 'Yêu cầu hủy lịch đang được xử lý. Vui lòng không nhấn lại.',
+    };
+  }
+
+  try {
+    // 3. Re-validate Booking SSOT
+    const booking = await db.Booking.findOne({
+      where: { id: draft.bookingId },
+      lock: false,
+    });
+
+    if (!booking) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'booking_not_found',
+        message: 'Lịch hẹn không còn tồn tại trong hệ thống.',
+      };
+    }
+
+    if (Number(booking.patientId) !== safeUserId) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'unauthorized_booking',
+        message: 'Bạn không có quyền hủy lịch hẹn này.',
+      };
+    }
+
+    // Idempotent check: Nếu đã hủy rồi
+    if (booking.statusId === 'S4') {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'success',
+        type: 'BOOKING_CANCEL_SUCCESS',
+        alreadyCancelled: true,
+        message: 'Lịch hẹn này đã được hủy trước đó.',
+        data: {
+          bookingId: booking.id,
+          bookingCode: `#BK-${booking.id}`,
+          statusId: 'S4',
+          statusLabel: 'Đã hủy',
+          cancelledAt: booking.cancelledAt,
+        },
+      };
+    }
+
+    if (!['S1', 'S1.5', 'S2'].includes(booking.statusId)) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'booking_not_cancellable',
+        message: 'Lịch hẹn ở trạng thái hiện tại không thể hủy.',
+      };
+    }
+
+    // 4. Invoke Existing Domain Service: patientService.cancelBooking
+    // (LƯU Ý: Domain service đã tự động gọi notificationService gửi thông báo cho bác sĩ. AI KHÔNG gọi thêm!)
+    const cancelPayload = {
+      bookingId: draft.bookingId,
+      cancellationReason: reason || draft.cancellationReason || 'Bệnh nhân hủy qua trợ lý AI BookingCare',
+      reason: reason || draft.cancellationReason || 'Hủy lịch qua AI Chatbot',
+    };
+
+    const domainResult = await patientService.cancelBooking(cancelPayload, safeUserId);
+
+    if (domainResult.errCode !== 0) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'cancellation_failed',
+        message: domainResult.message || 'Không thể hủy lịch hẹn.',
+      };
+    }
+
+    // Re-query updated booking to get final refund status and refund amount
+    const updatedBooking = await db.Booking.findByPk(draft.bookingId, {
+      attributes: ['id', 'statusId', 'refundRate', 'refundAmount', 'refundStatus', 'refundMethod', 'cancelledAt'],
+      lock: false,
+    });
+
+    const successPayload = {
+      bookingId: draft.bookingId,
+      bookingCode: draft.bookingCode || `#BK-${draft.bookingId}`,
+      doctor: draft.doctor,
+      schedule: draft.schedule,
+      patient: draft.patient,
+      statusId: 'S4',
+      statusLabel: 'Đã hủy',
+      refund: {
+        refundRate: Number(updatedBooking?.refundRate) || 0,
+        refundAmount: Number(updatedBooking?.refundAmount) || 0,
+        formattedRefundAmount: (Number(updatedBooking?.refundAmount) > 0)
+          ? `${Number(updatedBooking.refundAmount).toLocaleString('vi-VN')} VNĐ`
+          : '0 VNĐ',
+        refundStatus: updatedBooking?.refundStatus || 'none',
+        refundMethod: updatedBooking?.refundMethod || 'none',
+      },
+      cancelledAt: updatedBooking?.cancelledAt || new Date().toISOString(),
+      message: domainResult.message || 'Hủy lịch khám thành công!',
+    };
+
+    await idempotencyStore.setDone(lockKey, successPayload);
+
+    return {
+      status: 'success',
+      type: 'BOOKING_CANCEL_SUCCESS',
+      data: successPayload,
+    };
+  } catch (err) {
+    await idempotencyStore.delete(lockKey);
+    console.error('[CONFIRM_CANCEL_BOOKING_ERR]', err);
+    return {
+      status: 'error',
+      error: 'transaction_error',
+      message: 'Lỗi trong quá trình thực hiện hủy lịch khám.',
+    };
+  }
+}
+
+/**
+ * Chuẩn bị phiếu xác nhận đổi lịch khám (Reschedule Draft) — Phase 06C
+ * BẮT BUỘC: IDOR check, Policy check, Slot availability check, Zero DB write, HMAC draftToken
+ */
+async function handlePrepareRescheduleDraft(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để thực hiện đổi lịch.' };
+  }
+
+  // 1. Resolve Booking ID
+  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  if (!bookingId || isNaN(bookingId)) {
+    const latestActiveBooking = await db.Booking.findOne({
+      where: {
+        patientId: safeUserId,
+        statusId: { [Op.in]: ['S1', 'S1.5', 'S2'] },
+      },
+      order: [['date', 'ASC'], ['id', 'DESC']],
+      lock: false,
+    });
+    if (!latestActiveBooking) {
+      return {
+        status: 'error',
+        error: 'no_active_booking',
+        message: 'Bạn hiện không có lịch khám sắp tới nào đang hoạt động để đổi lịch.',
+      };
+    }
+    bookingId = latestActiveBooking.id;
+  }
+
+  // 2. Fetch Booking with full details & IDOR check
+  const oldBooking = await db.Booking.findOne({
+    where: { id: bookingId },
+    include: [
+      {
+        model: db.User,
+        as: 'doctorBookingData',
+        attributes: ['id', 'firstName', 'lastName'],
+        include: [
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId', 'priceId'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+              { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+            ],
+          },
+        ],
+      },
+      { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+    ],
+    lock: false,
+  });
+
+  if (!oldBooking) {
+    return {
+      status: 'error',
+      error: 'booking_not_found',
+      message: 'Không tìm thấy thông tin lịch hẹn yêu cầu.',
+    };
+  }
+
+  // IDOR Protection: Bệnh nhân chỉ được thao tác trên lịch của chính mình
+  if (Number(oldBooking.patientId) !== safeUserId) {
+    return {
+      status: 'error',
+      error: 'unauthorized_booking',
+      message: 'Bạn không có quyền thao tác hoặc đổi lịch khám của bệnh nhân khác.',
+    };
+  }
+
+  // 3. Status checks
+  if (oldBooking.rescheduledToBookingId) {
+    return {
+      status: 'error',
+      error: 'already_rescheduled',
+      message: `Lịch hẹn #${oldBooking.id} này đã được đổi sang ca khám mới #${oldBooking.rescheduledToBookingId} trước đó rồi.`,
+      bookingId: oldBooking.id,
+    };
+  }
+
+  if (oldBooking.statusId === 'S3') {
+    return {
+      status: 'error',
+      error: 'consultation_completed',
+      message: `Lịch hẹn #${oldBooking.id} đã hoàn tất buổi khám, không thể đổi lịch.`,
+      bookingId: oldBooking.id,
+    };
+  }
+
+  const isDoctorCancelledS4 = oldBooking.statusId === 'S4' && (oldBooking.cancellationType === 'DOCTOR' || oldBooking.cancellationType === 'ADMIN');
+  const isPatientActive = ['S1', 'S1.5', 'S2'].includes(oldBooking.statusId);
+
+  if (!isDoctorCancelledS4 && !isPatientActive) {
+    return {
+      status: 'error',
+      error: 'booking_not_reschedulable',
+      message: `Lịch hẹn #${oldBooking.id} không ở trạng thái hợp lệ để đổi lịch (đã bị hủy hoặc không hoạt động).`,
+      bookingId: oldBooking.id,
+    };
+  }
+
+  // 4. Resolve Target Doctor & Schedule
+  const targetDoctorId = args.newDoctorId ? Number(args.newDoctorId) : oldBooking.doctorId;
+  let targetDate = args.newDate ? String(args.newDate) : null;
+  let targetTimeType = args.newTimeType ? String(args.newTimeType) : null;
+
+  // Nếu thiếu ngày hoặc khung giờ, lấy options để gợi ý
+  if (!targetDate || !targetTimeType) {
+    const options = await patientService.getRescheduleOptions(oldBooking.id, safeUserId);
+    return {
+      status: 'needs_slot_selection',
+      message: 'Vui lòng chọn ngày và khung giờ khám mới để tiếp tục đổi lịch.',
+      bookingId: oldBooking.id,
+      options: options.data || options,
+    };
+  }
+
+  // 5. Kiểm tra tính khả dụng của slot mới
+  const targetSchedule = await db.Schedule.findOne({
+    where: {
+      doctorId: targetDoctorId,
+      date: targetDate,
+      timeType: targetTimeType,
+    },
+    include: [{ model: db.Allcode, as: 'timeTypeData', attributes: ['keyMap', 'valueVi', 'valueEn'] }],
+    lock: false,
+  });
+
+  if (!targetSchedule) {
+    return {
+      status: 'error',
+      error: 'slot_not_found',
+      message: 'Khung giờ khám mới không tồn tại trên hệ thống.',
+    };
+  }
+  if (targetSchedule.status && targetSchedule.status !== 'ACTIVE') {
+    return {
+      status: 'error',
+      error: 'slot_inactive',
+      message: 'Khung giờ khám mới đang tạm ngừng nhận bệnh nhân.',
+    };
+  }
+  if (targetSchedule.currentNumber >= targetSchedule.maxNumber) {
+    return {
+      status: 'error',
+      error: 'slot_full',
+      message: 'Khung giờ khám mới đã hết chỗ. Vui lòng chọn khung giờ khác.',
+    };
+  }
+
+  // Kiểm tra trùng lịch hẹn mới của cùng bệnh nhân
+  const duplicateBooking = await db.Booking.findOne({
+    where: {
+      patientId: safeUserId,
+      doctorId: targetDoctorId,
+      date: targetDate,
+      timeType: targetTimeType,
+      statusId: { [Op.ne]: 'S4' },
+      id: { [Op.ne]: oldBooking.id },
+    },
+    lock: false,
+  });
+  if (duplicateBooking) {
+    return {
+      status: 'error',
+      error: 'duplicate_booking',
+      message: 'Bạn đã có một lịch khám khác trùng khung giờ này.',
+    };
+  }
+
+  // 6. Tính toán chênh lệch giá & chính sách tài chính
+  let newBookingPrice = Number(oldBooking.bookingPrice) || 0;
+  let targetDoctorData = oldBooking.doctorBookingData;
+  if (targetDoctorId !== oldBooking.doctorId) {
+    targetDoctorData = await db.User.findByPk(targetDoctorId, {
+      attributes: ['id', 'firstName', 'lastName'],
+      include: [
+        {
+          model: db.Doctor_Info,
+          as: 'doctorInfoData',
+          attributes: ['specialtyId', 'clinicId', 'priceId'],
+          include: [
+            { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+            { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            { model: db.Allcode, as: 'priceData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          ],
+        },
+      ],
+    });
+    if (targetDoctorData?.doctorInfoData?.priceData?.valueVi) {
+      newBookingPrice = parseInt(targetDoctorData.doctorInfoData.priceData.valueVi.replace(/[^0-9]/g, ''), 10) || newBookingPrice;
+    }
+  }
+
+  const isPaid = oldBooking.statusId === 'S2' || oldBooking.paymentStatus === 'paid';
+  const priceDiff = newBookingPrice - (Number(oldBooking.bookingPrice) || 0);
+
+  let policyExplanation = '';
+  if (isDoctorCancelledS4) {
+    policyExplanation = 'Ca khám cũ bị Bác sĩ hủy được hỗ trợ đổi lịch và thanh toán qua Ví BookingCare.';
+  } else if (isPaid) {
+    if (priceDiff === 0) {
+      policyExplanation = 'Số tiền khám đã thanh toán sẽ được tự động bảo lưu và chuyển sang lịch hẹn mới. Bạn không cần thanh toán thêm.';
+    } else if (priceDiff > 0) {
+      policyExplanation = `Chi phí ca khám mới cao hơn ca cũ ${priceDiff.toLocaleString('vi-VN')} VNĐ. Bạn sẽ thanh toán bổ sung phần chênh lệch.`;
+    } else {
+      policyExplanation = `Chi phí ca khám mới thấp hơn. Số tiền chênh lệch ${Math.abs(priceDiff).toLocaleString('vi-VN')} VNĐ sẽ được hoàn lại theo chính sách.`;
+    }
+  } else {
+    policyExplanation = `Lịch khám cũ chưa thanh toán. Chi phí ca khám mới là ${newBookingPrice.toLocaleString('vi-VN')} VNĐ.`;
+  }
+
+  const financialImpact = {
+    isPaid,
+    oldPrice: Number(oldBooking.bookingPrice) || 0,
+    newPrice: newBookingPrice,
+    priceDifference: priceDiff,
+    formattedOldPrice: `${(Number(oldBooking.bookingPrice) || 0).toLocaleString('vi-VN')} VNĐ`,
+    formattedNewPrice: `${newBookingPrice.toLocaleString('vi-VN')} VNĐ`,
+    policyExplanation,
+  };
+
+  // 7. Định dạng ngày tháng hiển thị
+  const rawOldDate = parseInt(oldBooking.date, 10);
+  const parsedOldDate = new Date(!isNaN(rawOldDate) && rawOldDate > 1000000000 ? rawOldDate : oldBooking.date);
+  const oldDateFormatted = !isNaN(parsedOldDate.getTime())
+    ? `${parsedOldDate.getDate().toString().padStart(2, '0')}/${(parsedOldDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedOldDate.getFullYear()}`
+    : oldBooking.date;
+
+  const rawNewDate = parseInt(targetDate, 10);
+  const parsedNewDate = new Date(!isNaN(rawNewDate) && rawNewDate > 1000000000 ? rawNewDate : targetDate);
+  const newDateFormatted = !isNaN(parsedNewDate.getTime())
+    ? `${parsedNewDate.getDate().toString().padStart(2, '0')}/${(parsedNewDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedNewDate.getFullYear()}`
+    : targetDate;
+
+  const oldDoctorName = oldBooking.doctorBookingData
+    ? `${oldBooking.doctorBookingData.lastName || ''} ${oldBooking.doctorBookingData.firstName || ''}`.trim()
+    : 'Bác sĩ';
+  const newDoctorName = targetDoctorData
+    ? `${targetDoctorData.lastName || ''} ${targetDoctorData.firstName || ''}`.trim()
+    : oldDoctorName;
+
+  // 8. Tạo Reschedule Draft với HMAC Token (Zero DB write)
+  const draft = aiBookingDraftStore.createRescheduleDraft({
+    bookingId: oldBooking.id,
+    oldBookingId: oldBooking.id,
+    patientId: safeUserId,
+    bookingCode: `#BK-${oldBooking.id}`,
+    oldDoctor: {
+      doctorId: oldBooking.doctorId,
+      name: oldDoctorName,
+      specialtyName: oldBooking.doctorBookingData?.doctorInfoData?.specialtyData?.name || 'Chuyên khoa',
+      clinicName: oldBooking.doctorBookingData?.doctorInfoData?.clinicData?.name || 'Phòng khám',
+      clinicAddress: oldBooking.doctorBookingData?.doctorInfoData?.clinicData?.address || '',
+    },
+    oldSchedule: {
+      date: oldBooking.date,
+      dateFormatted: oldDateFormatted,
+      timeType: oldBooking.timeType,
+      timeLabel: oldBooking.timeTypeBooking?.valueVi || oldBooking.timeType,
+    },
+    newDoctor: {
+      doctorId: targetDoctorId,
+      name: newDoctorName,
+      specialtyName: targetDoctorData?.doctorInfoData?.specialtyData?.name || oldBooking.doctorBookingData?.doctorInfoData?.specialtyData?.name || 'Chuyên khoa',
+      clinicName: targetDoctorData?.doctorInfoData?.clinicData?.name || oldBooking.doctorBookingData?.doctorInfoData?.clinicData?.name || 'Phòng khám',
+      clinicAddress: targetDoctorData?.doctorInfoData?.clinicData?.address || oldBooking.doctorBookingData?.doctorInfoData?.clinicData?.address || '',
+    },
+    newSchedule: {
+      date: targetDate,
+      dateFormatted: newDateFormatted,
+      timeType: targetTimeType,
+      timeLabel: targetSchedule.timeTypeData?.valueVi || targetTimeType,
+    },
+    patient: {
+      patientId: safeUserId,
+      patientName: oldBooking.patientName || 'Bệnh nhân',
+    },
+    oldBookingPrice: oldBooking.bookingPrice,
+    newBookingPrice,
+    oldStatusId: oldBooking.statusId,
+    oldPaymentStatus: oldBooking.paymentStatus,
+    financialImpact,
+    reason: args.reason || '',
+  });
+
+  return {
+    status: 'success',
+    type: 'BOOKING_RESCHEDULE_DRAFT',
+    draft,
+  };
+}
+
+/**
+ * Xác nhận thực hiện đổi lịch hẹn (Explicit Reschedule Confirmation) — Phase 06C
+ * BẮT BUỘC: HMAC Token verify, Revalidation, Reuse patientService.rescheduleBooking
+ */
+async function handleConfirmRescheduleBooking(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để xác nhận đổi lịch.' };
+  }
+
+  const { draftId, confirmationToken, reason } = args;
+  if (!draftId || !confirmationToken) {
+    return {
+      status: 'error',
+      error: 'missing_token',
+      message: 'Thiếu mã bản nháp hoặc mã xác thực đổi lịch.',
+    };
+  }
+
+  // 1. Consume HMAC Token
+  const tokenResult = aiBookingDraftStore.consumeRescheduleToken(draftId, confirmationToken, safeUserId);
+  if (!tokenResult.valid) {
+    return {
+      status: 'error',
+      error: tokenResult.reason ? tokenResult.reason.toLowerCase() : 'invalid_token',
+      message: tokenResult.message || 'Mã xác nhận đổi lịch không hợp lệ hoặc đã hết hạn.',
+    };
+  }
+  const draft = tokenResult.draft;
+
+  // 2. In-flight Concurrency Lock
+  const lockKey = `ai_reschedule_${draft.bookingId}`;
+  const lockAcquired = await idempotencyStore.setInProgress(lockKey);
+  if (!lockAcquired) {
+    return {
+      status: 'error',
+      error: 'duplicate_request',
+      message: 'Yêu cầu đổi lịch đang được xử lý. Vui lòng không nhấn lại.',
+    };
+  }
+
+  try {
+    // 3. Re-validate Booking SSOT
+    const booking = await db.Booking.findOne({
+      where: { id: draft.bookingId },
+      lock: false,
+    });
+
+    if (!booking) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'booking_not_found',
+        message: 'Lịch hẹn không còn tồn tại trong hệ thống.',
+      };
+    }
+
+    if (Number(booking.patientId) !== safeUserId) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'unauthorized_booking',
+        message: 'Bạn không có quyền thao tác trên lịch hẹn này.',
+      };
+    }
+
+    if (booking.rescheduledToBookingId) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'already_rescheduled',
+        message: `Lịch hẹn đã được đổi sang ca khám mới #${booking.rescheduledToBookingId} trước đó.`,
+      };
+    }
+
+    // 4. Invoke Existing Domain Service: patientService.rescheduleBooking
+    const reschedulePayload = {
+      newDoctorId: draft.newDoctor?.doctorId,
+      newDate: draft.newSchedule?.date,
+      newTimeType: draft.newSchedule?.timeType,
+      reason: reason || draft.reason || 'Bệnh nhân đổi lịch qua AI Chatbot',
+    };
+
+    const domainResult = await patientService.rescheduleBooking(draft.bookingId, safeUserId, reschedulePayload);
+
+    if (domainResult.errCode !== 0) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'reschedule_failed',
+        message: domainResult.message || 'Không thể thực hiện đổi lịch hẹn.',
+      };
+    }
+
+    const successPayload = {
+      oldBookingId: draft.bookingId,
+      oldBookingCode: draft.bookingCode || `#BK-${draft.bookingId}`,
+      newBookingId: domainResult.data?.newBookingId,
+      newBookingCode: `#BK-${domainResult.data?.newBookingId}`,
+      oldDoctor: draft.oldDoctor,
+      oldSchedule: draft.oldSchedule,
+      newDoctor: draft.newDoctor,
+      newSchedule: draft.newSchedule,
+      patient: draft.patient,
+      financialImpact: draft.financialImpact,
+      statusId: domainResult.data?.statusId || 'S2',
+      paymentStatus: domainResult.data?.paymentStatus || 'paid',
+      rescheduledAt: new Date().toISOString(),
+      message: domainResult.message || 'Đổi lịch khám thành công!',
+    };
+
+    await idempotencyStore.setDone(lockKey, successPayload);
+
+    return {
+      status: 'success',
+      type: 'BOOKING_RESCHEDULE_SUCCESS',
+      data: successPayload,
+    };
+  } catch (err) {
+    await idempotencyStore.delete(lockKey);
+    console.error('[CONFIRM_RESCHEDULE_BOOKING_ERR]', err);
+    return {
+      status: 'error',
+      error: 'transaction_error',
+      message: 'Lỗi trong quá trình thực hiện đổi lịch khám.',
+    };
+  }
+}
+
+/**
+ * Tra cứu trạng thái thanh toán từ Cơ sở dữ liệu (Phase 06D)
+ * BẮT BUỘC: Authenticated patient, IDOR protection, Authoritative DB check
+ */
+async function handleGetPaymentStatus(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để tra cứu trạng thái thanh toán.' };
+  }
+
+  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  if (!bookingId || isNaN(bookingId)) {
+    const latestActiveBooking = await db.Booking.findOne({
+      where: {
+        patientId: safeUserId,
+        statusId: { [Op.in]: ['S1', 'S1.5', 'S2'] },
+      },
+      order: [['date', 'ASC'], ['id', 'DESC']],
+      lock: false,
+    });
+    if (!latestActiveBooking) {
+      return {
+        status: 'error',
+        error: 'no_active_booking',
+        message: 'Bạn hiện không có lịch khám sắp tới nào để tra cứu thanh toán.',
+      };
+    }
+    bookingId = latestActiveBooking.id;
+  }
+
+  const booking = await db.Booking.findOne({
+    where: { id: bookingId },
+    include: [
+      {
+        model: db.User,
+        as: 'doctorBookingData',
+        attributes: ['id', 'firstName', 'lastName'],
+        include: [
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId', 'priceId'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            ],
+          },
+        ],
+      },
+      { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+    ],
+    lock: false,
+  });
+
+  if (!booking) {
+    return {
+      status: 'error',
+      error: 'booking_not_found',
+      message: 'Không tìm thấy thông tin lịch hẹn yêu cầu.',
+    };
+  }
+
+  // IDOR Protection: Chỉ chủ lịch hẹn mới được xem thông tin thanh toán
+  if (Number(booking.patientId) !== safeUserId) {
+    return {
+      status: 'error',
+      error: 'unauthorized_booking',
+      message: 'Bạn không có quyền truy cập thông tin thanh toán của lịch hẹn này.',
+    };
+  }
+
+  const doctorName = booking.doctorBookingData
+    ? `${booking.doctorBookingData.lastName || ''} ${booking.doctorBookingData.firstName || ''}`.trim()
+    : 'Bác sĩ';
+  const rawDate = parseInt(booking.date, 10);
+  const parsedDate = new Date(!isNaN(rawDate) && rawDate > 1000000000 ? rawDate : booking.date);
+  const dateFormatted = !isNaN(parsedDate.getTime())
+    ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
+    : booking.date;
+
+  const isPaid = booking.paymentStatus === 'paid' || booking.statusId === 'S2';
+  const bookingPrice = Number(booking.bookingPrice) || 0;
+
+  return {
+    status: 'success',
+    type: 'PAYMENT_STATUS',
+    bookingId: booking.id,
+    bookingCode: `#BK-${booking.id}`,
+    doctorName,
+    date: dateFormatted,
+    timeLabel: booking.timeTypeBooking?.valueVi || booking.timeType,
+    bookingPrice,
+    formattedPrice: `${bookingPrice.toLocaleString('vi-VN')} VNĐ`,
+    paymentStatus: booking.paymentStatus || 'unpaid',
+    isPaid,
+    paymentMethod: booking.paymentMethod || 'Chưa xác định',
+    refundStatus: booking.refundStatus || 'none',
+    refundAmount: Number(booking.refundAmount) || 0,
+    statusId: booking.statusId,
+    statusLabel: booking.statusData?.valueVi || booking.statusId,
+    message: isPaid
+      ? `Lịch hẹn #${booking.id} đã được thanh toán thành công (${bookingPrice.toLocaleString('vi-VN')} VNĐ qua ${booking.paymentMethod || 'VNPay'}).`
+      : `Lịch hẹn #${booking.id} hiện chưa thanh toán. Số tiền cần thanh toán: ${bookingPrice.toLocaleString('vi-VN')} VNĐ.`,
+  };
+}
+
+/**
+ * Khởi tạo liên kết thanh toán VNPay thực tế (Phase 06D)
+ * BẮT BUỘC: Authenticated patient, IDOR protection, Authoritative amount, No fake success
+ */
+async function handleInitiatePayment(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để thực hiện thanh toán.' };
+  }
+
+  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  if (!bookingId || isNaN(bookingId)) {
+    const latestUnpaidBooking = await db.Booking.findOne({
+      where: {
+        patientId: safeUserId,
+        statusId: { [Op.in]: ['S1', 'S1.5'] },
+        paymentStatus: { [Op.ne]: 'paid' },
+      },
+      order: [['date', 'ASC'], ['id', 'DESC']],
+      lock: false,
+    });
+    if (!latestUnpaidBooking) {
+      return {
+        status: 'error',
+        error: 'no_unpaid_booking',
+        message: 'Bạn không có lịch khám nào đang chờ thanh toán.',
+      };
+    }
+    bookingId = latestUnpaidBooking.id;
+  }
+
+  const booking = await db.Booking.findOne({
+    where: { id: bookingId },
+    include: [
+      {
+        model: db.User,
+        as: 'doctorBookingData',
+        attributes: ['id', 'firstName', 'lastName'],
+      },
+      { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+    ],
+    lock: false,
+  });
+
+  if (!booking) {
+    return {
+      status: 'error',
+      error: 'booking_not_found',
+      message: 'Không tìm thấy thông tin lịch hẹn yêu cầu.',
+    };
+  }
+
+  // IDOR Protection
+  if (Number(booking.patientId) !== safeUserId) {
+    return {
+      status: 'error',
+      error: 'unauthorized_booking',
+      message: 'Bạn không có quyền thanh toán lịch khám của bệnh nhân khác.',
+    };
+  }
+
+  if (booking.statusId === 'S4') {
+    return {
+      status: 'error',
+      error: 'booking_cancelled',
+      message: `Lịch hẹn #${booking.id} đã bị hủy, không thể tiến hành thanh toán.`,
+    };
+  }
+
+  if (booking.statusId === 'S3') {
+    return {
+      status: 'error',
+      error: 'booking_completed',
+      message: `Lịch hẹn #${booking.id} đã hoàn tất buổi khám.`,
+    };
+  }
+
+  if (booking.paymentStatus === 'paid' || booking.statusId === 'S2') {
+    return {
+      status: 'already_paid',
+      error: 'already_paid',
+      message: `Lịch hẹn #${booking.id} đã được thanh toán đầy đủ rồi.`,
+      bookingId: booking.id,
+      paymentStatus: 'paid',
+    };
+  }
+
+  const bookingPrice = Number(booking.bookingPrice) || 0;
+  if (bookingPrice <= 0) {
+    return {
+      status: 'error',
+      error: 'zero_amount',
+      message: 'Lịch khám này miễn phí hoặc không yêu cầu thanh toán trước.',
+    };
+  }
+
+  // Đảm bảo paymentToken tồn tại
+  if (!booking.paymentToken) {
+    const cryptoMod = require('crypto');
+    booking.paymentToken = cryptoMod.randomUUID ? cryptoMod.randomUUID() : `pt_${Date.now()}`;
+    await booking.save();
+  }
+
+  // Gọi hàm buildVnpayUrl chuẩn của domain
+  const { buildVnpayUrl } = require('../controllers/paymentController');
+  const vnpUrl = buildVnpayUrl(
+    booking.paymentToken,
+    bookingPrice,
+    '127.0.0.1',
+    booking.updatedAt || new Date()
+  );
+
+  const doctorName = booking.doctorBookingData
+    ? `${booking.doctorBookingData.lastName || ''} ${booking.doctorBookingData.firstName || ''}`.trim()
+    : 'Bác sĩ';
+  const rawDate = parseInt(booking.date, 10);
+  const parsedDate = new Date(!isNaN(rawDate) && rawDate > 1000000000 ? rawDate : booking.date);
+  const dateFormatted = !isNaN(parsedDate.getTime())
+    ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
+    : booking.date;
+
+  return {
+    status: 'success',
+    type: 'PAYMENT_ACTION',
+    bookingId: booking.id,
+    bookingCode: `#BK-${booking.id}`,
+    doctorName,
+    date: dateFormatted,
+    timeLabel: booking.timeTypeBooking?.valueVi || booking.timeType,
+    amount: bookingPrice,
+    formattedAmount: `${bookingPrice.toLocaleString('vi-VN')} VNĐ`,
+    paymentUrl: vnpUrl,
+    paymentStatus: 'unpaid',
+    message: `Đã khởi tạo link thanh toán VNPay cho lịch hẹn #${booking.id}. Bạn vui lòng bấm vào nút bên dưới để thanh toán an toàn qua cổng VNPay.`,
+  };
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════
 // TOOL REGISTRY METADATA
 // ═══════════════════════════════════════════════════════════════════════
@@ -1670,7 +2712,7 @@ const aiToolRegistry = {
     handler: (args, userId, signal) => handleGetFamilyMembers(args, userId, signal),
   },
 
-  // --- Transactional Tools (Phase 05: Enabled for Real In-Chat Booking) ---
+  // --- Transactional Tools (Phase 05: Real Booking / Phase 06: Cancellation) ---
   prepareBookingDraft: {
     description: 'Chuẩn bị bản nháp đặt lịch khám bệnh với bác sĩ tại một khung giờ cụ thể. Trả về thông tin chi tiết và phiếu xác nhận (BOOKING_DRAFT).',
     type: 'transactional',
@@ -1746,31 +2788,241 @@ const aiToolRegistry = {
     handler: (args, userId, signal, context) => handleConfirmCreateBooking(args, userId, signal, context),
   },
 
-  cancelMyBooking: {
-    description: 'Hủy lịch hẹn của bệnh nhân (Chưa kích hoạt trong Phase 01).',
+  // ═══════════════════════════════════════════════════════════════════
+  // [Phase 06B] IN-CHAT CANCELLATION DRAFT & CONFIRMATION
+  // ═══════════════════════════════════════════════════════════════════
+  prepareCancellationDraft: {
+    description: 'Chuẩn bị bản nháp xác nhận hủy lịch khám (Cancellation Draft). Trả về thông tin chi tiết lịch hẹn, chính sách hoàn tiền và phiếu xác nhận hủy.',
     type: 'transactional',
     allowedRoles: ['R3'],
     requiresAuth: true,
-    enabled: false,
-    parameters: { type: 'object', properties: {} },
-    handler: async () => ({
-      status: 'unsupported',
-      message: 'Tính năng hủy lịch hẹn qua chat chưa được kích hoạt. Vui lòng hủy tại trang Lịch sử khám bệnh (/patient/history).',
-    }),
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'ID của lịch hẹn cần hủy (optional, nếu để trống hệ thống sẽ tìm lịch hẹn sắp tới gần nhất)',
+        },
+        cancellationReason: {
+          type: 'string',
+          description: 'Lý do hủy lịch của bệnh nhân (VD: "Bận đột xuất", "Có việc gia đình")',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handlePrepareCancellationDraft(args, userId, signal),
+  },
+
+  confirmCancelBooking: {
+    description: 'Xác nhận thực hiện hủy lịch khám bệnh chính thức sau khi người dùng đã xem và đồng ý với bản nháp hủy lịch (yêu cầu draftId và confirmationToken).',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        draftId: {
+          type: 'string',
+          description: 'Mã bản nháp hủy lịch (draftId) được tạo từ prepareCancellationDraft',
+        },
+        confirmationToken: {
+          type: 'string',
+          description: 'Mã xác nhận duy nhất (confirmationToken) từ bản nháp hủy lịch',
+        },
+        reason: {
+          type: 'string',
+          description: 'Lý do hủy lịch',
+        },
+      },
+      required: ['draftId', 'confirmationToken'],
+    },
+    handler: (args, userId, signal) => handleConfirmCancelBooking(args, userId, signal),
+  },
+
+  cancelMyBooking: {
+    description: 'Yêu cầu hủy lịch hẹn của bệnh nhân. Sẽ tạo bản nháp xác nhận hủy lịch với thông tin hoàn tiền để bệnh nhân xác nhận trước khi thực hiện.',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần hủy (nếu có)',
+        },
+        reason: {
+          type: 'string',
+          description: 'Lý do hủy lịch',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handlePrepareCancellationDraft(args, userId, signal),
   },
 
   requestSmartReschedule: {
-    description: 'Yêu cầu dời lịch hẹn thông minh (Chưa kích hoạt trong Phase 01).',
+    description: 'Yêu cầu dời lịch hẹn thông minh hoặc đổi lịch hẹn cho bệnh nhân.',
     type: 'transactional',
     allowedRoles: ['R3'],
     requiresAuth: true,
-    enabled: false,
-    parameters: { type: 'object', properties: {} },
-    handler: async () => ({
-      status: 'unsupported',
-      message: 'Tính năng dời lịch thông minh chưa được kích hoạt trong phiên bản này.',
-    }),
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần đổi',
+        },
+        newDoctorId: {
+          type: 'integer',
+          description: 'ID bác sĩ mới (nếu muốn đổi bác sĩ)',
+        },
+        newDate: {
+          type: 'string',
+          description: 'Ngày khám mới (timestamp dạng string)',
+        },
+        newTimeType: {
+          type: 'string',
+          description: 'Khung giờ khám mới (VD: "T1", "T2")',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handlePrepareRescheduleDraft(args, userId, signal),
   },
+
+  prepareRescheduleDraft: {
+    description: 'Chuẩn bị bản nháp đổi lịch khám (Reschedule Draft). Kiểm tra tính hợp lệ của ca khám cũ, kiểm tra chỗ trống của khung giờ mới và tạo bản nháp đổi lịch với mã xác nhận duy nhất.',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần đổi (optional, nếu để trống hệ thống sẽ tìm lịch hẹn sắp tới gần nhất)',
+        },
+        newDoctorId: {
+          type: 'integer',
+          description: 'ID bác sĩ mới nếu muốn đổi sang bác sĩ khác',
+        },
+        newDate: {
+          type: 'string',
+          description: 'Ngày khám mới (timestamp dạng string)',
+        },
+        newTimeType: {
+          type: 'string',
+          description: 'Mã khung giờ khám mới (VD: "T1", "T2")',
+        },
+        reason: {
+          type: 'string',
+          description: 'Lý do đổi lịch của bệnh nhân',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handlePrepareRescheduleDraft(args, userId, signal),
+  },
+
+  confirmRescheduleBooking: {
+    description: 'Xác nhận thực hiện đổi lịch khám bệnh chính thức sau khi người dùng đã xem và đồng ý với bản nháp đổi lịch (yêu cầu draftId và confirmationToken).',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        draftId: {
+          type: 'string',
+          description: 'Mã bản nháp đổi lịch (draftId) từ prepareRescheduleDraft',
+        },
+        confirmationToken: {
+          type: 'string',
+          description: 'Mã xác nhận duy nhất (confirmationToken) từ bản nháp đổi lịch',
+        },
+        reason: {
+          type: 'string',
+          description: 'Lý do đổi lịch',
+        },
+      },
+      required: ['draftId', 'confirmationToken'],
+    },
+    handler: (args, userId, signal) => handleConfirmRescheduleBooking(args, userId, signal),
+  },
+
+  rescheduleMyBooking: {
+    description: 'Yêu cầu đổi lịch hẹn của bệnh nhân sang ngày hoặc giờ khác. Sẽ tạo bản nháp đổi lịch để bệnh nhân xác nhận trước khi thực hiện.',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần đổi',
+        },
+        newDoctorId: {
+          type: 'integer',
+          description: 'ID bác sĩ mới nếu muốn đổi',
+        },
+        newDate: {
+          type: 'string',
+          description: 'Ngày khám mới',
+        },
+        newTimeType: {
+          type: 'string',
+          description: 'Khung giờ khám mới',
+        },
+        reason: {
+          type: 'string',
+          description: 'Lý do đổi lịch',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handlePrepareRescheduleDraft(args, userId, signal),
+  },
+
+  getBookingPaymentStatus: {
+    description: 'Tra cứu tình trạng thanh toán thực tế của lịch hẹn từ cơ sở dữ liệu (đã thanh toán, chưa thanh toán, số tiền khám, phương thức thanh toán, hoàn tiền nếu có).',
+    type: 'read_only',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần tra cứu thanh toán (optional, nếu để trống hệ thống sẽ tìm lịch hẹn sắp tới gần nhất)',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handleGetPaymentStatus(args, userId, signal),
+  },
+
+  initiateBookingPayment: {
+    description: 'Khởi tạo thanh toán VNPay trực tiếp cho lịch khám chưa thanh toán của bệnh nhân. Trả về đường link thanh toán an toàn từ cổng thanh toán VNPay.',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần thanh toán (optional, nếu để trống hệ thống sẽ tìm lịch hẹn chưa thanh toán gần nhất)',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handleInitiatePayment(args, userId, signal),
+  },
+
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1843,6 +3095,16 @@ module.exports = {
   aiAuthFunctions,
   handlePrepareBookingDraft,
   handleConfirmCreateBooking,
+  handlePrepareCancellationDraft,
+  handleConfirmCancelBooking,
+  handlePrepareRescheduleDraft,
+  handleConfirmRescheduleBooking,
+  handleGetPaymentStatus,
+  handleInitiatePayment,
+  handleGetMyBookings,
+  handleSearchDoctorsBySpecialty,
+  handleGetAvailableSchedules,
   maskPII,
   truncateResult,
 };
+

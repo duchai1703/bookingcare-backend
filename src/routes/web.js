@@ -308,6 +308,63 @@ const routes = (app) => {
   );
 
   // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 06B] IN-CHAT BOOKING CANCELLATION DRAFT & CONFIRMATION
+  // ═══════════════════════════════════════════════════════════════════════
+  // POST /api/v1/ai/booking/cancel-draft
+  app.post('/api/v1/ai/booking/cancel-draft',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.prepareCancellationDraftEndpoint
+  );
+
+  // POST /api/v1/ai/booking/cancel-confirm
+  app.post('/api/v1/ai/booking/cancel-confirm',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.confirmCancelBookingEndpoint
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 06C] IN-CHAT BOOKING RESCHEDULE DRAFT & CONFIRMATION
+  // ═══════════════════════════════════════════════════════════════════════
+  // POST /api/v1/ai/booking/reschedule-draft
+  app.post('/api/v1/ai/booking/reschedule-draft',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.prepareRescheduleDraftEndpoint
+  );
+
+  // POST /api/v1/ai/booking/reschedule-confirm
+  app.post('/api/v1/ai/booking/reschedule-confirm',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.confirmRescheduleBookingEndpoint
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 06D] IN-CHAT PAYMENT STATUS & REAL PAYMENT FLOW
+  // ═══════════════════════════════════════════════════════════════════════
+  // GET /api/v1/ai/booking/payment-status
+  app.get('/api/v1/ai/booking/payment-status',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.getPaymentStatusEndpoint
+  );
+
+  // POST /api/v1/ai/booking/pay
+  app.post('/api/v1/ai/booking/pay',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.initiatePaymentEndpoint
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════
   // [Phase B] CATALOG ROUTES — MedicalCatalog / Medicine / SystemSettings
   // ═══════════════════════════════════════════════════════════════════════
   const catalogController = require('../controllers/catalogController');

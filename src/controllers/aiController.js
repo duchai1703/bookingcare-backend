@@ -12,6 +12,12 @@ const {
   aiAuthFunctions,
   handlePrepareBookingDraft,
   handleConfirmCreateBooking,
+  handlePrepareCancellationDraft,
+  handleConfirmCancelBooking,
+  handlePrepareRescheduleDraft,
+  handleConfirmRescheduleBooking,
+  handleGetPaymentStatus,
+  handleInitiatePayment,
 } = require('../services/aiFunctionHandlers');
 const { SYSTEM_PROMPT } = require('../services/aiService');
 const { checkMedicalEmergency, checkPromptInjection } = require('../services/aiSafetyGuard');
@@ -252,6 +258,116 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     }
   }
+
+  // 5. Booking Cancellation Draft Event (Phase 06B)
+  if (toolName === 'prepareCancellationDraft' || toolName === 'cancelMyBooking') {
+    if (fnResult.status === 'success' && fnResult.draft) {
+      const payload = {
+        event: 'booking:cancel-draft',
+        type: 'BOOKING_CANCEL_DRAFT',
+        data: fnResult.draft,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else {
+      const payload = {
+        event: 'booking:cancel-error',
+        type: 'BOOKING_CANCEL_ERROR',
+        data: {
+          error: fnResult.error || 'cancel_draft_error',
+          message: fnResult.message || 'Không thể tạo bản nháp hủy lịch.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 6. Booking Cancellation Confirm Event (Phase 06B)
+  if (toolName === 'confirmCancelBooking') {
+    if (fnResult.status === 'success' && (fnResult.data || fnResult.alreadyCancelled)) {
+      const payload = {
+        event: 'booking:cancel-success',
+        type: 'BOOKING_CANCEL_SUCCESS',
+        data: fnResult.data || fnResult,
+        alreadyCancelled: !!fnResult.alreadyCancelled,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else {
+      const payload = {
+        event: 'booking:cancel-error',
+        type: 'BOOKING_CANCEL_ERROR',
+        data: {
+          error: fnResult.error || 'cancel_error',
+          message: fnResult.message || 'Hủy lịch khám không thành công.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 7. Booking Reschedule Draft Event (Phase 06C)
+  if (toolName === 'prepareRescheduleDraft' || toolName === 'rescheduleMyBooking' || toolName === 'requestSmartReschedule') {
+    if (fnResult.status === 'success' && fnResult.draft) {
+      const payload = {
+        event: 'booking:reschedule-draft',
+        type: 'BOOKING_RESCHEDULE_DRAFT',
+        data: fnResult.draft,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else if (fnResult.status === 'error') {
+      const payload = {
+        event: 'booking:reschedule-error',
+        type: 'BOOKING_RESCHEDULE_ERROR',
+        data: {
+          error: fnResult.error || 'reschedule_draft_error',
+          message: fnResult.message || 'Không thể tạo bản nháp đổi lịch.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 8. Booking Reschedule Confirm Event (Phase 06C)
+  if (toolName === 'confirmRescheduleBooking') {
+    if (fnResult.status === 'success' && fnResult.data) {
+      const payload = {
+        event: 'booking:reschedule-success',
+        type: 'BOOKING_RESCHEDULE_SUCCESS',
+        data: fnResult.data,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else {
+      const payload = {
+        event: 'booking:reschedule-error',
+        type: 'BOOKING_RESCHEDULE_ERROR',
+        data: {
+          error: fnResult.error || 'reschedule_error',
+          message: fnResult.message || 'Đổi lịch khám không thành công.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 9. Payment Action Event (Phase 06D)
+  if (toolName === 'initiateBookingPayment') {
+    if (fnResult.status === 'success' && fnResult.paymentUrl) {
+      const payload = {
+        event: 'payment:action',
+        type: 'PAYMENT_ACTION',
+        data: fnResult,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
 }
 
 /**
@@ -312,7 +428,7 @@ async function streamChat(req, res) {
   }
 
   // 5. Message Body Validation
-  const { message = '', history = [], language = 'vi', imageId } = req.body;
+  const { message = '', history = [], language = 'vi', imageId, conversationId } = req.body;
   const rawText = typeof message === 'string' ? message.trim() : '';
 
   // Khi có ảnh, tin nhắn văn bản có thể để trống
@@ -364,9 +480,10 @@ async function streamChat(req, res) {
 
   // 8. DETERMINISTIC INTENT CLASSIFICATION
   const intentResult = classifyIntent(cleanMessage, Boolean(imageId));
+  const intent = intentResult.intent;
   aiLogger.info(requestId, 'AI_REQUEST_START', {
     userId,
-    intent: intentResult.intent,
+    intent,
     hasImage: Boolean(imageId),
   });
 
@@ -531,37 +648,11 @@ async function streamChat(req, res) {
     // CASE B: STANDARD TEXT CHATBOT WITH TOOLS (Phase 01 Flow)
     // ═══════════════════════════════════════════════════════════════════
 
-    // 10. NORMALIZE CONVERSATION HISTORY & TRÍCH XUẤT DOCTOR CONTEXT (Phase 04)
+    // 10. SYSTEM PROMPT AUGMENTATION & GEMINI MODEL INVOCATION
     const geminiHistory = normalizeGeminiHistory(history);
+    let augmentedSystemPrompt = SYSTEM_PROMPT;
 
-    let lastDoctorId = null;
-    let lastDoctorName = null;
-    if (Array.isArray(history)) {
-      for (let i = history.length - 1; i >= 0; i--) {
-        const item = history[i];
-        const docList = item.doctorSearchResults?.data?.doctors || item.doctorSearchResults?.doctors;
-        if (Array.isArray(docList) && docList.length > 0) {
-          lastDoctorId = docList[0].doctorId;
-          lastDoctorName = docList[0].name;
-          break;
-        }
-        const slotDoc = item.slotSearchResults?.data?.doctor || item.slotSearchResults?.doctor;
-        if (slotDoc?.doctorId) {
-          lastDoctorId = slotDoc.doctorId;
-          lastDoctorName = slotDoc.name;
-          break;
-        }
-      }
-    }
-    const toolContext = {
-      userQuery: cleanMessage,
-      lastDoctorId,
-      lastDoctorName,
-      history,
-    };
-
-    // 11. BUILD GEMINI MODEL WITH REGISTERED TOOLS
-    const systemPromptCombined = `${SYSTEM_PROMPT}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
+    const systemPromptCombined = `${augmentedSystemPrompt}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
 
     const model = getGenerativeModel({
       systemInstruction: systemPromptCombined,
@@ -579,6 +670,7 @@ async function streamChat(req, res) {
     let currentMessage = cleanMessage;
     let isFirstRound = true;
     let roundCount = 0;
+    let lastFnResult = null;
 
     while (roundCount < 5) {
       if (!isClientConnected || signal.aborted) break;
@@ -591,9 +683,9 @@ async function streamChat(req, res) {
             responseResult = await chat.sendMessage(currentMessage);
             break;
           } catch (err) {
-            if (err?.message?.includes('429') && retryCount < 4) {
+            if ((err?.message?.includes('429') || err?.message?.includes('503') || err?.status === 503) && retryCount < 4) {
               retryCount++;
-              aiLogger.warn(requestId, 'AI_RATE_LIMIT_BACKOFF', { retryCount });
+              aiLogger.warn(requestId, 'AI_RATE_LIMIT_BACKOFF', { retryCount, error: err?.message });
               await new Promise((r) => setTimeout(r, retryCount * 2500));
             } else {
               throw err;
@@ -619,6 +711,7 @@ async function streamChat(req, res) {
               signal,
               toolContext
             );
+            lastFnResult = fnResult;
 
             emitToolStructuredEvent(
               pendingFunctionCall.name,
@@ -646,6 +739,7 @@ async function streamChat(req, res) {
               error: fnErr?.message || fnErr,
             });
             fnResult = { status: 'error', message: 'Không thể truy vấn dữ liệu từ hệ thống.' };
+            lastFnResult = fnResult;
           }
 
           currentMessage = [{
@@ -668,17 +762,34 @@ async function streamChat(req, res) {
 
       } else {
         let responseResult = null;
-        try {
-          responseResult = await chat.sendMessage(currentMessage);
-        } catch (chatErr) {
-          aiLogger.warn(requestId, 'AI_FOLLOWUP_CHAT_WARN', {
-            error: chatErr?.message || chatErr,
-          });
-          if (!res.writableEnded && isClientConnected) {
-            res.write(`data: ${JSON.stringify({ text: 'Dưới đây là kết quả tra cứu từ hệ thống BookingCare:' })}\n\n`);
+        let followupRetry = 0;
+        while (followupRetry < 4) {
+          try {
+            responseResult = await chat.sendMessage(currentMessage);
+            break;
+          } catch (chatErr) {
+            if ((chatErr?.message?.includes('429') || chatErr?.message?.includes('503') || chatErr?.status === 503) && followupRetry < 3) {
+              followupRetry++;
+              aiLogger.warn(requestId, 'AI_FOLLOWUP_BACKOFF', { followupRetry, error: chatErr?.message });
+              await new Promise((r) => setTimeout(r, followupRetry * 2000));
+            } else {
+              aiLogger.warn(requestId, 'AI_FOLLOWUP_CHAT_WARN', {
+                error: chatErr?.message || chatErr,
+              });
+              if (!res.writableEnded && isClientConnected) {
+                let fallbackMsg = 'Dưới đây là kết quả tra cứu từ hệ thống BookingCare:';
+                if (lastFnResult?.paymentStatus) {
+                  const statusText = lastFnResult.paymentStatus === 'paid' ? 'đã thanh toán' : 'chưa thanh toán';
+                  const amtText = Number(lastFnResult.amount || 0).toLocaleString('vi-VN');
+                  fallbackMsg = `Lịch hẹn #${lastFnResult.bookingId} hiện ${statusText} với số tiền là ${amtText} VNĐ.`;
+                }
+                res.write(`data: ${JSON.stringify({ text: fallbackMsg })}\n\n`);
+              }
+              break;
+            }
           }
-          break;
         }
+        if (!responseResult) break;
         const response = responseResult.response;
         const nextFCalls = response.functionCalls ? response.functionCalls() : null;
 
@@ -855,9 +966,138 @@ async function confirmBookingEndpoint(req, res) {
   }
 }
 
+/**
+ * Direct Endpoint for Cancellation Draft Creation (Phase 06B)
+ * POST /api/v1/ai/booking/cancel-draft
+ * Authenticated: R3 only
+ */
+async function prepareCancellationDraftEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handlePrepareCancellationDraft(req.body, userId, null);
+    const isOk = result.status === 'success' || result.status === 'already_cancelled' || result.alreadyCancelled;
+    const status = isOk ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: isOk ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_PREPARE_CANCEL_DRAFT_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Real Cancellation Confirmation (Phase 06B)
+ * POST /api/v1/ai/booking/cancel-confirm
+ * Authenticated: R3 only
+ */
+async function confirmCancelBookingEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handleConfirmCancelBooking(req.body, userId, null);
+    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: result.status === 'success' ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_CONFIRM_CANCEL_BOOKING_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Reschedule Draft Creation (Phase 06C)
+ * POST /api/v1/ai/booking/reschedule-draft
+ * Authenticated: R3 only
+ */
+async function prepareRescheduleDraftEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handlePrepareRescheduleDraft(req.body, userId, null);
+    const isOk = result.status === 'success' || result.status === 'needs_slot_selection';
+    const status = isOk ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: isOk ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_PREPARE_RESCHEDULE_DRAFT_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Real Reschedule Confirmation (Phase 06C)
+ * POST /api/v1/ai/booking/reschedule-confirm
+ * Authenticated: R3 only
+ */
+async function confirmRescheduleBookingEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handleConfirmRescheduleBooking(req.body, userId, null);
+    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: result.status === 'success' ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_CONFIRM_RESCHEDULE_BOOKING_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Payment Status Lookup (Phase 06D)
+ * GET /api/v1/ai/booking/payment-status
+ * Authenticated: R3 only
+ */
+async function getPaymentStatusEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handleGetPaymentStatus({ bookingId: req.query.bookingId || req.body?.bookingId }, userId, null);
+    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: result.status === 'success' ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_GET_PAYMENT_STATUS_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Payment URL Initiation (Phase 06D)
+ * POST /api/v1/ai/booking/pay
+ * Authenticated: R3 only
+ */
+async function initiatePaymentEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handleInitiatePayment(req.body, userId, null);
+    const isOk = result.status === 'success' || result.status === 'already_paid';
+    const status = isOk ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: isOk ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_INITIATE_PAYMENT_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
 module.exports = {
   streamChat,
   uploadImage,
   prepareBookingDraftEndpoint,
   confirmBookingEndpoint,
+  prepareCancellationDraftEndpoint,
+  confirmCancelBookingEndpoint,
+  prepareRescheduleDraftEndpoint,
+  confirmRescheduleBookingEndpoint,
+  getPaymentStatusEndpoint,
+  initiatePaymentEndpoint,
 };
