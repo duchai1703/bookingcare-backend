@@ -297,6 +297,7 @@ async function handleGetDoctorWallet(req, res) {
     const recentTx = await walletService.getWalletTransactions(doctorId, {
       page: 1,
       limit: 10,
+      walletType: 'DOCTOR',
     });
 
     return res.status(200).json({
@@ -372,6 +373,53 @@ async function handleGetDoctorWithdrawalRequests(req, res) {
 }
 
 /**
+ * [PHASE 3] GET /api/v1/doctor/wallet/transactions
+ * Bác sĩ xem lịch sử biến động số dư Sổ cái có phân trang & lọc loại GD
+ */
+async function handleGetDoctorTransactions(req, res) {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const { page, limit, type } = req.query;
+    const result = await walletService.getWalletTransactions(doctorId, {
+      page,
+      limit,
+      type,
+      walletType: 'DOCTOR',
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetDoctorTransactions:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 3] POST /api/v1/doctor/wallet/withdrawals/:id/cancel
+ * Bác sĩ hủy yêu cầu rút tiền đang chờ xử lý (PENDING)
+ */
+async function handleCancelDoctorWithdrawalRequest(req, res) {
+  try {
+    const doctorId = req.user?.id;
+    if (!doctorId) {
+      return res.status(401).json({ errCode: -1, errMessage: 'Chưa đăng nhập' });
+    }
+
+    const requestId = req.params.id;
+    const result = await walletService.cancelMyWithdrawalRequest(doctorId, requestId, 'DOCTOR');
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleCancelDoctorWithdrawalRequest:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
  * [PHASE 3] GET /api/v1/admin/financial/withdrawals
  * Admin tra cứu danh sách yêu cầu rút tiền toàn sàn
  */
@@ -432,6 +480,8 @@ module.exports = {
   handleGetDoctorWallet,
   handleRequestDoctorWithdrawal,
   handleGetDoctorWithdrawalRequests,
+  handleGetDoctorTransactions,
+  handleCancelDoctorWithdrawalRequest,
   handleGetAdminWithdrawalRequests,
   handleAdminProcessWithdrawal,
   // Phase 4 Admin Handlers

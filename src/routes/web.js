@@ -190,8 +190,10 @@ const routes = (app) => {
   app.post('/api/v1/patient/wallet/withdrawals/:id/cancel', verifyToken, checkPatientRole, walletController.handleCancelMyWithdrawalRequest);
   // [Phase 3] Doctor Wallet & Withdrawal APIs
   app.get('/api/v1/doctor/wallet', verifyToken, checkDoctorRole, walletController.handleGetDoctorWallet);
+  app.get('/api/v1/doctor/wallet/transactions', verifyToken, checkDoctorRole, walletController.handleGetDoctorTransactions);
   app.post('/api/v1/doctor/wallet/withdrawal', verifyToken, checkDoctorRole, walletController.handleRequestDoctorWithdrawal);
   app.get('/api/v1/doctor/wallet/withdrawals', verifyToken, checkDoctorRole, walletController.handleGetDoctorWithdrawalRequests);
+  app.post('/api/v1/doctor/wallet/withdrawals/:id/cancel', verifyToken, checkDoctorRole, walletController.handleCancelDoctorWithdrawalRequest);
 
   // [SLA Policy Public / Patient Preview]
   app.get('/api/v1/policies/withdrawal-sla', policyController.getActiveWithdrawalPolicy);

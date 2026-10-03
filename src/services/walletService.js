@@ -485,9 +485,9 @@ async function verifyVNPayDepositReturn(vnp_Params) {
 /**
  * Lấy lịch sử biến động số dư (Sổ cái) có phân trang
  */
-async function getWalletTransactions(userId, { page = 1, limit = 20, type = null }) {
+async function getWalletTransactions(userId, { page = 1, limit = 20, type = null, walletType = 'PATIENT' } = {}) {
   try {
-    const wallet = await getOrCreateWallet(userId, 'PATIENT');
+    const wallet = await getOrCreateWallet(userId, walletType);
 
     const offset = (Math.max(1, parseInt(page, 10)) - 1) * parseInt(limit, 10);
     const where = { walletId: wallet.id };
