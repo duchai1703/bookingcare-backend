@@ -71,7 +71,8 @@ async function handleGetDoctorSettlementStatement(req, res) {
  */
 async function handleReleaseEligibleSettlements(req, res) {
   try {
-    const result = await doctorSettlementService.releaseEligibleSettlements();
+    const { forceAll } = req.body || {};
+    const result = await doctorSettlementService.releaseEligibleSettlements(null, { forceAll: Boolean(forceAll) });
     return res.status(200).json(result);
   } catch (error) {
     console.error('Error in handleReleaseEligibleSettlements:', error);

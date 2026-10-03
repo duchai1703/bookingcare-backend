@@ -66,8 +66,22 @@ async function recordCompletedBookingSettlement(bookingId, externalTransaction =
     const netAmount = Math.max(0, grossAmount - platformFee - clinicShare);
 
     const now = new Date();
-    // Giữ an toàn T+24h (24 giờ sau khi khám xong)
-    const availableAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    // Đọc cấu hình thời gian tạm giữ thù lao (Mặc định 24h, hoặc 0h cho T+0 Demo)
+    let holdHours = 24;
+    try {
+      const holdSetting = await db.SystemSetting.findOne({
+        where: { key: 'financial_doctor_settlement_hold_hours' },
+        raw: true,
+      });
+      if (holdSetting && holdSetting.value !== undefined && !isNaN(Number(holdSetting.value))) {
+        holdHours = Math.max(0, Number(holdSetting.value));
+      }
+    } catch (e) {
+      console.warn('Lỗi đọc financial_doctor_settlement_hold_hours:', e.message);
+    }
+
+    const availableAt = new Date(now.getTime() + holdHours * 60 * 60 * 1000);
+    const initialStatus = holdHours === 0 ? 'AVAILABLE' : 'EARNED';
 
     const settlementItem = await db.Doctor_Settlement_Item.create(
       {
@@ -83,7 +97,7 @@ async function recordCompletedBookingSettlement(bookingId, externalTransaction =
         adjustmentAmount: 0,
         netAmount,
         policySnapshot: policySnapshotStr,
-        status: 'EARNED', // Trạng thái 1: Đã phát sinh quyền hưởng
+        status: initialStatus, // EARNED hoặc AVAILABLE nếu T+0
         earnedAt: now,
         availableAt,
       },
@@ -94,7 +108,7 @@ async function recordCompletedBookingSettlement(bookingId, externalTransaction =
 
     return {
       errCode: 0,
-      message: 'Ghi nhận thù lao ca khám thành công (Trạng thái: EARNED - T+24h)',
+      message: `Ghi nhận thù lao ca khám thành công (Trạng thái: ${initialStatus} - T+${holdHours}h)`,
       data: settlementItem,
     };
   } catch (error) {
@@ -108,9 +122,9 @@ async function recordCompletedBookingSettlement(bookingId, externalTransaction =
 }
 
 /**
- * 2. Tự động kiểm tra và giải phóng thù lao đã qua thời hạn T+24h: EARNED -> AVAILABLE
+ * 2. Tự động kiểm tra và giải phóng thù lao đã qua thời hạn: EARNED -> AVAILABLE
  */
-async function releaseEligibleSettlements(doctorId = null, { itemId, force = false } = {}) {
+async function releaseEligibleSettlements(doctorId = null, { itemId, force = false, forceAll = false } = {}) {
   try {
     const now = new Date();
     const where = {
@@ -118,12 +132,39 @@ async function releaseEligibleSettlements(doctorId = null, { itemId, force = fal
     };
     if (itemId) {
       where.id = itemId;
-      if (!force) {
+      if (!force && !forceAll) {
         where.availableAt = { [Op.lte]: now };
       }
     } else {
-      where.availableAt = { [Op.lte]: now };
+      if (!forceAll) {
+        where.availableAt = { [Op.lte]: now };
+      }
       if (doctorId) where.doctorId = doctorId;
+    }
+
+    // Chống mở khóa các ca khám đang có tranh chấp hoặc khiếu nại hoàn tiền
+    if (db.Refund_Case && !force && !forceAll) {
+      const disputedRefunds = await db.Refund_Case.findAll({
+        where: {
+          status: { [Op.in]: ['PENDING', 'UNDER_REVIEW', 'DISPUTED'] },
+        },
+        attributes: ['bookingId'],
+        raw: true,
+      });
+      const disputedBookingIds = disputedRefunds.map((r) => r.bookingId).filter(Boolean);
+      if (disputedBookingIds.length > 0) {
+        where.bookingId = { [Op.notIn]: disputedBookingIds };
+        // Chuyển các ca có tranh chấp sang HELD (Đóng băng tạm giữ) để điều tra y khoa
+        await db.Doctor_Settlement_Item.update(
+          { status: 'HELD' },
+          {
+            where: {
+              bookingId: { [Op.in]: disputedBookingIds },
+              status: { [Op.in]: ['EARNED', 'AVAILABLE'] },
+            },
+          }
+        );
+      }
     }
 
     const [updatedCount] = await db.Doctor_Settlement_Item.update(
@@ -133,7 +174,9 @@ async function releaseEligibleSettlements(doctorId = null, { itemId, force = fal
 
     return {
       errCode: 0,
-      message: itemId
+      message: forceAll
+        ? `Đã kích hoạt chế độ T+0: Mở khóa khẩn cấp toàn bộ ${updatedCount} ca khám sang trạng thái AVAILABLE (Sẵn sàng chi trả)`
+        : itemId
         ? `Đã mở khóa thù lao cho ca khám #${itemId} sang trạng thái AVAILABLE (Sẵn sàng chi trả)`
         : `Đã kích hoạt chuyển ${updatedCount} ca khám sang trạng thái AVAILABLE (Sẵn sàng chi trả)`,
       updatedCount,
@@ -327,6 +370,7 @@ async function payoutDoctorSettlementItems({
           direction: 'CREDIT',
           amount: totalPayout,
           balanceAfter: newBal,
+          transactionType: 'DOCTOR_SETTLEMENT',
           type: 'DOCTOR_SETTLEMENT',
           referenceType: 'DOCTOR_SETTLEMENT_BATCH',
           idempotencyKey,

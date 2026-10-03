@@ -487,12 +487,13 @@ async function handleGetFinancialConfigs(req, res) {
  */
 async function handleUpdateFinancialConfigs(req, res) {
   try {
-    const { platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours } = req.body;
+    const { platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours } = req.body;
     const result = await walletService.updateFinancialConfigs({
       platformReserveFund,
       reserveRatioTarget,
       minWithdrawalAmount,
       withdrawalSlaHours,
+      settlementHoldHours,
     });
     return res.status(200).json(result);
   } catch (error) {

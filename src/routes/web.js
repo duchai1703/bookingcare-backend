@@ -15,6 +15,7 @@ const policyController = require('../controllers/policyController'); // [Financi
 const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
 const refundGovernanceController = require('../controllers/refundGovernanceController'); // [Enterprise Refund Governance]
 const doctorSettlementController = require('../controllers/doctorSettlementController'); // [Doctor Settlement Governance]
+const financialAutomationController = require('../controllers/financialAutomationController'); // [Financial Automation & Exception Queue]
 const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
 const familyMemberController = require('../controllers/familyMemberController'); // [Family Members & Dependents]
 const notificationController = require('../controllers/notificationController'); // [Global Notification Engine]
@@ -347,6 +348,12 @@ const routes = (app) => {
   app.post('/api/v1/admin/financial/doctor-settlements/payout', verifyToken, checkAdminRole, doctorSettlementController.handlePayoutDoctorSettlements);
   app.post('/api/v1/admin/financial/doctor-settlements/release-eligible', verifyToken, checkAdminRole, doctorSettlementController.handleReleaseEligibleSettlements);
   app.post('/api/v1/admin/financial/doctor-settlements/unlock', verifyToken, checkAdminRole, doctorSettlementController.handleUnlockSingleSettlement);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Financial Automation & Exception Queue] Hàng Đợi Ngoại Lệ & Chu Trình Tự Động Hóa — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/financial/exceptions', verifyToken, checkAdminRole, financialAutomationController.handleGetExceptionQueue);
+  app.post('/api/v1/admin/financial/automation/run-cycle', verifyToken, checkAdminRole, financialAutomationController.handleRunAutomationCycle);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Financial Policy Engine & Flexible SLA Audit Subsystem] — Admin R1

@@ -765,7 +765,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
         const dueR = await db.Refund_Case.findAll({
           where: { status: { [db.Sequelize.Op.in]: ['PENDING', 'REVIEWING'] } },
           attributes: [
-            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('suggestedAmount')), 0), 'totalDue'],
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('refundAmount')), 0), 'totalDue'],
             [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
           ],
           raw: true,
@@ -784,7 +784,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
         const dueS = await db.Doctor_Settlement_Item.findAll({
           where: { status: 'AVAILABLE' },
           attributes: [
-            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('doctorEarnings')), 0), 'totalDue'],
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('netAmount')), 0), 'totalDue'],
             [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
           ],
           raw: true,
@@ -1904,6 +1904,7 @@ async function getFinancialConfigs() {
       'financial_reserve_ratio_target',
       'financial_min_withdrawal_amount',
       'financial_withdrawal_sla_hours',
+      'financial_doctor_settlement_hold_hours',
     ];
     const settings = await db.SystemSetting.findAll({
       where: { key: { [Op.in]: keys } },
@@ -1923,6 +1924,7 @@ async function getFinancialConfigs() {
         reserveRatioTarget: Number(configMap['financial_reserve_ratio_target'] || 40),
         minWithdrawalAmount: Number(configMap['financial_min_withdrawal_amount'] || 50000),
         withdrawalSlaHours: Number(configMap['financial_withdrawal_sla_hours'] || 24),
+        settlementHoldHours: Number(configMap['financial_doctor_settlement_hold_hours'] !== undefined ? configMap['financial_doctor_settlement_hold_hours'] : 24),
         rawSettings: settings,
       },
     };
@@ -1935,7 +1937,7 @@ async function getFinancialConfigs() {
 /**
  * [PHASE 5] Cập nhật cấu hình tham số tài chính & quỹ bảo chứng sàn
  */
-async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours } = {}) {
+async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours } = {}) {
   try {
     const updates = [];
     if (platformReserveFund != null && !isNaN(Number(platformReserveFund))) {
@@ -1966,6 +1968,21 @@ async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget,
         value: String(Math.max(1, Number(withdrawalSlaHours))),
         description: 'Thời gian cam kết giải ngân SLA cho yêu cầu rút tiền (giờ)',
       });
+    }
+    if (settlementHoldHours != null && !isNaN(Number(settlementHoldHours))) {
+      const h = Math.max(0, Number(settlementHoldHours));
+      updates.push({
+        key: 'financial_doctor_settlement_hold_hours',
+        value: String(h),
+        description: 'Thời gian tạm giữ thù lao ca khám đối soát khiếu nại (Giờ; 0 = T+0)',
+      });
+      // Nếu thiết lập T+0, tự động mở khóa các ca EARNED hiện có sang AVAILABLE
+      if (h === 0 && db.Doctor_Settlement_Item) {
+        await db.Doctor_Settlement_Item.update(
+          { status: 'AVAILABLE' },
+          { where: { status: 'EARNED' } }
+        );
+      }
     }
 
     for (const item of updates) {
