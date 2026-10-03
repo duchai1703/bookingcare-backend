@@ -1,325 +1,570 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════════════════════
-// [Phase 12.2] AI Controller — SSE Streaming with 29 Guards
+// AI Controller — SSE Streaming & Gemini Vision Integration (Phase 02)
 // ═══════════════════════════════════════════════════════════════════════
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { executeFunctionCall, aiFunctions, aiAuthFunctions } = require('../services/aiFunctionHandlers');
+const crypto = require('crypto');
+const { getGenerativeModel, isAiConfigured } = require('../services/aiConfig');
+const {
+  executeFunctionCall,
+  aiFunctions,
+  aiAuthFunctions,
+  handlePrepareBookingDraft,
+  handleConfirmCreateBooking,
+} = require('../services/aiFunctionHandlers');
 const { SYSTEM_PROMPT } = require('../services/aiService');
+const { checkMedicalEmergency, checkPromptInjection } = require('../services/aiSafetyGuard');
+const { classifyIntent, INTENTS } = require('../services/aiIntentRouter');
+const { normalizeGeminiHistory } = require('../services/aiHistoryNormalizer');
+const { aiLogger } = require('../utils/aiLogger');
+const {
+  saveTemporaryImage,
+  getTemporaryImage,
+  cleanupImage,
+  validateImageBuffer,
+} = require('../services/aiImageService');
+const {
+  VISION_SYSTEM_INSTRUCTION,
+  createImagePart,
+  buildVisionPrompt,
+  createStructuredVisionResult,
+} = require('../services/aiVisionService');
+const {
+  HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION,
+  extractHealthContext,
+  validateAndSanitizeAssessment,
+  buildHealthAssessmentPrompt,
+  extractJsonFromModelOutput,
+  getHealthAssessmentModel,
+  RISK_LEVELS,
+} = require('../services/aiHealthAssessmentService');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || 'MISSING_KEY');
-
-// ═══ [Guard #2] Concurrent Stream Counter ═══
+// Global Active Stream Counter
 let activeStreams = 0;
 const MAX_STREAMS = 15;
 
-// ═══════════════════════════════════════════════════════════════════════
-// streamChat — POST /api/v1/ai/chat
-// SSE streaming với 29 guards từ Phase 1-12
-// ═══════════════════════════════════════════════════════════════════════
+/**
+ * Upload Image Endpoint
+ * POST /api/v1/ai/upload-image
+ * Authenticated: Patient (R3) only, rate-limited
+ */
+async function uploadImage(req, res) {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : `img_${Date.now()}`;
+
+  try {
+    let buffer = null;
+    let filename = '';
+
+    if (req.file && req.file.buffer) {
+      buffer = req.file.buffer;
+      filename = req.file.originalname || 'image.jpg';
+    } else if (req.body && req.body.imageBase64) {
+      const base64Str = req.body.imageBase64;
+      filename = req.body.filename || 'image.jpg';
+      const match = base64Str.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        buffer = Buffer.from(match[2], 'base64');
+      } else {
+        buffer = Buffer.from(base64Str, 'base64');
+      }
+    } else {
+      return res.status(400).json({
+        errCode: 'IMAGE_REQUIRED',
+        message: 'Vui lòng đính kèm tệp hình ảnh (JPEG, PNG hoặc WebP).',
+      });
+    }
+
+    // Save temporary image with 5-minute TTL
+    const saved = await saveTemporaryImage(buffer, filename, req.user.id);
+
+    aiLogger.info(requestId, 'AI_IMAGE_UPLOADED', {
+      userId: req.user.id,
+      imageId: saved.imageId,
+      mimeType: saved.mimeType,
+      size: saved.size,
+      latencyMs: Date.now() - startTime,
+    });
+
+    return res.status(200).json({
+      errCode: 0,
+      success: true,
+      message: 'Tải ảnh lên thành công.',
+      imageId: saved.imageId,
+      data: {
+        imageId: saved.imageId,
+        mimeType: saved.mimeType,
+        size: saved.size,
+      },
+    });
+  } catch (err) {
+    aiLogger.error(requestId, 'AI_IMAGE_UPLOAD_ERROR', { error: err.message, code: err.code });
+    const code = err.code || 'IMAGE_UPLOAD_FAILED';
+    const status = (code === 'IMAGE_TOO_LARGE' || code === 'IMAGE_TYPE_NOT_ALLOWED' || code === 'IMAGE_INVALID') ? 400 : 500;
+
+    return res.status(status).json({
+      errCode: code,
+      message: err.message || 'Lỗi trong quá trình xử lý hình ảnh.',
+    });
+  }
+}
+
+/**
+ * Phát sinh và gửi Canonical SSE Structured Events cho Discovery (Phase 04)
+ * - doctor:search (type: DOCTOR_SEARCH_RESULTS)
+ * - slot:search (type: SLOT_SEARCH_RESULTS)
+ */
+function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnected) {
+  if (!res || res.writableEnded || !isClientConnected || !fnResult) return;
+
+  // 1. Doctor Discovery Event
+  if (
+    toolName === 'searchDoctorsBySpecialty' ||
+    (toolName === 'universalSystemSearch' && args?.entityType === 'doctor')
+  ) {
+    let rawDoctors = [];
+    if (Array.isArray(fnResult.doctors)) {
+      rawDoctors = fnResult.doctors;
+    } else if (Array.isArray(fnResult.data)) {
+      rawDoctors = fnResult.data;
+    }
+
+    const payload = {
+      event: 'doctor:search',
+      type: 'DOCTOR_SEARCH_RESULTS',
+      data: {
+        query: {
+          specialtyId: fnResult.specialtyId || undefined,
+          specialtyName: fnResult.specialty || fnResult.specialtyName || args?.specialtyName || undefined,
+          date: args?.date || undefined,
+          language: args?.language || 'vi',
+        },
+        doctors: rawDoctors.map((d) => ({
+          doctorId: d.doctorId,
+          name: d.name,
+          position: d.position || null,
+          specialtyId: d.specialtyId || fnResult.specialtyId || null,
+          specialtyName: d.specialtyName || fnResult.specialty || fnResult.specialtyName || null,
+          clinicId: d.clinicId || null,
+          clinicName: d.clinicName || d.clinic || null,
+          clinicAddress: d.clinicAddress || d.address || null,
+          avatarUrl: d.avatarUrl || null,
+          price: d.price || null,
+          rating: typeof d.rating === 'number' ? d.rating : null,
+          reviewCount: typeof d.reviewCount === 'number' ? d.reviewCount : null,
+          description: d.description || '',
+        })),
+        pagination: {
+          page: 1,
+          limit: rawDoctors.length,
+          hasNext: false,
+        },
+        status: fnResult.status,
+        specialties: fnResult.specialties || undefined,
+        message: fnResult.message || undefined,
+        timestamp: Date.now(),
+      },
+    };
+
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  // 2. Real Slot Discovery Event
+  if (toolName === 'getAvailableSchedules') {
+    const rawSlots = Array.isArray(fnResult.availableSlots)
+      ? fnResult.availableSlots
+      : (Array.isArray(fnResult.schedules) ? fnResult.schedules : []);
+
+    const payload = {
+      event: 'slot:search',
+      type: 'SLOT_SEARCH_RESULTS',
+      data: {
+        doctor: {
+          doctorId: fnResult.doctorId || args?.doctorId || null,
+          name: fnResult.doctorName || args?.doctorName || 'Bác sĩ',
+        },
+        date: fnResult.date || args?.date,
+        dateLabel: fnResult.dateLabel || undefined,
+        timezone: fnResult.timezone || 'Asia/Ho_Chi_Minh',
+        period: fnResult.period || 'all',
+        slots: rawSlots.map((s) => ({
+          scheduleId: s.scheduleId || s.id,
+          timeType: s.timeType,
+          displayTime: s.displayTime || s.timeLabel || s.timeType,
+          period: s.period || (['T1', 'T2', 'T3', 'T4'].includes(s.timeType) ? 'morning' : 'afternoon'),
+          status: (s.remaining > 0 || s.currentNumber < s.maxNumber) ? 'AVAILABLE' : 'FULL',
+          remaining: typeof s.remaining === 'number' ? s.remaining : Math.max(0, (s.maxNumber || 10) - (s.currentNumber || 0)),
+        })),
+        status: fnResult.status,
+        message: fnResult.message || undefined,
+        timestamp: Date.now(),
+      },
+    };
+
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  }
+
+  // 3. Booking Draft Event (Phase 05)
+  if (toolName === 'prepareBookingDraft') {
+    if (fnResult.status === 'success' && fnResult.draft) {
+      const payload = {
+        event: 'booking:draft',
+        type: 'BOOKING_DRAFT',
+        data: fnResult.draft,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else {
+      const payload = {
+        event: 'booking:error',
+        type: 'BOOKING_ERROR',
+        data: {
+          error: fnResult.error || 'draft_error',
+          message: fnResult.message || 'Không thể tạo bản nháp đặt lịch.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 4. Confirm Create Booking Event (Phase 05)
+  if (toolName === 'confirmCreateBooking') {
+    if (fnResult.status === 'success' && fnResult.data) {
+      const payload = {
+        event: 'booking:success',
+        type: 'BOOKING_SUCCESS',
+        data: fnResult.data,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else {
+      const payload = {
+        event: 'booking:error',
+        type: 'BOOKING_ERROR',
+        data: {
+          error: fnResult.error || 'booking_error',
+          message: fnResult.message || 'Xác nhận đặt lịch không thành công.',
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+}
+
+/**
+ * SSE Streaming Chatbot & Vision Handler
+ * POST /api/v1/ai/chat
+ */
 async function streamChat(req, res) {
+  const startTime = Date.now();
+  const requestId = crypto.randomUUID ? crypto.randomUUID() : `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-  // [DEVOPS GUARD] Chặn sập server ngầm do thiếu cấu hình .env
-  if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'PLEASE_ENTER_YOUR_REAL_API_KEY_HERE') {
-    console.error("[CRITICAL FATAL] Lỗi cấu hình: Chưa khai báo GEMINI_API_KEY hợp lệ trong file .env!");
-    if (res && typeof res.status === 'function') {
-      return res.status(500).json({ error: 'Hệ thống AI đang bảo trì cấu hình (Thiếu API Key). Vui lòng liên hệ quản trị viên.' });
-    }
-    throw new Error("Missing GEMINI_API_KEY");
+  // 1. Kiểm tra cấu hình hệ thống
+  if (!isAiConfigured()) {
+    aiLogger.error(requestId, 'AI_PROVIDER_ERROR', { error: 'Missing or placeholder GEMINI_API_KEY' });
+    return res.status(500).json({
+      errCode: 'AI_PROVIDER_ERROR',
+      message: 'Hệ thống AI đang bảo trì cấu hình. Vui lòng liên hệ quản trị viên.',
+    });
   }
 
-  // ──── [Guard #1 — Kill-Switch] ────
+  // 2. Kill-Switch
   if (process.env.AI_CHATBOT_ENABLED !== 'true') {
-    if (res && typeof res.status === 'function') {
-      return res.status(403).json({ error: 'Tính năng AI Chatbot hiện đang bị vô hiệu hóa.' });
-    }
-    throw new Error("AI Chatbot disabled");
+    return res.status(403).json({
+      errCode: 'AI_FORBIDDEN',
+      message: 'Tính năng AI Chatbot hiện đang tạm ngừng hoạt động.',
+    });
   }
 
-  // ──── [Guard #2 — Max 15 Streams] ────
+  // 3. Global Stream Capacity Guard
   if (activeStreams >= MAX_STREAMS) {
     return res.status(503).json({
-      errCode: -4,
-      message: 'Server đang bận. Vui lòng thử lại sau.',
+      errCode: 'AI_RATE_LIMITED',
+      message: 'Hệ thống AI đang bận phục vụ nhiều yêu cầu. Vui lòng thử lại sau 30 giây.',
     });
   }
 
-  // ──── [Guard #3 — Check Active User] ────
+  // 4. Role Guard: Chỉ cho phép Patient (R3)
   if (!req.user || !req.user.id) {
     return res.status(401).json({
-      errCode: -1,
-      message: 'Chưa đăng nhập.',
+      errCode: 'AI_UNAUTHORIZED',
+      message: 'Vui lòng đăng nhập để sử dụng AI Chatbot.',
     });
   }
 
-  // ──── [Guard #4 — Limit UserID — parseInt + isFinite] ────
+  if (req.user.roleId !== 'R3') {
+    aiLogger.warn(requestId, 'AI_FORBIDDEN', { userId: req.user.id, roleId: req.user.roleId });
+    return res.status(403).json({
+      errCode: 'AI_FORBIDDEN',
+      message: 'Tính năng AI Chatbot chỉ dành riêng cho Bệnh nhân.',
+    });
+  }
+
   const userId = parseInt(String(req.user.id), 10);
   if (!Number.isFinite(userId) || userId <= 0) {
     return res.status(400).json({
-      errCode: 1,
+      errCode: 'AI_INVALID_INPUT',
       message: 'userId không hợp lệ.',
     });
   }
 
-  // ──── [Guard #5 — ParseInt + Validate Body] ────
-  const { message, history = [] } = req.body;
-  if (typeof message !== 'string' || !message.trim()) {
+  // 5. Message Body Validation
+  const { message = '', history = [], language = 'vi', imageId } = req.body;
+  const rawText = typeof message === 'string' ? message.trim() : '';
+
+  // Khi có ảnh, tin nhắn văn bản có thể để trống
+  if (!rawText && !imageId) {
     return res.status(400).json({
-      errCode: 1,
-      message: 'Thiếu nội dung tin nhắn.',
+      errCode: 'AI_INVALID_INPUT',
+      message: 'Vui lòng nhập nội dung tin nhắn hoặc đính kèm hình ảnh.',
     });
   }
 
-  console.log('[AI_STREAM] 1. Đã nhận request từ Frontend. Câu hỏi:', message);
-
-  // ──── [Guard #6 — Unicode Capping — 2500 chars] ────
-  const safeMessage = Array.from(message.trim()).slice(0, 2500).join('');
-
-  // ──── [Guard #7 — Zalgo Clean — Zero-width Regex] ────
+  // Unicode Capping & Sanitization (2500 chars, strip Zalgo / zero-width)
+  const safeMessage = Array.from(rawText).slice(0, 2500).join('');
   const cleanMessage = safeMessage
     .replace(/[\u0300-\u036f]{3,}/g, '')
     .replace(/[\u200B-\u200F\uFEFF]/g, '');
 
-  const parseFunctionResult = (value) => {
-    if (value && typeof value === 'object') return value;
-    if (typeof value !== 'string') return { error: 'Invalid function result' };
-    const start = '---DB_RESULT---\n';
-    const end = '\n---/DB_RESULT---';
-    if (value.includes(start)) {
-      const raw = value.split(start)[1]?.split(end)[0] || '';
-      try { return JSON.parse(raw); } catch { return { error: 'Invalid function result JSON' }; }
-    }
-    try { return JSON.parse(value); } catch { return { error: 'Invalid function result JSON' }; }
-  };
+  // 6. SAFETY GUARD LAYER 1: Cấp cứu y tế
+  const emergencyCheck = checkMedicalEmergency(cleanMessage);
+  if (emergencyCheck.isEmergency) {
+    aiLogger.warn(requestId, 'AI_EMERGENCY_TRIGGERED', {
+      userId,
+      category: emergencyCheck.category,
+      matchedKeyword: emergencyCheck.matchedKeyword,
+    });
 
-  const extractScheduleRequest = (text) => {
-    if (typeof text !== 'string') return null;
-    const nameMatch = text.match(/b\s*a\s*c\s*s\s*i\s*\s+([A-Za-zÀ-ỹ\.\s]+?)(?:\s+v\s*a\s*|\s+ng\s*a\s*y|$)/i);
-    const dateMatch = text.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4}|ng\s*a\s*y\s*\d{1,2}\s*th\s*a\s*ng\s*\d{1,2}(?:\s*n\s*a\s*m\s*\d{4})?/i);
-    const doctorName = nameMatch?.[1]?.trim();
-    const date = dateMatch?.[0]?.trim();
-    if (!doctorName || !date) return null;
-    return { doctorName, date };
-  };
+    initSSEHeaders(res);
+    res.write(`data: ${JSON.stringify({ text: emergencyCheck.response })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+    if (imageId) cleanupImage(imageId);
+    return;
+  }
 
-  const extractDateLabel = (text) => {
-    if (typeof text !== 'string') return null;
-    const match = text.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4}|ng\s*a\s*y\s*\d{1,2}\s*th\s*a\s*ng\s*\d{1,2}(?:\s*n\s*a\s*m\s*\d{4})?/i);
-    return match ? match[0].trim() : null;
-  };
+  // 7. SAFETY GUARD LAYER 2: Chống Prompt Injection / Jailbreak
+  const injectionCheck = checkPromptInjection(cleanMessage);
+  if (injectionCheck.isInjection) {
+    aiLogger.warn(requestId, 'AI_PROMPT_INJECTION_TRIGGERED', {
+      userId,
+      matchedPattern: injectionCheck.matchedPattern,
+    });
 
-  const extractSpecialtyName = (text) => {
-    if (typeof text !== 'string') return null;
-    const match = text.match(/ch\s*u\s*y\s*e\s*n\s*k\s*h\s*o\s*a\s*([A-Za-zÀ-ỹ\s]+?)(?:\s+v\s*a\s*|\s+ng\s*a\s*y|\s+tr\s*o\s*n\s*g|$)/i);
-    return match ? match[1].trim() : null;
-  };
+    initSSEHeaders(res);
+    res.write(`data: ${JSON.stringify({ text: injectionCheck.response })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+    if (imageId) cleanupImage(imageId);
+    return;
+  }
 
-  const formatDateLabel = (dateObj) => {
-    const day = String(dateObj.getDate()).padStart(2, '0');
-    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-    const year = dateObj.getFullYear();
-    return `${day}/${month}/${year}`;
-  };
+  // 8. DETERMINISTIC INTENT CLASSIFICATION
+  const intentResult = classifyIntent(cleanMessage, Boolean(imageId));
+  aiLogger.info(requestId, 'AI_REQUEST_START', {
+    userId,
+    intent: intentResult.intent,
+    hasImage: Boolean(imageId),
+  });
 
-  const getUpcomingDates = (days) => {
-    const result = [];
-    const now = new Date();
-    for (let i = 0; i < days; i += 1) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
-      result.push(formatDateLabel(d));
-    }
-    return result;
-  };
-
-  const findLatestFromHistory = (extractor) => {
-    if (!Array.isArray(history)) return null;
-    for (let i = history.length - 1; i >= 0; i -= 1) {
-      const msg = history[i];
-      const text = typeof msg?.text === 'string'
-        ? msg.text
-        : (typeof msg?.parts === 'string'
-          ? msg.parts
-          : msg?.parts?.[0]?.text || '');
-      const value = extractor(text);
-      if (value) return value;
-    }
-    return null;
-  };
-
-  const formatScheduleResponse = (result, doctorName, dateLabel) => {
-    if (!result || result.error) {
-      return result?.error || 'Không thể kiểm tra lịch khám lúc này. Vui lòng thử lại.';
-    }
-    const resolvedName = result.doctorName || doctorName || 'bác sĩ';
-    if (Array.isArray(result.schedules) && result.schedules.length === 0) {
-      return `Dạ, bác sĩ ${resolvedName} hiện không có lịch trống vào ngày ${dateLabel}. Bạn có muốn thử xem ngày khác không ạ?`;
-    }
-    if (Array.isArray(result.availableSlots) && result.availableSlots.length > 0) {
-      const slots = result.availableSlots
-        .map((s) => `• ${s.timeLabel || s.timeType} (còn ${s.remaining} suất)`)
-        .join('\n');
-      return `Dạ, lịch trống của bác sĩ ${resolvedName} vào ngày ${dateLabel} như sau:\n${slots}\n\nNếu bạn muốn đặt lịch, hãy truy cập [trang bác sĩ ${resolvedName}](/doctor/${result.doctorId}) để chọn khung giờ phù hợp ạ.`;
-    }
-    return `Dạ, hiện chưa có lịch trống cho bác sĩ ${resolvedName} vào ngày ${dateLabel}. Bạn có muốn thử xem ngày khác không ạ?`;
-  };
-
-  // ══════════════════════════════════════════════════════
-  // SSE SETUP
-  // ══════════════════════════════════════════════════════
+  // 9. SSE SETUP & LIFECYCLE
   activeStreams++;
   const ac = new AbortController();
   const signal = ac.signal;
   let heartbeatInterval = null;
   let hardTimeoutHandle = null;
-  let functionCallCount = 0;
-
-  // ──── [Guard #8 — SSE Headers] ────
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-    'X-Content-Type-Options': 'nosniff',
-    'Access-Control-Allow-Origin': process.env.URL_REACT,
-    'Access-Control-Allow-Credentials': 'true',
-  });
-
   let isClientConnected = true;
 
-  // ──── [Guard #9 — SSE Heartbeat — 15s] ────
+  initSSEHeaders(res);
+
+  // SSE Heartbeat (15s)
   heartbeatInterval = setInterval(() => {
-    if (!res.writableEnded) { res.write(':heartbeat\n\n'); }
+    if (!res.writableEnded) {
+      res.write(':heartbeat\n\n');
+    }
   }, 15000);
 
-  // ──── [Guard #10 — Hard Timeout 60s] ────
+  // Hard Timeout 60s
   hardTimeoutHandle = setTimeout(() => {
     ac.abort();
-    if (!res.writableEnded) { res.write('data: [TIMEOUT]\n\n'); res.end(); }
+    aiLogger.warn(requestId, 'AI_TIMEOUT', { userId, latencyMs: Date.now() - startTime });
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ error: true, code: 'AI_TIMEOUT', text: 'Quá trình phản hồi mất nhiều thời gian hơn dự kiến. Vui lòng thử lại.' })}\n\n`);
+      res.write('data: [TIMEOUT]\n\n');
+      res.end();
+    }
   }, 60000);
 
-  // ──── [Guard #11 — Ngắt kết nối vật lý] ────
   req.on('close', () => {
     isClientConnected = false;
-    console.log('⚠️ [AI_STREAM] Client thực sự đã đóng Socket kết nối!');
+    ac.abort();
+    if (imageId) cleanupImage(imageId);
   });
 
-  // ──── [Guard #12 — Bẫy lỗi OS] ────
   res.on('error', (err) => {
     if (err.code !== 'ERR_STREAM_WRITE_AFTER_END') {
-      console.error('[SSE res.error]', err.code);
+      aiLogger.warn(requestId, 'SSE_STREAM_ERROR', { error: err.code || err.message });
     }
+    if (imageId) cleanupImage(imageId);
   });
 
   try {
-    // ──── [Guard #24 — Gộp Role History] ────
-    const geminiHistory = [];
-    if (Array.isArray(history) && history.length > 0) {
-      history.forEach((msg) => {
-        const roleHint = msg?.sender || msg?.role;
-        const role = roleHint === 'user' ? 'user' : 'model';
-        const text = typeof msg?.text === 'string'
-          ? msg.text
-          : (typeof msg?.parts === 'string'
-            ? msg.parts
-            : msg?.parts?.[0]?.text || '');
-        if (text && text.trim() !== '') {
-          geminiHistory.push({ role, parts: [{ text }] });
-        }
-      });
-    }
-
-    // ──── Shortcut: Schedule Request ────
-    const scheduleRequest = extractScheduleRequest(cleanMessage);
-    if (scheduleRequest) {
-      const fnRaw = await executeFunctionCall('getAvailableSchedules', scheduleRequest, userId, signal);
-      const fnResult = parseFunctionResult(fnRaw);
-      const responseText = formatScheduleResponse(fnResult, scheduleRequest.doctorName, scheduleRequest.date);
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ text: responseText })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
-      }
-      return;
-    }
-
-    // ──── Shortcut: Wants Other Doctors / Other Day ────
-    const wantsOtherDoctors = /b\s*a\s*c\s*s\s*i\s*kh\s*a\s*c|ki\s*e\s*m\s*t\s*r\s*a\s*l\s*i\s*c\s*h|t\s*i\s*m\s*b\s*a\s*c\s*s\s*i\s*kh\s*a\s*c/i.test(cleanMessage);
-    const wantsOtherDay = /ng\s*a\s*y\s*kh\s*a\s*c|tr\s*o\s*n\s*g\s*tu\s*a\s*n|tu\s*a\s*n\s*n\s*a\s*y|k\s*h\s*o\s*a\s*n\s*g\s*th\s*o\s*i\s*g\s*i\s*a\s*n/i.test(cleanMessage);
-    if (wantsOtherDoctors || wantsOtherDay) {
-      const specialtyName = extractSpecialtyName(cleanMessage) || findLatestFromHistory(extractSpecialtyName);
-      if (!specialtyName) {
-        if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: 'Bạn muốn kiểm tra lịch cho chuyên khoa nào ạ?' })}\n\n`);
-          res.write('data: [DONE]\n\n'); res.end();
-        }
-        return;
-      }
-      const explicitDate = extractDateLabel(cleanMessage) || findLatestFromHistory(extractDateLabel);
-      let dateCandidates = explicitDate ? [explicitDate] : [];
-      if (dateCandidates.length === 0 && wantsOtherDay) { dateCandidates = getUpcomingDates(7); }
-      if (dateCandidates.length === 0) {
-        if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: 'Bạn muốn kiểm tra lịch vào ngày nào ạ?' })}\n\n`);
-          res.write('data: [DONE]\n\n'); res.end();
-        }
-        return;
-      }
-      const listRaw = await executeFunctionCall('searchDoctorsBySpecialty', { specialtyName, language: req.body.language || 'vi' }, userId, signal);
-      const listResult = parseFunctionResult(listRaw);
-      const doctors = Array.isArray(listResult?.doctors) ? listResult.doctors : [];
-      const candidates = doctors.filter((d) => d?.name).slice(0, 5);
-      if (candidates.length === 0) {
-        if (!res.writableEnded) {
-          res.write(`data: ${JSON.stringify({ text: `Dạ, hiện hệ thống chưa có bác sĩ chuyên khoa ${specialtyName}. Bạn muốn thử chuyên khoa khác không ạ?` })}\n\n`);
-          res.write('data: [DONE]\n\n'); res.end();
-        }
-        return;
-      }
-      const availableByDate = [];
-      for (const dateLabel of dateCandidates.slice(0, 3)) {
-        const availableDoctors = [];
-        for (const doctor of candidates) {
-          const schedRaw = await executeFunctionCall('getAvailableSchedules', { doctorName: doctor.name, date: dateLabel }, userId, signal);
-          const schedResult = parseFunctionResult(schedRaw);
-          const slots = Array.isArray(schedResult?.availableSlots) ? schedResult.availableSlots : [];
-          if (slots.length > 0) {
-            availableDoctors.push({ name: doctor.name, clinic: doctor.clinic, price: doctor.price, slots });
-          }
-          if (availableDoctors.length >= 3) break;
-        }
-        if (availableDoctors.length > 0) { availableByDate.push({ dateLabel, doctors: availableDoctors }); }
-        if (availableByDate.length >= 2) break;
-      }
-      let responseText = '';
-      if (availableByDate.length === 0) {
-        responseText = `Dạ, hiện chưa có bác sĩ chuyên khoa ${specialtyName} có lịch trống vào ngày ${dateCandidates[0]}. Bạn muốn chọn ngày khác không ạ?`;
-      } else {
-        const blocks = availableByDate.map((entry) => {
-          const lines = entry.doctors.map((doc) => {
-            const slotLabels = doc.slots.slice(0, 3).map((s) => s.timeLabel || s.timeType).join(', ');
-            return `• ${doc.name}${doc.clinic ? ` (${doc.clinic})` : ''}${doc.price ? ` - Giá khám: ${doc.price}` : ''}. Khung giờ trống: ${slotLabels}`;
-          });
-          return `Ngày ${entry.dateLabel}:\n${lines.join('\n')}`;
-        });
-        responseText = `Dạ, dưới đây là lịch trống của bác sĩ chuyên khoa ${specialtyName}:\n${blocks.join('\n\n')}\n\nBạn muốn chọn bác sĩ nào để tôi hỗ trợ đặt lịch?`;
-      }
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ text: responseText })}\n\n`);
-        res.write('data: [DONE]\n\n'); res.end();
-      }
-      return;
-    }
-
-    // ──── [Guard #25 — Cấp Timestamp UTC] ────
     const nowUTC = new Date().toISOString();
 
-    // ──── Build Gemini Chat ────
-    console.log('[AI_STREAM] 2. Bắt đầu gọi genAI.getGenerativeModel...');
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-3.1-flash-lite',
-      systemInstruction: SYSTEM_PROMPT + `\n\nThời gian hiện tại (UTC): ${nowUTC}\n\n[LUẬT CHỐNG BỊA DỮ LIỆU - TUYỆT ĐỐI TUÂN THỦ]: Khi trả lời về một bác sĩ cụ thể, BẮT BUỘC chỉ sử dụng CHÍNH XÁC dữ liệu từ kết quả function trả về. TUYỆT ĐỐI CẤM trộn lẫn thông tin của bác sĩ khác. Nếu function trả về bác sĩ A thì CHỈ nói về bác sĩ A.`,
-      generationConfig: { maxOutputTokens: 500, temperature: 0.3 },
+    // ═══════════════════════════════════════════════════════════════════
+    // CASE A: HEALTH ASSESSMENT ORCHESTRATOR (Phase 03 Flow)
+    // Kích hoạt khi:
+    // 1. Có imageId đính kèm
+    // 2. Ý định là HEALTH_QUERY (triệu chứng, bệnh lý, ngứa, đau, sốt, dùng thuốc)
+    // 3. Có ngữ cảnh theo dõi (follow-up) từ lượt trước (ảnh cũ, triệu chứng cũ)
+    // ═══════════════════════════════════════════════════════════════════
+    const initialHealthContext = extractHealthContext(cleanMessage, history, null);
+    const isHealthAssessmentFlow = Boolean(imageId) ||
+      intentResult.intent === INTENTS.HEALTH_QUERY ||
+      initialHealthContext.isFollowUp;
+
+    if (isHealthAssessmentFlow) {
+      let tempImageData = null;
+      let imagePart = null;
+      let currentVisionData = null;
+
+      if (imageId) {
+        try {
+          tempImageData = await getTemporaryImage(imageId, userId);
+        } catch (imgErr) {
+          if (!res.writableEnded) {
+            res.write(`data: ${JSON.stringify({
+              error: true,
+              code: imgErr.code || 'IMAGE_EXPIRED',
+              text: 'Hình ảnh tạm thời đã hết hạn hoặc không khả dụng. Bạn vui lòng chụp hoặc tải lại hình ảnh nhé.'
+            })}\n\n`);
+          }
+          return;
+        }
+
+        imagePart = createImagePart(tempImageData.buffer, tempImageData.metadata.mimeType);
+        currentVisionData = createStructuredVisionResult({
+          text: cleanMessage,
+          imageId,
+          mimeType: tempImageData.metadata.mimeType,
+        });
+      }
+
+      // Tái trích xuất ngữ cảnh sức khỏe tích lũy toàn diện
+      const healthContext = extractHealthContext(cleanMessage, history, currentVisionData);
+      const assessmentPrompt = buildHealthAssessmentPrompt(healthContext);
+
+      const healthSystemCombined = `${HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION}\n\n${SYSTEM_PROMPT}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
+
+      const assessmentModel = getHealthAssessmentModel({
+        systemInstruction: healthSystemCombined,
+      });
+
+      aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_START', {
+        userId,
+        hasImage: Boolean(imageId),
+        isFollowUp: healthContext.isFollowUp,
+        symptomsCount: healthContext.symptoms.length,
+      });
+
+      // Gọi generateContentStream với multimodal (ảnh + prompt) hoặc đơn modal (prompt)
+      const modelContent = imagePart ? [imagePart, assessmentPrompt] : assessmentPrompt;
+      const streamResult = await assessmentModel.generateContentStream(modelContent);
+      let fullResponseText = '';
+
+      for await (const chunk of streamResult.stream) {
+        if (!isClientConnected || signal.aborted) break;
+
+        const delta = chunk.text ? chunk.text() : '';
+        if (delta && !res.writableEnded) {
+          fullResponseText += delta;
+          const safeChunk = delta.replace(/\n\ndata:/g, '\n\n data:');
+          res.write(`data: ${JSON.stringify({
+            text: safeChunk,
+            isHealthAssessment: true,
+            hasImage: Boolean(imageId),
+            imageId: imageId || undefined
+          })}\n\n`);
+        }
+      }
+
+      if (fullResponseText && !res.writableEnded && isClientConnected) {
+        // Trích xuất khối JSON từ output của model
+        const rawJson = extractJsonFromModelOutput(fullResponseText);
+        // Chuẩn hóa và thẩm định cấu trúc theo Canonical HEALTH_ASSESSMENT Schema
+        const sanitizedAssessment = validateAndSanitizeAssessment(rawJson, healthContext);
+
+        // Backward compatibility: gửi visionAnalysis nếu có ảnh
+        if (imageId && currentVisionData) {
+          const structuredVision = createStructuredVisionResult({
+            text: fullResponseText,
+            imageId,
+            mimeType: tempImageData?.metadata?.mimeType,
+          });
+          res.write(`data: ${JSON.stringify({ visionAnalysis: structuredVision })}\n\n`);
+        }
+
+        // Phát sinh và gửi Canonical HEALTH_ASSESSMENT event về Frontend
+        res.write(`data: ${JSON.stringify({
+          event: 'health:assessment',
+          type: 'HEALTH_ASSESSMENT',
+          data: sanitizedAssessment.data,
+          assessment: sanitizedAssessment.data,
+          healthAssessment: sanitizedAssessment.data,
+        })}\n\n`);
+      }
+
+      aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_COMPLETED', {
+        userId,
+        hasImage: Boolean(imageId),
+        isFollowUp: healthContext.isFollowUp,
+        latencyMs: Date.now() - startTime,
+      });
+
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CASE B: STANDARD TEXT CHATBOT WITH TOOLS (Phase 01 Flow)
+    // ═══════════════════════════════════════════════════════════════════
+
+    // 10. NORMALIZE CONVERSATION HISTORY & TRÍCH XUẤT DOCTOR CONTEXT (Phase 04)
+    const geminiHistory = normalizeGeminiHistory(history);
+
+    let lastDoctorId = null;
+    let lastDoctorName = null;
+    if (Array.isArray(history)) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const docList = item.doctorSearchResults?.data?.doctors || item.doctorSearchResults?.doctors;
+        if (Array.isArray(docList) && docList.length > 0) {
+          lastDoctorId = docList[0].doctorId;
+          lastDoctorName = docList[0].name;
+          break;
+        }
+        const slotDoc = item.slotSearchResults?.data?.doctor || item.slotSearchResults?.doctor;
+        if (slotDoc?.doctorId) {
+          lastDoctorId = slotDoc.doctorId;
+          lastDoctorName = slotDoc.name;
+          break;
+        }
+      }
+    }
+    const toolContext = {
+      userQuery: cleanMessage,
+      lastDoctorId,
+      lastDoctorName,
+      history,
+    };
+
+    // 11. BUILD GEMINI MODEL WITH REGISTERED TOOLS
+    const systemPromptCombined = `${SYSTEM_PROMPT}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
+
+    const model = getGenerativeModel({
+      systemInstruction: systemPromptCombined,
       tools: [{
         functionDeclarations: [
           ...Object.entries(aiFunctions).map(([name, def]) => ({ name, ...def })),
@@ -330,86 +575,165 @@ async function streamChat(req, res) {
 
     const chat = model.startChat({ history: geminiHistory });
 
-    // ──── [Guard #15 — Function Calling Loop — Max 8 Calls] ────
+    // 12. MULTI-ROUND FUNCTION CALLING LOOP (Max 5 rounds)
     let currentMessage = cleanMessage;
     let isFirstRound = true;
+    let roundCount = 0;
 
-    while (true) {
+    while (roundCount < 5) {
+      if (!isClientConnected || signal.aborted) break;
+
       if (isFirstRound) {
-        // Lần đầu: stream realtime cho user
-        const streamResult = await chat.sendMessageStream(currentMessage);
-        let pendingFunctionCall = null;
-
-        for await (const chunk of streamResult.stream) {
-          const fCalls = chunk.functionCalls();
-          if (fCalls && fCalls.length > 0) { pendingFunctionCall = fCalls[0]; break; }
-          const deltaText = chunk.text();
-          if (deltaText) {
-            const safeChunk = deltaText.replace(/\n\ndata:/g, '\n\n data:');
-            if (!res.writableEnded) {
-              if (!isClientConnected) { break; }
-              if (safeChunk) {
-                const canWrite = res.write(`data: ${JSON.stringify({ text: safeChunk })}\n\n`);
-                if (!canWrite) {
-                  await new Promise((resolve) => {
-                    const cleanup = () => { res.removeListener('drain', onDrain); req.removeListener('close', onClose); resolve(); };
-                    const onDrain = () => cleanup();
-                    const onClose = () => cleanup();
-                    res.on('drain', onDrain); req.on('close', onClose);
-                    if (!isClientConnected) cleanup();
-                  });
-                }
-              }
-              if (!isClientConnected) { break; }
+        let responseResult;
+        let retryCount = 0;
+        while (retryCount < 5) {
+          try {
+            responseResult = await chat.sendMessage(currentMessage);
+            break;
+          } catch (err) {
+            if (err?.message?.includes('429') && retryCount < 4) {
+              retryCount++;
+              aiLogger.warn(requestId, 'AI_RATE_LIMIT_BACKOFF', { retryCount });
+              await new Promise((r) => setTimeout(r, retryCount * 2500));
+            } else {
+              throw err;
             }
           }
         }
 
-        if (!isClientConnected) break;
+        const response = responseResult.response;
+        const fCalls = response.functionCalls ? response.functionCalls() : null;
 
-        if (pendingFunctionCall && !signal.aborted) {
+        if (fCalls && fCalls.length > 0) {
+          const pendingFunctionCall = fCalls[0];
           isFirstRound = false;
-          functionCallCount++;
-          if (functionCallCount > 8) { break; }
+          roundCount++;
+
+          const toolStartTime = Date.now();
           let fnResult;
           try {
-            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${pendingFunctionCall?.name}`);
-            fnResult = await executeFunctionCall(pendingFunctionCall.name, pendingFunctionCall.args, userId, signal);
-            console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
+            fnResult = await executeFunctionCall(
+              pendingFunctionCall.name,
+              pendingFunctionCall.args,
+              userId,
+              signal,
+              toolContext
+            );
+
+            emitToolStructuredEvent(
+              pendingFunctionCall.name,
+              pendingFunctionCall.args,
+              fnResult,
+              res,
+              isClientConnected
+            );
+
+            if (fnResult?.doctors && fnResult.doctors.length > 0) {
+              toolContext.lastDoctorId = fnResult.doctors[0].doctorId;
+              toolContext.lastDoctorName = fnResult.doctors[0].name;
+            } else if (fnResult?.doctorId) {
+              toolContext.lastDoctorId = fnResult.doctorId;
+              toolContext.lastDoctorName = fnResult.doctorName;
+            }
+
+            aiLogger.info(requestId, 'AI_TOOL_SUCCESS', {
+              toolName: pendingFunctionCall.name,
+              latencyMs: Date.now() - toolStartTime,
+            });
           } catch (fnErr) {
-            fnResult = { error: 'Lỗi truy vấn dữ liệu' };
-            console.error('[AI_FN_ERR]', pendingFunctionCall.name, fnErr);
+            aiLogger.error(requestId, 'AI_TOOL_ERROR', {
+              toolName: pendingFunctionCall.name,
+              error: fnErr?.message || fnErr,
+            });
+            fnResult = { status: 'error', message: 'Không thể truy vấn dữ liệu từ hệ thống.' };
           }
-          console.log('🔄 [AI_FUNC_REPLY] Gửi kết quả DB ngược lại cho Gemini...');
-          currentMessage = [{ functionResponse: { name: pendingFunctionCall.name, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
+
+          currentMessage = [{
+            functionResponse: {
+              name: pendingFunctionCall.name,
+              response: typeof fnResult === 'object' ? fnResult : { result: fnResult },
+              ...(pendingFunctionCall.id ? { id: pendingFunctionCall.id } : {}),
+            },
+          }];
           continue;
         }
-        break; // No function call, done
+
+        // Không có tool call -> gửi text trực tiếp về client SSE
+        const initialText = response.text ? response.text() : '';
+        if (initialText && !res.writableEnded && isClientConnected) {
+          const safeText = initialText.replace(/\n\ndata:/g, '\n\n data:');
+          res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
+        }
+        break;
 
       } else {
-        // Các lần sau: dùng sendMessage (không stream) để tránh lỗi Gemini 400
-        const nonStreamResult = await chat.sendMessage(currentMessage);
-        const response = nonStreamResult.response;
-        const nextFCalls = response.functionCalls();
+        let responseResult = null;
+        try {
+          responseResult = await chat.sendMessage(currentMessage);
+        } catch (chatErr) {
+          aiLogger.warn(requestId, 'AI_FOLLOWUP_CHAT_WARN', {
+            error: chatErr?.message || chatErr,
+          });
+          if (!res.writableEnded && isClientConnected) {
+            res.write(`data: ${JSON.stringify({ text: 'Dưới đây là kết quả tra cứu từ hệ thống BookingCare:' })}\n\n`);
+          }
+          break;
+        }
+        const response = responseResult.response;
+        const nextFCalls = response.functionCalls ? response.functionCalls() : null;
 
         if (nextFCalls && nextFCalls.length > 0) {
-          functionCallCount++;
-          if (functionCallCount > 8) { break; }
+          roundCount++;
+          const toolStartTime = Date.now();
           let fnResult;
           try {
-            console.log(`🔍 [AI_FUNC_START] Bắt đầu gọi hàm: ${nextFCalls[0]?.name}`);
-            fnResult = await executeFunctionCall(nextFCalls[0].name, nextFCalls[0].args, userId, signal);
-            console.log('✅ [AI_FUNC_DONE] Đã có kết quả từ DB trả về cho hàm.');
+            fnResult = await executeFunctionCall(
+              nextFCalls[0].name,
+              nextFCalls[0].args,
+              userId,
+              signal,
+              toolContext
+            );
+
+            emitToolStructuredEvent(
+              nextFCalls[0].name,
+              nextFCalls[0].args,
+              fnResult,
+              res,
+              isClientConnected
+            );
+
+            if (fnResult?.doctors && fnResult.doctors.length > 0) {
+              toolContext.lastDoctorId = fnResult.doctors[0].doctorId;
+              toolContext.lastDoctorName = fnResult.doctors[0].name;
+            } else if (fnResult?.doctorId) {
+              toolContext.lastDoctorId = fnResult.doctorId;
+              toolContext.lastDoctorName = fnResult.doctorName;
+            }
+
+            aiLogger.info(requestId, 'AI_TOOL_SUCCESS', {
+              toolName: nextFCalls[0].name,
+              latencyMs: Date.now() - toolStartTime,
+            });
           } catch (fnErr) {
-            fnResult = { error: 'Lỗi truy vấn dữ liệu' };
-            console.error('[AI_FN_ERR]', nextFCalls[0].name, fnErr);
+            aiLogger.error(requestId, 'AI_TOOL_ERROR', {
+              toolName: nextFCalls[0].name,
+              error: fnErr?.message || fnErr,
+            });
+            fnResult = { status: 'error', message: 'Không thể truy vấn dữ liệu từ hệ thống.' };
           }
-          currentMessage = [{ functionResponse: { name: nextFCalls[0].name, response: typeof fnResult === 'object' ? fnResult : { result: fnResult } } }];
+
+          currentMessage = [{
+            functionResponse: {
+              name: nextFCalls[0].name,
+              response: typeof fnResult === 'object' ? fnResult : { result: fnResult },
+              ...(nextFCalls[0].id ? { id: nextFCalls[0].id } : {}),
+            },
+          }];
           continue;
         }
 
-        // Lấy text cuối cùng gửi cho client
-        const finalText = response.text();
+        const finalText = response.text ? response.text() : '';
         if (finalText && !res.writableEnded && isClientConnected) {
           const safeText = finalText.replace(/\n\ndata:/g, '\n\n data:');
           res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
@@ -418,45 +742,122 @@ async function streamChat(req, res) {
       }
     }
 
+    aiLogger.info(requestId, 'AI_REQUEST_COMPLETED', {
+      userId,
+      latencyMs: Date.now() - startTime,
+      rounds: roundCount + 1,
+    });
+
   } catch (error) {
-    console.error('[AI_STREAM_ERROR] LỖI RỒI:', error);
     const status = error.status || 500;
     const errMsg = error.message || '';
 
-    if (status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('BILLING')) {
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: 'Hệ thống bảo trì vui lòng quay lại sau.' })}\n\n`);
-        res.end();
-      }
-      return;
-    }
-    if (status === 400) {
-      console.warn('[AI_400] Gemini bad request:', errMsg);
-      if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ text: 'Dạ, xin lỗi bạn. Hệ thống gặp trục trặc khi xử lý. Vui lòng thử lại nhé!' })}\n\n`);
-      }
+    aiLogger.error(requestId, 'AI_STREAM_ERROR', {
+      status,
+      errorName: error.name,
+      message: errMsg,
+      latencyMs: Date.now() - startTime,
+    });
+
+    if (error.name === 'AbortError' || signal.aborted) {
+      // Aborted — silent
     } else if (status === 429 || errMsg.includes('RESOURCE_EXHAUSTED')) {
-      console.warn('[AI_429] Gemini rate limited:', errMsg);
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, text: 'AI đang quá tải. Vui lòng thử lại sau 30 giây.' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_RATE_LIMITED', text: 'Hệ thống AI đang nhận được rất nhiều yêu cầu. Vui lòng thử lại sau 30 giây.' })}\n\n`);
       }
-    } else if (error.name === 'AbortError' || signal.aborted) {
-      // Silent
-    } else {
-      console.error('[AI_STREAM_ERR]', typeof errMsg === 'string' ? Array.from(errMsg).slice(0, 200).join('') : 'unknown');
+    } else if (status === 400) {
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, text: 'Đã xảy ra lỗi. Vui lòng thử lại.' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Dạ, hệ thống gặp trục trặc khi xử lý định dạng. Vui lòng thử lại nhé.' })}\n\n`);
+      }
+    } else if (status === 403 || errMsg.includes('API_KEY_INVALID')) {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Dịch vụ AI đang bảo trì. Vui lòng quay lại sau.' })}\n\n`);
+      }
+    } else {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, code: 'VISION_PROVIDER_ERROR', text: 'Đã xảy ra sự cố khi kết nối trợ lý AI. Vui lòng thử lại sau.' })}\n\n`);
       }
     }
   } finally {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     if (hardTimeoutHandle) clearTimeout(hardTimeoutHandle);
+
     if (!res.writableEnded) {
       res.write('data: [DONE]\n\n');
       res.end();
+    }
+
+    // Cleanup temporary image file ngay sau khi stream hoàn thành hoặc bị ngắt
+    if (imageId) {
+      cleanupImage(imageId);
+    }
+
+    if (typeof req.releaseAiStreamLock === 'function') {
+      req.releaseAiStreamLock();
     }
     activeStreams = Math.max(0, activeStreams - 1);
   }
 }
 
-module.exports = { streamChat };
+/**
+ * Helper khởi tạo SSE Headers an toàn
+ */
+function initSSEHeaders(res) {
+  if (res.headersSent) return;
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'X-Content-Type-Options': 'nosniff',
+    'Access-Control-Allow-Origin': process.env.URL_REACT || 'http://localhost:3000',
+    'Access-Control-Allow-Credentials': 'true',
+  });
+}
+
+/**
+ * Direct Endpoint for Booking Draft Creation (Phase 05)
+ * POST /api/v1/ai/booking/draft
+ * Authenticated: R3 only
+ */
+async function prepareBookingDraftEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handlePrepareBookingDraft(req.body, userId, null, null);
+    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: result.status === 'success' ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_PREPARE_DRAFT_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+/**
+ * Direct Endpoint for Real Booking Confirmation (Phase 05)
+ * POST /api/v1/ai/booking/confirm
+ * Authenticated: R3 only
+ */
+async function confirmBookingEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const result = await handleConfirmCreateBooking(req.body, userId, null, null);
+    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
+    return res.status(status).json({
+      errCode: result.status === 'success' ? 0 : 1,
+      ...result,
+    });
+  } catch (err) {
+    console.error('[AI_CONFIRM_BOOKING_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
+  }
+}
+
+module.exports = {
+  streamChat,
+  uploadImage,
+  prepareBookingDraftEndpoint,
+  confirmBookingEndpoint,
+};

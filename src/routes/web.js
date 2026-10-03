@@ -232,24 +232,79 @@ const routes = (app) => {
   app.post('/api/v1/reviews', verifyToken, checkPatientRole, reviewController.submitReview);
 
   // ═══════════════════════════════════════════════════════════════════════
-  // [Phase 12] AI Chatbot — SSE Stream
-  // Protected: verifyToken + checkPatientRole (chỉ R3)
+  // [Phase 12 / Phase 02] AI CHATBOT & VISION ROUTES
   // ═══════════════════════════════════════════════════════════════════════
+  const multer = require('multer');
+  const { aiRateLimiter } = require('../middleware/aiRateLimitMiddleware');
+  const aiController = require('../controllers/aiController');
+
+  // Multer upload config for temporary AI images (5MB max)
+  const uploadAiImage = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  });
+
+  // POST /api/v1/ai/upload-image
+  app.post('/api/v1/ai/upload-image',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    (req, res, next) => {
+      uploadAiImage.single('image')(req, res, (err) => {
+        if (err) {
+          if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({
+              errCode: 'IMAGE_TOO_LARGE',
+              message: 'Ảnh vượt quá kích thước cho phép (tối đa 5MB).',
+            });
+          }
+          return res.status(400).json({
+            errCode: 'IMAGE_UPLOAD_FAILED',
+            message: err.message || 'Lỗi tải tệp ảnh lên.',
+          });
+        }
+        next();
+      });
+    },
+    aiController.uploadImage
+  );
+
+  // POST /api/v1/ai/chat
   app.post('/api/v1/ai/chat',
-    // 1. PRE-CHECK BẢO VỆ TUYẾN ĐẦU (Chặn trước khi global body-parser kịp đọc)
+    // 1. PRE-CHECK BẢO VỆ TUYẾN ĐẦU (100KB max for rich chat history & image metadata)
     (req, res, next) => {
       const contentLength = req.headers['content-length'];
-      if (contentLength && parseInt(contentLength, 10) > 10240) {
-        return res.status(413).json({ error: 'Payload quá lớn! Giới hạn tối đa là 10kb.' });
+      if (contentLength && parseInt(contentLength, 10) > 102400) {
+        return res.status(413).json({ error: 'Payload quá lớn! Giới hạn tối đa là 100kb.' });
       }
       next();
     },
     // 2. MIDDLEWARE CỤC BỘ
-    require('express').json({ limit: '10kb' }),
+    require('express').json({ limit: '100kb' }),
     verifyToken,
     checkPatientRole,
+    aiRateLimiter,
     // 3. XỬ LÝ CỐT LÕI
-    require('../controllers/aiController').streamChat
+    aiController.streamChat
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 05] REAL IN-CHAT BOOKING DRAFT & CONFIRMATION
+  // ═══════════════════════════════════════════════════════════════════════
+  // POST /api/v1/ai/booking/draft
+  app.post('/api/v1/ai/booking/draft',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.prepareBookingDraftEndpoint
+  );
+
+  // POST /api/v1/ai/booking/confirm
+  app.post('/api/v1/ai/booking/confirm',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.confirmBookingEndpoint
   );
 
   // ═══════════════════════════════════════════════════════════════════════
