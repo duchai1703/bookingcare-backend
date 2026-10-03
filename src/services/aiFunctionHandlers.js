@@ -2523,6 +2523,39 @@ async function handleInitiatePayment(args, userId, signal) {
   };
 }
 
+/**
+ * Lưu tùy chọn cá nhân an toàn vào bộ nhớ người dùng có kiểm soát (Phase 07)
+ */
+async function handleSaveUserPreference(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { status: 'unauthorized', message: 'Yêu cầu đăng nhập tài khoản bệnh nhân để lưu tùy chọn.' };
+  }
+
+  const { key, value } = args;
+  try {
+    const aiMemoryService = require('./aiMemoryService');
+    const saved = await aiMemoryService.saveUserMemory({
+      userId: safeUserId,
+      key,
+      value,
+      source: 'USER_STATED',
+    });
+    return {
+      status: 'success',
+      key: saved.key,
+      value: saved.value,
+      message: `Đã ghi nhớ tùy chọn '${saved.key}' thành công.`,
+    };
+  } catch (err) {
+    return {
+      status: 'error',
+      code: err.code || 'MEMORY_SAVE_FAILED',
+      message: err.message || 'Không thể lưu tùy chọn.',
+    };
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // TOOL REGISTRY METADATA
@@ -3023,6 +3056,28 @@ const aiToolRegistry = {
     handler: (args, userId, signal) => handleInitiatePayment(args, userId, signal),
   },
 
+  // --- Controlled Memory Tools (Phase 07) ---
+  saveUserPreference: {
+    description: 'Lưu ghi nhớ tùy chọn cá nhân hợp lệ (ngôn ngữ, chuyên khoa yêu thích, cách xưng hô/giao tiếp). TUYỆT ĐỐI KHÔNG lưu bệnh án, triệu chứng hay thông tin nhạy cảm.',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        key: {
+          type: 'string',
+          description: 'Khóa tùy chọn thuộc allowlist: preferredLanguage, preferredSpecialty, preferredClinic, preferredConsultationMode, communicationPreference, preferredTimeSlot',
+        },
+        value: {
+          type: 'string',
+          description: 'Giá trị cần ghi nhớ (tối đa 150 ký tự)',
+        },
+      },
+      required: ['key', 'value'],
+    },
+    handler: (args, userId, signal) => handleSaveUserPreference(args, userId, signal),
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3101,6 +3156,7 @@ module.exports = {
   handleConfirmRescheduleBooking,
   handleGetPaymentStatus,
   handleInitiatePayment,
+  handleSaveUserPreference,
   handleGetMyBookings,
   handleSearchDoctorsBySpecialty,
   handleGetAvailableSchedules,

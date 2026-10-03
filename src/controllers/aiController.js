@@ -23,6 +23,8 @@ const { SYSTEM_PROMPT } = require('../services/aiService');
 const { checkMedicalEmergency, checkPromptInjection } = require('../services/aiSafetyGuard');
 const { classifyIntent, INTENTS } = require('../services/aiIntentRouter');
 const { normalizeGeminiHistory } = require('../services/aiHistoryNormalizer');
+const aiContextService = require('../services/aiContextService');
+const aiMemoryService = require('../services/aiMemoryService');
 const { aiLogger } = require('../utils/aiLogger');
 const {
   saveTemporaryImage,
@@ -648,9 +650,59 @@ async function streamChat(req, res) {
     // CASE B: STANDARD TEXT CHATBOT WITH TOOLS (Phase 01 Flow)
     // ═══════════════════════════════════════════════════════════════════
 
-    // 10. SYSTEM PROMPT AUGMENTATION & GEMINI MODEL INVOCATION
-    const geminiHistory = normalizeGeminiHistory(history);
+    // 10. CONTEXT ASSEMBLY VIA AI_CONTEXT_SERVICE (Phase 07)
+    let lastDoctorId = null;
+    let lastDoctorName = null;
+    if (Array.isArray(history)) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const docList = item.doctorSearchResults?.data?.doctors || item.doctorSearchResults?.doctors;
+        if (Array.isArray(docList) && docList.length > 0) {
+          lastDoctorId = docList[0].doctorId;
+          lastDoctorName = docList[0].name;
+          break;
+        }
+        const slotDoc = item.slotSearchResults?.data?.doctor || item.slotSearchResults?.doctor;
+        if (slotDoc?.doctorId) {
+          lastDoctorId = slotDoc.doctorId;
+          lastDoctorName = slotDoc.name;
+          break;
+        }
+      }
+    }
+    const toolContext = {
+      userQuery: cleanMessage,
+      lastDoctorId,
+      lastDoctorName,
+      history,
+    };
+
+    const contextBundle = await aiContextService.buildAIContext({
+      userId,
+      conversationId: conversationId || null,
+      currentMessage: cleanMessage,
+      intent,
+      rawHistory: history,
+      toolContext,
+    });
+
+    const geminiHistory = contextBundle.geminiHistory;
+
+    // Phát sinh sự kiện KNOWLEDGE_CITATIONS về Frontend nếu RAG tìm thấy nguồn chính thức
+    if (contextBundle.citations && contextBundle.citations.length > 0 && isClientConnected && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
+        event: 'knowledge:citations',
+        type: 'KNOWLEDGE_CITATIONS',
+        data: { citations: contextBundle.citations },
+        timestamp: Date.now(),
+      })}\n\n`);
+    }
+
+    // 11. BUILD GEMINI MODEL WITH REGISTERED TOOLS & AUGMENTED CONTEXT
     let augmentedSystemPrompt = SYSTEM_PROMPT;
+    if (contextBundle.systemInstructionAugmentation) {
+      augmentedSystemPrompt += `\n\n════════════════════════════════════════\nNGỮ CẢNH HỆ THỐNG BỔ SUNG (PHASE 07):\n${contextBundle.systemInstructionAugmentation}\n════════════════════════════════════════`;
+    }
 
     const systemPromptCombined = `${augmentedSystemPrompt}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
 
@@ -1089,6 +1141,69 @@ async function initiatePaymentEndpoint(req, res) {
   }
 }
 
+/**
+ * Direct Endpoint to list Controlled User Memories (Phase 07)
+ * GET /api/v1/ai/memory
+ * Authenticated: R3 only (IDOR protected)
+ */
+async function getMemoriesEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const memories = await aiMemoryService.getUserMemories(userId);
+    return res.status(200).json({
+      errCode: 0,
+      status: 'success',
+      data: memories,
+    });
+  } catch (err) {
+    console.error('[AI_GET_MEMORIES_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi tải bộ nhớ người dùng.' });
+  }
+}
+
+/**
+ * Direct Endpoint to delete a specific memory key (Phase 07)
+ * DELETE /api/v1/ai/memory/:key
+ * Authenticated: R3 only (IDOR protected)
+ */
+async function deleteMemoryEndpoint(req, res) {
+  const userId = req.user?.id;
+  const { key } = req.params;
+  try {
+    const deleted = await aiMemoryService.deleteUserMemory(userId, key);
+    return res.status(200).json({
+      errCode: 0,
+      status: 'success',
+      deleted,
+      message: deleted ? 'Đã xóa tùy chọn thành công.' : 'Không tìm thấy tùy chọn cần xóa.',
+    });
+  } catch (err) {
+    console.error('[AI_DELETE_MEMORY_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi xóa bộ nhớ.' });
+  }
+}
+
+/**
+ * Direct Endpoint to clear all user memories (Phase 07)
+ * POST /api/v1/ai/memory/clear
+ * Authenticated: R3 only (IDOR protected)
+ */
+async function clearMemoriesEndpoint(req, res) {
+  const userId = req.user?.id;
+  try {
+    const clearedCount = await aiMemoryService.clearUserMemories(userId);
+    return res.status(200).json({
+      errCode: 0,
+      status: 'success',
+      clearedCount,
+      message: 'Đã xóa toàn bộ bộ nhớ tùy chọn của bạn.',
+    });
+  } catch (err) {
+    console.error('[AI_CLEAR_MEMORIES_ERR]', err);
+    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi xóa tất cả bộ nhớ.' });
+  }
+}
+
 module.exports = {
   streamChat,
   uploadImage,
@@ -1100,4 +1215,7 @@ module.exports = {
   confirmRescheduleBookingEndpoint,
   getPaymentStatusEndpoint,
   initiatePaymentEndpoint,
+  getMemoriesEndpoint,
+  deleteMemoryEndpoint,
+  clearMemoriesEndpoint,
 };

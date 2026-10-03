@@ -365,6 +365,33 @@ const routes = (app) => {
   );
 
   // ═══════════════════════════════════════════════════════════════════════
+  // [Phase 07] CONTROLLED USER MEMORY ROUTES (Patient R3 only, IDOR protected)
+  // ═══════════════════════════════════════════════════════════════════════
+  // GET /api/v1/ai/memory
+  app.get('/api/v1/ai/memory',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.getMemoriesEndpoint
+  );
+
+  // DELETE /api/v1/ai/memory/:key
+  app.delete('/api/v1/ai/memory/:key',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.deleteMemoryEndpoint
+  );
+
+  // POST /api/v1/ai/memory/clear
+  app.post('/api/v1/ai/memory/clear',
+    verifyToken,
+    checkPatientRole,
+    aiRateLimiter,
+    aiController.clearMemoriesEndpoint
+  );
+
+  // ═══════════════════════════════════════════════════════════════════════
   // [Phase B] CATALOG ROUTES — MedicalCatalog / Medicine / SystemSettings
   // ═══════════════════════════════════════════════════════════════════════
   const catalogController = require('../controllers/catalogController');
