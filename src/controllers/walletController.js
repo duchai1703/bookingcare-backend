@@ -115,8 +115,8 @@ async function handleGetMyTransactions(req, res) {
  */
 async function handleGetAdminLiquidityMetrics(req, res) {
   try {
-    const { reserveRatio } = req.query;
-    const result = await walletService.getAdminLiquidityMetrics({ reserveRatio });
+    const { reserveRatio, reserveFund } = req.query;
+    const result = await walletService.getAdminLiquidityMetrics({ reserveRatio, reserveFund });
     return res.status(200).json(result);
   } catch (error) {
     console.error('Error in handleGetAdminLiquidityMetrics:', error);
@@ -467,6 +467,61 @@ async function handleAdminProcessWithdrawal(req, res) {
   }
 }
 
+/**
+ * [PHASE 5] GET /api/v1/admin/financial/configs
+ * Lấy cấu hình tham số quỹ bảo chứng và an toàn vốn
+ */
+async function handleGetFinancialConfigs(req, res) {
+  try {
+    const result = await walletService.getFinancialConfigs();
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetFinancialConfigs:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 5] PUT /api/v1/admin/financial/configs
+ * Cập nhật cấu hình quỹ bảo chứng và an toàn vốn
+ */
+async function handleUpdateFinancialConfigs(req, res) {
+  try {
+    const { platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours } = req.body;
+    const result = await walletService.updateFinancialConfigs({
+      platformReserveFund,
+      reserveRatioTarget,
+      minWithdrawalAmount,
+      withdrawalSlaHours,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleUpdateFinancialConfigs:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 5] GET /api/v1/admin/financial/cash-flows
+ * Báo cáo chi tiết dòng tiền thu và chi (Inflows & Outflows)
+ */
+async function handleGetFinancialCashFlows(req, res) {
+  try {
+    const { page, limit, streamType, startDate, endDate } = req.query;
+    const result = await walletService.getFinancialCashFlows({
+      page,
+      limit,
+      streamType,
+      startDate,
+      endDate,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetFinancialCashFlows:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetMyWallet,
   handleCreateDepositUrl,
@@ -490,4 +545,8 @@ module.exports = {
   handleGetAdminWalletTransactions,
   handleGetAdminWalletsList,
   handleToggleWalletStatus,
+  // Phase 5 Financial Management Handlers
+  handleGetFinancialConfigs,
+  handleUpdateFinancialConfigs,
+  handleGetFinancialCashFlows,
 };

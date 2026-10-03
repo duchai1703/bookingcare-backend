@@ -9,6 +9,8 @@ const { validateBase64Image } = require('../utils/validateBase64Image');
 const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
 const notificationService = require('./notificationService');
+const doctorSettlementService = require('./doctorSettlementService');
+const refundGovernanceService = require('./refundGovernanceService');
 
 // ===== GET TOP DOCTOR (SRS REQ-PT-003) =====
 const getTopDoctorHome = async (limit) => {
@@ -678,6 +680,16 @@ const sendRemedy = async (data) => {
       }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // [Doctor Settlement Item] Ghi nhận thù lao bác sĩ trạng thái EARNED (T+24h)
+    // ═══════════════════════════════════════════════════════════
+    try {
+      await doctorSettlementService.recordCompletedBookingSettlement(booking.id, t);
+    } catch (settleErr) {
+      console.error('>>> [SETTLEMENT_ERROR] Không ghi nhận được thù lao ca khám:', settleErr.message);
+      // Không để lỗi settlement chặn hoàn tất khám, nhưng ghi log cảnh báo
+    }
+
     // ===== 6. COMMIT — Mở khóa dòng booking =====
     await t.commit();
     // → 🔓 Dòng booking được MỞ KHÓA tại đây
@@ -777,6 +789,22 @@ const cancelBooking = async (data) => {
         },
         transaction: t,
       });
+
+      // ═══════════════════════════════════════════════════════════
+      // [Refund Governance] Bác sĩ hủy ca khám đã xác nhận (S2) → Tự động hoàn tiền 100% cho bệnh nhân
+      // ═══════════════════════════════════════════════════════════
+      try {
+        await refundGovernanceService.createRefundCase({
+          bookingId: booking.id,
+          cancelledByRole: 'DOCTOR',
+          cancelledById: data.doctorId,
+          cancellationReason: 'DOCTOR_UNAVAILABLE',
+          cancellationNote: data.reason || 'Bác sĩ hủy lịch hẹn',
+          externalTransaction: t,
+        });
+      } catch (refundErr) {
+        console.error('>>> [REFUND_CASE_ERROR] Không thể tạo hồ sơ hoàn tiền khi bác sĩ hủy:', refundErr.message);
+      }
     }
 
     // ===== COMMIT — Cả 2 thành công → mở khóa =====

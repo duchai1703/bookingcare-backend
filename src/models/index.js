@@ -775,6 +775,43 @@ if (db.Notification && db.User) {
   });
 }
 
+// ─────────────────────────────────────────────────────
+// 🔗 [Financial Governance] Refund_Case & Doctor_Settlement_Item
+// ─────────────────────────────────────────────────────
+if (db.Refund_Case) {
+  if (db.Booking) {
+    db.Booking.hasOne(db.Refund_Case, { foreignKey: 'bookingId', as: 'refundCase' });
+    db.Refund_Case.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'booking' });
+  }
+  if (db.User) {
+    db.Refund_Case.belongsTo(db.User, { foreignKey: 'patientId', as: 'patient' });
+    db.Refund_Case.belongsTo(db.User, { foreignKey: 'doctorId', as: 'doctor' });
+  }
+  if (db.Wallet_Transaction) {
+    db.Refund_Case.belongsTo(db.Wallet_Transaction, { foreignKey: 'walletTransactionId', as: 'walletTransaction' });
+  }
+}
+
+if (db.Doctor_Settlement_Item) {
+  if (db.Booking) {
+    db.Booking.hasOne(db.Doctor_Settlement_Item, { foreignKey: 'bookingId', as: 'settlementItem' });
+    db.Doctor_Settlement_Item.belongsTo(db.Booking, { foreignKey: 'bookingId', as: 'booking' });
+  }
+  if (db.Doctor_Settlement) {
+    db.Doctor_Settlement.hasMany(db.Doctor_Settlement_Item, { foreignKey: 'settlementId', as: 'items' });
+    db.Doctor_Settlement_Item.belongsTo(db.Doctor_Settlement, { foreignKey: 'settlementId', as: 'settlementBatch' });
+  }
+  if (db.User) {
+    db.Doctor_Settlement_Item.belongsTo(db.User, { foreignKey: 'doctorId', as: 'doctor' });
+  }
+  if (db.Clinic) {
+    db.Doctor_Settlement_Item.belongsTo(db.Clinic, { foreignKey: 'clinicId', as: 'clinic' });
+  }
+  if (db.Wallet_Transaction) {
+    db.Doctor_Settlement_Item.belongsTo(db.Wallet_Transaction, { foreignKey: 'walletTransactionId', as: 'walletTransaction' });
+  }
+}
+
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 

@@ -526,9 +526,34 @@ async function getWalletTransactions(userId, { page = 1, limit = 20, type = null
 /**
  * [PHASE 4] Lấy chỉ số thanh khoản, nợ phải trả, bảo chứng quỹ và kiểm tra đối soát toàn vẹn sổ cái
  */
-async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
+async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
   try {
-    const ratio = Math.max(10, Math.min(100, Number(reserveRatio) || 40));
+    // 0. Đọc cấu hình động từ SystemSetting nếu không được truyền trực tiếp
+    let dynamicRatio = 40;
+    let dynamicReserveFund = 1000000000;
+    try {
+      const dbSettings = await db.SystemSetting.findAll({
+        where: {
+          key: {
+            [Op.in]: ['financial_reserve_ratio_target', 'financial_platform_reserve_fund'],
+          },
+        },
+        raw: true,
+      });
+      dbSettings.forEach((s) => {
+        if (s.key === 'financial_reserve_ratio_target' && !isNaN(Number(s.value))) {
+          dynamicRatio = Number(s.value);
+        }
+        if (s.key === 'financial_platform_reserve_fund' && !isNaN(Number(s.value))) {
+          dynamicReserveFund = Number(s.value);
+        }
+      });
+    } catch (cfgErr) {
+      console.warn('Could not read dynamic financial settings, using defaults', cfgErr.message);
+    }
+
+    const ratioVal = reserveRatio != null && !isNaN(Number(reserveRatio)) ? Number(reserveRatio) : dynamicRatio;
+    const ratio = Math.max(10, Math.min(100, ratioVal));
 
     // 1. Nợ phải trả bệnh nhân (Available Liabilities)
     const patientWallets = await db.Wallet.findAll({
@@ -625,7 +650,10 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
 
     // 4b. Vốn đối ứng bảo chứng thanh khoản ban đầu của sàn (Platform Initial Working Capital Reserve Fund)
     // Đảm bảo khả năng thanh toán chi trả đối soát Bác sĩ và hoàn tiền tức thì cho Bệnh nhân
-    const platformReserveFund = 1000000000; // 1.000.000.000 ₫ (1 tỷ VNĐ)
+    // Đọc động từ SystemSetting, hoặc nhận từ tham số tùy chỉnh mô phỏng
+    const platformReserveFund = reserveFund != null && !isNaN(Number(reserveFund))
+      ? Math.max(0, Number(reserveFund))
+      : dynamicReserveFund;
 
     const totalCashInflow = walletDepositInflow + bookingRevenueInflow + platformReserveFund;
     const totalDepositCount = walletDepositCount + bookingPaidCount;
@@ -690,42 +718,121 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     });
     const totalRefunded = Number(refundTxs[0]?.totalRefunded || 0);
 
-    // 6. Tính toán An toàn Thanh khoản & Khả năng Rút vốn Đầu tư
-    // Dự trữ bắt buộc: khóa cứng không được rút đi đầu tư
+    // 6. Tính toán Nghĩa Vụ Đến Hạn (7 ngày) & Nghĩa Vụ Quá Hạn (Overdue Liabilities)
+    let dueWithdrawalsAmount = 0;
+    let dueWithdrawalsCount = 0;
+    let overdueAmount = 0;
+    let overdueCount = 0;
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    try {
+      if (db.Withdrawal_Request) {
+        // Lệnh rút tiền đang chờ xử lý / đang chi trả
+        const dueW = await db.Withdrawal_Request.findAll({
+          where: { status: { [db.Sequelize.Op.in]: ['PENDING', 'APPROVED', 'PROCESSING'] } },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalDue'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+          ],
+          raw: true,
+        });
+        dueWithdrawalsAmount = Number(dueW[0]?.totalDue || 0);
+        dueWithdrawalsCount = parseInt(dueW[0]?.count || 0, 10);
+
+        // Lệnh rút tiền vượt quá 24h chưa xử lý
+        const overdueW = await db.Withdrawal_Request.findAll({
+          where: {
+            status: { [db.Sequelize.Op.in]: ['PENDING', 'PROCESSING'] },
+            createdAt: { [db.Sequelize.Op.lt]: twentyFourHoursAgo }
+          },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalOverdue'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+          ],
+          raw: true,
+        });
+        overdueAmount += Number(overdueW[0]?.totalOverdue || 0);
+        overdueCount += parseInt(overdueW[0]?.count || 0, 10);
+      }
+    } catch (e) {
+      console.warn('Could not query due withdrawals:', e.message);
+    }
+
+    let dueRefundsAmount = 0;
+    let dueRefundsCount = 0;
+    try {
+      if (db.Refund_Case) {
+        const dueR = await db.Refund_Case.findAll({
+          where: { status: { [db.Sequelize.Op.in]: ['PENDING', 'REVIEWING'] } },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('suggestedAmount')), 0), 'totalDue'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+          ],
+          raw: true,
+        });
+        dueRefundsAmount = Number(dueR[0]?.totalDue || 0);
+        dueRefundsCount = parseInt(dueR[0]?.count || 0, 10);
+      }
+    } catch (e) {
+      console.warn('Could not query due refunds:', e.message);
+    }
+
+    let dueSettlementsAmount = 0;
+    let dueSettlementsCount = 0;
+    try {
+      if (db.Doctor_Settlement_Item) {
+        const dueS = await db.Doctor_Settlement_Item.findAll({
+          where: { status: 'AVAILABLE' },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('doctorEarnings')), 0), 'totalDue'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+          ],
+          raw: true,
+        });
+        dueSettlementsAmount = Number(dueS[0]?.totalDue || 0);
+        dueSettlementsCount = parseInt(dueS[0]?.count || 0, 10);
+      }
+    } catch (e) {
+      console.warn('Could not query due settlements:', e.message);
+    }
+
+    // Tổng nghĩa vụ đến hạn trong 7 ngày tới
+    const totalDue7Days = dueWithdrawalsAmount + dueRefundsAmount + dueSettlementsAmount;
+
+    // Dự trữ thanh khoản mục tiêu an toàn (Policy target)
     const mandatoryReserveCash = Math.round(totalLiabilities * (ratio / 100));
 
-    // Số tiền chủ sàn ĐƯỢC PHÉP rút đi đầu tư mà vẫn đảm bảo 100% khả năng hoàn tiền tức thì:
-    // Net Withdrawable = max(0, Real Net Cash - Mandatory Reserve - Reserved Balance)
-    const netWithdrawableLiquidity = Math.max(
+    // Thặng dư thanh khoản ước tính = Tiền mặt khả dụng - Nghĩa vụ đến hạn 7 ngày - Quỹ dự trữ mục tiêu
+    const estimatedSurplusLiquidity = Math.max(
       0,
-      realNetCashInTreasury - mandatoryReserveCash - patientReservedLiability
+      realNetCashInTreasury - totalDue7Days - mandatoryReserveCash
     );
 
-    // Hệ số bảo chứng thanh khoản (Solvency Ratio = Real Net Cash / Total Liabilities)
-    const solvencyRatio = totalLiabilities > 0
-      ? parseFloat((realNetCashInTreasury / totalLiabilities).toFixed(2))
-      : 2.0;
+    // Tỷ lệ bao phủ thanh khoản 7 ngày (Liquidity Coverage Ratio - LCR 7d)
+    const coverageRatio7d = totalDue7Days > 0
+      ? parseFloat((realNetCashInTreasury / totalDue7Days).toFixed(2))
+      : (realNetCashInTreasury > 0 ? 10.0 : 1.0);
 
-    let solvencyStatus = 'OPTIMAL';
-    let solvencyLabel = 'Bảo chứng Tối ưu & An toàn Tuyệt đối';
-    let solvencyColor = '#10b981';
+    let coverageStatus = 'HEALTHY';
+    let coverageLabel = 'Đủ thanh khoản đáp ứng nghĩa vụ đến hạn 7 ngày';
+    let coverageColor = '#10b981';
 
-    if (solvencyRatio >= 1.3) {
-      solvencyStatus = 'OPTIMAL';
-      solvencyLabel = 'Bảo chứng Tối ưu & An toàn Tuyệt đối';
-      solvencyColor = '#10b981';
-    } else if (solvencyRatio >= 1.1) {
-      solvencyStatus = 'HEALTHY';
-      solvencyLabel = 'Thanh khoản Lành mạnh';
-      solvencyColor = '#0ea5e9';
-    } else if (solvencyRatio >= 1.0) {
-      solvencyStatus = 'WARNING';
-      solvencyLabel = 'Cảnh báo: Tiệm cận Mức Dự trữ Tối thiểu';
-      solvencyColor = '#f59e0b';
+    if (coverageRatio7d >= 1.5) {
+      coverageStatus = 'OPTIMAL';
+      coverageLabel = 'Dung lượng thanh khoản dồi dào (Bao phủ ' + coverageRatio7d + 'x)';
+      coverageColor = '#10b981';
+    } else if (coverageRatio7d >= 1.0) {
+      coverageStatus = 'HEALTHY';
+      coverageLabel = 'Đủ thanh khoản đáp ứng nghĩa vụ đến hạn 7 ngày (' + coverageRatio7d + 'x)';
+      coverageColor = '#0ea5e9';
+    } else if (coverageRatio7d >= 0.8) {
+      coverageStatus = 'WARNING';
+      coverageLabel = 'Cảnh báo: Tiệm cận giới hạn thanh khoản đến hạn (' + coverageRatio7d + 'x)';
+      coverageColor = '#f59e0b';
     } else {
-      solvencyStatus = 'CRITICAL';
-      solvencyLabel = 'Báo động Đỏ: Nguy cơ Thiếu hụt Thanh khoản!';
-      solvencyColor = '#ef4444';
+      coverageStatus = 'CRITICAL';
+      coverageLabel = 'Báo động: Nguy cơ thiếu hụt dòng tiền thanh toán trong 7 ngày!';
+      coverageColor = '#ef4444';
     }
 
     // 7. Kiểm tra Đối soát Tính toàn vẹn Sổ cái (Double-Entry Ledger Integrity Reconciliation)
@@ -776,14 +883,32 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
           totalPatientWallets,
           totalDoctorWallets,
         },
+        liquidityRisk: {
+          reserveRatio: ratio,
+          mandatoryReserveCash,
+          totalDue7Days,
+          dueWithdrawalsAmount,
+          dueWithdrawalsCount,
+          dueRefundsAmount,
+          dueRefundsCount,
+          dueSettlementsAmount,
+          dueSettlementsCount,
+          overdueAmount,
+          overdueCount,
+          coverageRatio7d,
+          estimatedSurplusLiquidity,
+          coverageStatus,
+          coverageLabel,
+          coverageColor,
+        },
         solvency: {
           reserveRatio: ratio,
           mandatoryReserveCash,
-          netWithdrawableLiquidity,
-          solvencyRatio,
-          solvencyStatus,
-          solvencyLabel,
-          solvencyColor,
+          netWithdrawableLiquidity: estimatedSurplusLiquidity,
+          solvencyRatio: coverageRatio7d,
+          solvencyStatus: coverageStatus,
+          solvencyLabel: coverageLabel,
+          solvencyColor: coverageColor,
         },
         reconciliation: {
           sumWalletsBalance,
@@ -1769,6 +1894,181 @@ async function creditDoctorSettlementToWallet(settlement, externalTransaction = 
   }
 }
 
+/**
+ * [PHASE 5] Lấy cấu hình tham số tài chính & quỹ bảo chứng sàn
+ */
+async function getFinancialConfigs() {
+  try {
+    const keys = [
+      'financial_platform_reserve_fund',
+      'financial_reserve_ratio_target',
+      'financial_min_withdrawal_amount',
+      'financial_withdrawal_sla_hours',
+    ];
+    const settings = await db.SystemSetting.findAll({
+      where: { key: { [Op.in]: keys } },
+      raw: true,
+    });
+
+    const configMap = {};
+    settings.forEach((s) => {
+      configMap[s.key] = s.value;
+    });
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        platformReserveFund: Number(configMap['financial_platform_reserve_fund'] || 1000000000),
+        reserveRatioTarget: Number(configMap['financial_reserve_ratio_target'] || 40),
+        minWithdrawalAmount: Number(configMap['financial_min_withdrawal_amount'] || 50000),
+        withdrawalSlaHours: Number(configMap['financial_withdrawal_sla_hours'] || 24),
+        rawSettings: settings,
+      },
+    };
+  } catch (error) {
+    console.error('Error in getFinancialConfigs:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi lấy cấu hình tài chính' };
+  }
+}
+
+/**
+ * [PHASE 5] Cập nhật cấu hình tham số tài chính & quỹ bảo chứng sàn
+ */
+async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours } = {}) {
+  try {
+    const updates = [];
+    if (platformReserveFund != null && !isNaN(Number(platformReserveFund))) {
+      updates.push({
+        key: 'financial_platform_reserve_fund',
+        value: String(Math.max(0, Number(platformReserveFund))),
+        description: 'Vốn đối ứng bảo chứng thanh khoản ban đầu của sàn (VNĐ)',
+      });
+    }
+    if (reserveRatioTarget != null && !isNaN(Number(reserveRatioTarget))) {
+      const r = Math.max(10, Math.min(100, Number(reserveRatioTarget)));
+      updates.push({
+        key: 'financial_reserve_ratio_target',
+        value: String(r),
+        description: 'Tỷ lệ dự trữ bắt buộc an toàn thanh khoản sàn (%)',
+      });
+    }
+    if (minWithdrawalAmount != null && !isNaN(Number(minWithdrawalAmount))) {
+      updates.push({
+        key: 'financial_min_withdrawal_amount',
+        value: String(Math.max(10000, Number(minWithdrawalAmount))),
+        description: 'Hạn mức rút tiền tối thiểu mỗi giao dịch (VNĐ)',
+      });
+    }
+    if (withdrawalSlaHours != null && !isNaN(Number(withdrawalSlaHours))) {
+      updates.push({
+        key: 'financial_withdrawal_sla_hours',
+        value: String(Math.max(1, Number(withdrawalSlaHours))),
+        description: 'Thời gian cam kết giải ngân SLA cho yêu cầu rút tiền (giờ)',
+      });
+    }
+
+    for (const item of updates) {
+      await db.SystemSetting.upsert(item);
+    }
+
+    return await getFinancialConfigs();
+  } catch (error) {
+    console.error('Error in updateFinancialConfigs:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi cập nhật cấu hình tài chính' };
+  }
+}
+
+/**
+ * [PHASE 5] Báo cáo Chi tiết Dòng tiền Thu & Chi (Inflows & Outflows Stream)
+ */
+async function getFinancialCashFlows({ page = 1, limit = 15, streamType = 'ALL', startDate, endDate } = {}) {
+  try {
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const lim = Math.max(1, Math.min(100, parseInt(limit, 10) || 15));
+    const offset = (p - 1) * lim;
+
+    // Filter date condition for transactions
+    const txDateWhere = {};
+    if (startDate && endDate) {
+      txDateWhere.createdAt = {
+        [Op.between]: [moment(startDate).startOf('day').toDate(), moment(endDate).endOf('day').toDate()],
+      };
+    } else if (startDate) {
+      txDateWhere.createdAt = { [Op.gte]: moment(startDate).startOf('day').toDate() };
+    } else if (endDate) {
+      txDateWhere.createdAt = { [Op.lte]: moment(endDate).endOf('day').toDate() };
+    }
+
+    // Direction filter for streamType: 'INFLOW' -> direction CREDIT, 'OUTFLOW' -> direction DEBIT
+    const filterWhere = { ...txDateWhere };
+    if (streamType === 'INFLOW') {
+      filterWhere.direction = 'CREDIT';
+    } else if (streamType === 'OUTFLOW') {
+      filterWhere.direction = 'DEBIT';
+    }
+
+    const { count, rows } = await db.Wallet_Transaction.findAndCountAll({
+      where: filterWhere,
+      order: [['createdAt', 'DESC']],
+      limit: lim,
+      offset,
+      include: [
+        {
+          model: db.Wallet,
+          as: 'wallet',
+          attributes: ['id', 'ownerId', 'walletType'],
+          include: [
+            {
+              model: db.User,
+              as: 'owner',
+              attributes: ['id', 'firstName', 'lastName', 'email', 'roleId'],
+            },
+          ],
+        },
+      ],
+    });
+
+    // Inflows vs Outflows Aggregates
+    const creditAgg = await db.Wallet_Transaction.findAll({
+      where: { direction: 'CREDIT', ...txDateWhere },
+      attributes: [[db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'total']],
+      raw: true,
+    });
+    const debitAgg = await db.Wallet_Transaction.findAll({
+      where: { direction: 'DEBIT', ...txDateWhere },
+      attributes: [[db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'total']],
+      raw: true,
+    });
+
+    const totalInflow = Number(creditAgg[0]?.total || 0);
+    const totalOutflow = Number(debitAgg[0]?.total || 0);
+    const netFlow = totalInflow - totalOutflow;
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        summary: {
+          totalInflow,
+          totalOutflow,
+          netFlow,
+        },
+        pagination: {
+          page: p,
+          limit: lim,
+          total: count,
+          totalPages: Math.ceil(count / lim),
+        },
+        transactions: rows,
+      },
+    };
+  } catch (error) {
+    console.error('Error in getFinancialCashFlows:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi lấy báo cáo dòng tiền thu chi' };
+  }
+}
+
 module.exports = {
   getOrCreateWallet,
   getWalletOverview,
@@ -1789,4 +2089,8 @@ module.exports = {
   getAdminWalletTransactions,
   getAdminWalletsList,
   toggleWalletStatus,
+  // Phase 5 Financial Management & Configs
+  getFinancialConfigs,
+  updateFinancialConfigs,
+  getFinancialCashFlows,
 };

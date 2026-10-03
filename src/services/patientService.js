@@ -11,6 +11,7 @@ const { stripBase64Prefix } = require('../utils/stripBase64Prefix');
 const policyEngineService = require('./policyEngineService');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
 const notificationService = require('./notificationService');
+const refundGovernanceService = require('./refundGovernanceService');
 
 // Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null (tránh vi phạm Foreign Key PostgreSQL)
 const normalizeGender = (gender) => {
@@ -1024,66 +1025,25 @@ const cancelBooking = async (data, patientId) => {
         booking.paymentStatus = 'cancelled';
         booking.refundStatus = 'none';
       } else if (oldStatus === 'S2' || booking.paymentStatus === 'paid') {
-        if (booking.paymentMethod === 'WALLET') {
-          // ═══════════════════════════════════════════════════════════
-          // [Zero-Admin Instant Wallet Refund] Hoàn tiền 100% tự động tức thì vào Ví!
-          // ═══════════════════════════════════════════════════════════
-          const patientWallet = await db.Wallet.findOne({
-            where: { ownerId: booking.patientId, walletType: 'PATIENT' },
-            lock: t.LOCK.UPDATE,
-            transaction: t,
-          });
+        // ═══════════════════════════════════════════════════════════
+        // [Enterprise Refund Governance] Tạo hồ sơ hoàn tiền độc lập + Tính toán tự động
+        // ═══════════════════════════════════════════════════════════
+        const refundRes = await refundGovernanceService.createRefundCase({
+          bookingId: booking.id,
+          cancelledByRole: 'PATIENT',
+          cancelledById: patientId,
+          cancellationReason: data.cancellationReason || (refundCalc.hoursBefore >= 24 ? 'PATIENT_ON_TIME' : 'PATIENT_LATE'),
+          cancellationNote: data.reason || data.cancellationNote || '',
+          externalTransaction: t,
+        });
 
-          // Tìm và nhả khoản giữ tiền (Wallet_Hold)
-          const walletHold = await db.Wallet_Hold.findOne({
-            where: { bookingId: booking.id, status: 'HELD' },
-            lock: t.LOCK.UPDATE,
-            transaction: t,
-          });
-
-          if (walletHold) {
-            await walletHold.update({ status: 'RELEASED' }, { transaction: t });
-          }
-
-          if (patientWallet) {
-            const currentReserved = Number(patientWallet.reservedBalance) || 0;
-            const currentAvail = Number(patientWallet.availableBalance) || 0;
-            const refundAmt = Number(refundCalc.refundAmount) || 0;
-            const holdAmt = walletHold ? Number(walletHold.amount) : Number(booking.bookingPrice);
-
-            const newReserved = Math.max(0, currentReserved - holdAmt);
-            const newAvail = currentAvail + refundAmt;
-
-            await patientWallet.update({
-              reservedBalance: newReserved,
-              availableBalance: newAvail,
-            }, { transaction: t });
-
-            if (refundAmt > 0) {
-              await db.Wallet_Transaction.create({
-                walletId: patientWallet.id,
-                direction: 'CREDIT',
-                amount: refundAmt,
-                balanceAfter: newAvail,
-                transactionType: 'REFUND',
-                referenceType: 'BOOKING',
-                referenceId: String(booking.id),
-                idempotencyKey: `REFUND_WALLET_${booking.id}`,
-                description: `Hoàn tiền tự động ${refundCalc.appliedRefundPercent}% cho ca khám #${booking.id} đã hủy theo chính sách`,
-                status: 'COMPLETED',
-              }, { transaction: t });
-            }
-          }
-
-          booking.paymentStatus = refundCalc.refundAmount > 0 ? 'refunded' : 'cancelled';
-          booking.refundStatus = refundCalc.refundAmount > 0 ? 'completed' : 'none';
-          booking.refundMethod = 'WALLET';
-          booking.refundedAt = now;
-        } else {
-          // VNPay / Chuyển khoản ngân hàng truyền thống
-          booking.paymentStatus = 'refund_pending';
-          booking.refundStatus = (refundCalc.refundAmount > 0) ? 'pending' : 'none';
-          booking.refundMethod = 'BANK_TRANSFER';
+        if (refundRes?.data) {
+          booking.refundRate = refundRes.data.refundRate;
+          booking.refundAmount = refundRes.data.refundAmount;
+          booking.refundStatus = refundRes.data.status === 'COMPLETED' ? 'completed' : (refundRes.data.refundAmount > 0 ? 'pending' : 'none');
+          booking.paymentStatus = refundRes.data.status === 'COMPLETED' ? (refundRes.data.refundAmount > 0 ? 'refunded' : 'cancelled') : 'refund_pending';
+          booking.refundMethod = refundRes.data.refundMethod;
+          booking.refundedAt = refundRes.data.completedAt || now;
         }
       } else {
         booking.refundStatus = 'none';

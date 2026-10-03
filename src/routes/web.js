@@ -13,6 +13,8 @@ const clinicManageController = require('../controllers/clinicManageController');
 const specialtyManageController = require('../controllers/specialtyManageController'); // [Specialty Intelligence Hub]
 const policyController = require('../controllers/policyController'); // [Financial Policy Engine]
 const walletController = require('../controllers/walletController'); // [Financial Wallet & Ledger]
+const refundGovernanceController = require('../controllers/refundGovernanceController'); // [Enterprise Refund Governance]
+const doctorSettlementController = require('../controllers/doctorSettlementController'); // [Doctor Settlement Governance]
 const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
 const familyMemberController = require('../controllers/familyMemberController'); // [Family Members & Dependents]
 const notificationController = require('../controllers/notificationController'); // [Global Notification Engine]
@@ -194,6 +196,8 @@ const routes = (app) => {
   app.post('/api/v1/doctor/wallet/withdrawal', verifyToken, checkDoctorRole, walletController.handleRequestDoctorWithdrawal);
   app.get('/api/v1/doctor/wallet/withdrawals', verifyToken, checkDoctorRole, walletController.handleGetDoctorWithdrawalRequests);
   app.post('/api/v1/doctor/wallet/withdrawals/:id/cancel', verifyToken, checkDoctorRole, walletController.handleCancelDoctorWithdrawalRequest);
+  // [Doctor Settlement Governance] Bảng kê thù lao ca khám
+  app.get('/api/v1/doctor/settlement-statement', verifyToken, checkDoctorRole, doctorSettlementController.handleGetDoctorSettlementStatement);
 
   // [SLA Policy Public / Patient Preview]
   app.get('/api/v1/policies/withdrawal-sla', policyController.getActiveWithdrawalPolicy);
@@ -323,6 +327,26 @@ const routes = (app) => {
   // [Phase 3] Admin Withdrawal Management APIs
   app.get('/api/v1/admin/financial/withdrawals', verifyToken, checkAdminRole, walletController.handleGetAdminWithdrawalRequests);
   app.post('/api/v1/admin/financial/withdrawals/:id/process', verifyToken, checkAdminRole, walletController.handleAdminProcessWithdrawal);
+  // [Phase 5] Admin Financial Management, Dynamic Configs & Cash Flows
+  app.get('/api/v1/admin/financial/configs', verifyToken, checkAdminRole, walletController.handleGetFinancialConfigs);
+  app.put('/api/v1/admin/financial/configs', verifyToken, checkAdminRole, walletController.handleUpdateFinancialConfigs);
+  app.get('/api/v1/admin/financial/cash-flows', verifyToken, checkAdminRole, walletController.handleGetFinancialCashFlows);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Enterprise Refund Governance] Quản trị Hoàn tiền Bệnh nhân — Admin R1 & Patient R3
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/financial/refund-cases', verifyToken, checkAdminRole, refundGovernanceController.handleGetAdminRefundCases);
+  app.get('/api/v1/admin/financial/refund-cases/:id', verifyToken, checkAdminRole, refundGovernanceController.handleGetRefundCaseDetail);
+  app.post('/api/v1/admin/financial/refund-cases/:id/review', verifyToken, checkAdminRole, refundGovernanceController.handleProcessAdminReviewRefund);
+  app.get('/api/v1/patient/refund-cases/:bookingId', verifyToken, refundGovernanceController.handleGetPatientRefundCaseByBooking);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor Settlement Governance] Quyết toán Thù lao Bác sĩ — Admin R1
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/admin/financial/doctor-settlements', verifyToken, checkAdminRole, doctorSettlementController.handleGetAdminSettlementItems);
+  app.post('/api/v1/admin/financial/doctor-settlements/payout', verifyToken, checkAdminRole, doctorSettlementController.handlePayoutDoctorSettlements);
+  app.post('/api/v1/admin/financial/doctor-settlements/release-eligible', verifyToken, checkAdminRole, doctorSettlementController.handleReleaseEligibleSettlements);
+  app.post('/api/v1/admin/financial/doctor-settlements/unlock', verifyToken, checkAdminRole, doctorSettlementController.handleUnlockSingleSettlement);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Financial Policy Engine & Flexible SLA Audit Subsystem] — Admin R1

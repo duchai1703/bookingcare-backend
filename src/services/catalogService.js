@@ -102,6 +102,12 @@ const DEFAULT_SYSTEM_SETTINGS = [
   // 4. An toàn & Bảo trì Hệ thống
   { key: 'maintenance_mode', value: 'false', description: 'Kích hoạt chế độ bảo trì toàn hệ thống' },
   { key: 'session_timeout_hours', value: '2', description: 'Thời hạn hiệu lực của phiên đăng nhập quản trị (giờ)' },
+
+  // 5. Tham số Tài chính & Quỹ Bảo chứng Sàn (Dynamic Financial Parameters)
+  { key: 'financial_platform_reserve_fund', value: '1000000000', description: 'Vốn đối ứng bảo chứng thanh khoản ban đầu của sàn (VNĐ)' },
+  { key: 'financial_reserve_ratio_target', value: '40', description: 'Tỷ lệ dự trữ bắt buộc an toàn thanh khoản sàn (%)' },
+  { key: 'financial_min_withdrawal_amount', value: '50000', description: 'Hạn mức rút tiền tối thiểu mỗi giao dịch (VNĐ)' },
+  { key: 'financial_withdrawal_sla_hours', value: '24', description: 'Thời gian cam kết giải ngân SLA cho yêu cầu rút tiền (giờ)' },
 ];
 
 const LEGACY_KEYS = [
