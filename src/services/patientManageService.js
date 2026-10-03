@@ -488,7 +488,18 @@ const getAdminPatientWorkspace = async (patientId) => {
 const processAdminRefund = async (data = {}) => {
   const t = await db.sequelize.transaction();
   try {
-    const { bookingId, refundRate, refundAmount, bankName, accountNumber, accountHolder, notes, adminName } = data;
+    const {
+      bookingId,
+      refundRate,
+      refundAmount,
+      refundChannel = 'WALLET', // 'WALLET' | 'BANK_TRANSFER'
+      bankName,
+      accountNumber,
+      accountHolder,
+      transactionRef = '',
+      notes,
+      adminName
+    } = data;
 
     if (!bookingId) {
       await t.rollback();
@@ -511,21 +522,99 @@ const processAdminRefund = async (data = {}) => {
       return { errCode: 3, errMessage: 'Chỉ có thể hoàn tiền cho ca khám đã hủy (S4)' };
     }
 
-    const finalAmount = refundAmount !== undefined ? parseInt(refundAmount, 10) : booking.refundAmount;
-    const finalRate = refundRate !== undefined ? parseFloat(refundRate) : booking.refundRate;
+    if (booking.refundStatus === 'refunded') {
+      await t.rollback();
+      return { errCode: 4, errMessage: 'Ca khám này đã được xử lý hoàn tiền trước đó!' };
+    }
+
+    const finalAmount = refundAmount !== undefined ? parseInt(refundAmount, 10) : (booking.refundAmount || 0);
+    const finalRate = refundRate !== undefined ? parseFloat(refundRate) : (booking.refundRate || 100);
+
+    if (finalAmount <= 0) {
+      await t.rollback();
+      return { errCode: 5, errMessage: 'Số tiền hoàn phải lớn hơn 0 VNĐ!' };
+    }
+
+    // 1. Kênh Hoàn vào Ví BookingCare (WALLET)
+    if (refundChannel === 'WALLET') {
+      const [wallet] = await db.Wallet.findOrCreate({
+        where: { ownerId: booking.patientId, walletType: 'PATIENT' },
+        defaults: {
+          ownerId: booking.patientId,
+          walletType: 'PATIENT',
+          currency: 'VND',
+          availableBalance: 0.0,
+          reservedBalance: 0.0,
+          status: 'ACTIVE',
+        },
+        transaction: t,
+      });
+
+      const lockedWallet = await db.Wallet.findOne({
+        where: { id: wallet.id },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      const currentAvail = Number(lockedWallet.availableBalance) || 0;
+      const newAvail = currentAvail + finalAmount;
+
+      await lockedWallet.update({ availableBalance: newAvail }, { transaction: t });
+
+      // Bút toán Sổ cái kép Bất biến (Double-Entry Ledger CREDIT)
+      await db.Wallet_Transaction.create({
+        walletId: lockedWallet.id,
+        direction: 'CREDIT',
+        amount: finalAmount,
+        balanceAfter: newAvail,
+        transactionType: 'REFUND',
+        referenceType: 'BOOKING',
+        referenceId: String(booking.id),
+        idempotencyKey: `ADMIN_REFUND_WALLET_${booking.id}_${Date.now()}`,
+        description: `Admin hoàn tiền ca khám #${booking.id} (${finalRate}%) vào Ví BookingCare`,
+        status: 'COMPLETED',
+      }, { transaction: t });
+    }
+
+    // 2. Kênh Chuyển khoản Ngân hàng (BANK_TRANSFER)
+    if (refundChannel === 'BANK_TRANSFER') {
+      if (bankName) booking.bankName = bankName;
+      if (accountNumber) booking.bankAccountNumber = accountNumber;
+      if (accountHolder) booking.bankAccountName = accountHolder;
+    }
 
     booking.refundAmount = finalAmount;
     booking.refundRate = finalRate;
     booking.refundStatus = 'refunded';
     booking.paymentStatus = 'refunded';
-    if (bankName) booking.bankName = bankName;
-    if (accountNumber) booking.bankAccountNumber = accountNumber;
-    if (accountHolder) booking.bankAccountName = accountHolder;
+    booking.refundMethod = refundChannel;
+    booking.refundedAt = new Date();
 
     await booking.save({ transaction: t });
     await t.commit();
 
     const refundReceiptCode = `RF-${Date.now().toString().slice(-6)}`;
+
+    // Gửi thông báo đến Bệnh nhân
+    try {
+      const notificationService = require('./notificationService');
+      await notificationService.createAndSendNotification({
+        userId: booking.patientId,
+        type: 'BOOKING_REFUND_COMPLETED',
+        title: 'Hoàn tiền ca khám thành công',
+        message: refundChannel === 'WALLET'
+          ? `Hệ thống đã hoàn ${finalAmount.toLocaleString('vi-VN')} ₫ vào Ví BookingCare của bạn cho ca khám #${booking.id}.`
+          : `Hệ thống đã hoàn tiền ${finalAmount.toLocaleString('vi-VN')} ₫ về tài khoản ngân hàng ${booking.bankAccountNumber} (${booking.bankName}) cho ca khám #${booking.id}. Mã GD: ${transactionRef || 'N/A'}.`,
+        metadata: {
+          bookingId: booking.id,
+          refundAmount: finalAmount,
+          refundChannel,
+          receiptCode: refundReceiptCode,
+        },
+      });
+    } catch (notifErr) {
+      console.warn('Lỗi gửi thông báo hoàn tiền:', notifErr.message);
+    }
 
     return {
       errCode: 0,
@@ -535,6 +624,7 @@ const processAdminRefund = async (data = {}) => {
         bookingId: booking.id,
         refundAmount: finalAmount,
         refundRate: finalRate,
+        refundChannel,
         bankName: booking.bankName,
         accountNumber: booking.bankAccountNumber,
         accountHolder: booking.bankAccountName,
@@ -546,7 +636,7 @@ const processAdminRefund = async (data = {}) => {
   } catch (err) {
     await t.rollback();
     console.error('>>> processAdminRefund error:', err);
-    return { errCode: -1, errMessage: 'Lỗi khi xử lý giao dịch hoàn tiền' };
+    return { errCode: -1, errMessage: 'Lỗi khi xử lý giao dịch hoàn tiền: ' + err.message };
   }
 };
 

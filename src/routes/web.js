@@ -314,6 +314,7 @@ const routes = (app) => {
   // [Phase 4] FINANCIAL LIQUIDITY & EXECUTIVE LEDGER CONSOLE — Admin R1
   // ═══════════════════════════════════════════════════════════════════════
   app.get('/api/v1/admin/financial/liquidity-metrics', verifyToken, checkAdminRole, walletController.handleGetAdminLiquidityMetrics);
+  app.post('/api/v1/admin/financial/recalibrate-ledger', verifyToken, checkAdminRole, walletController.handleRecalibrateLedgerBaseline);
   app.get('/api/v1/admin/financial/ledger-transactions', verifyToken, checkAdminRole, walletController.handleGetAdminWalletTransactions);
   app.get('/api/v1/admin/financial/wallets', verifyToken, checkAdminRole, walletController.handleGetAdminWalletsList);
   app.post('/api/v1/admin/financial/wallets/:id/toggle-status', verifyToken, checkAdminRole, walletController.handleToggleWalletStatus);

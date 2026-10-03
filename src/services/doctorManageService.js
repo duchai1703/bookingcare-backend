@@ -614,12 +614,51 @@ const createDoctorPayout = async ({
       return { errCode: 2, errMessage: 'Không tìm thấy thông tin bác sĩ!' };
     }
 
+    const [stats] = await db.sequelize.query(
+      `SELECT 
+         COALESCE(SUM(CASE WHEN "statusId" = 'S3' OR "paymentStatus" = 'paid' THEN "bookingPrice" ELSE 0 END), 0)::FLOAT AS "grossRevenue",
+         COALESCE(SUM("platformFee"), 0)::FLOAT AS "totalPlatformFeeFrozen",
+         COALESCE(SUM("doctorShare"), 0)::FLOAT AS "totalDoctorShareFrozen"
+       FROM "Bookings"
+       WHERE "doctorId" = :doctorId`,
+      { replacements: { doctorId: docId }, type: db.sequelize.QueryTypes.SELECT }
+    );
+
+    const grossRevenue = parseFloat(stats?.grossRevenue || 0);
+    const frozenPlatform = parseFloat(stats?.totalPlatformFeeFrozen || 0);
+    const frozenDoctor = parseFloat(stats?.totalDoctorShareFrozen || 0);
+    const commissionRate = parseFloat(doctorInfo.commissionRate) || 15.0;
+    const platformFee = frozenPlatform > 0 ? Math.round(frozenPlatform) : Math.round(grossRevenue * (commissionRate / 100));
+    const netRevenue = frozenDoctor > 0 ? Math.round(frozenDoctor) : Math.max(0, grossRevenue - platformFee);
+
+    const settlements = await db.Doctor_Settlement.findAll({
+      where: { doctorId: docId, payoutStatus: 'paid' },
+    });
+    const totalPaid = settlements.reduce((sum, s) => sum + (parseFloat(s.netPayout) || 0), 0);
+    const pendingPayout = Math.max(0, netRevenue - totalPaid);
+
+    if (pendingPayout <= 0) {
+      return {
+        errCode: 10,
+        errMessage: 'Bác sĩ hiện không có thù lao chờ quyết toán (Số dư chờ nhận: 0 VNĐ)!',
+        data: { pendingPayout: 0, totalPaid, netRevenue }
+      };
+    }
+
+    if (parsedAmount > pendingPayout) {
+      return {
+        errCode: 11,
+        errMessage: `Số tiền thanh toán (${parsedAmount.toLocaleString('vi-VN')} ₫) vượt quá số dư chờ nhận (${pendingPayout.toLocaleString('vi-VN')} ₫)!`,
+        data: { pendingPayout, totalPaid, netRevenue }
+      };
+    }
+
     const settlement = await db.Doctor_Settlement.create({
       doctorId: docId,
       periodFrom: periodFrom ? new Date(periodFrom) : null,
       periodTo: periodTo ? new Date(periodTo) : null,
       grossRevenue: parsedAmount,
-      commissionRate: parseFloat(doctorInfo.commissionRate) || 15.0,
+      commissionRate,
       platformFee: 0,
       netPayout: parsedAmount,
       payoutStatus: 'paid',
@@ -640,10 +679,32 @@ const createDoctorPayout = async ({
       }
     }
 
+    // Gửi thông báo đến Bác sĩ
+    try {
+      const notificationService = require('./notificationService');
+      await notificationService.createAndSendNotification({
+        userId: docId,
+        type: 'DOCTOR_PAYOUT_RECEIVED',
+        title: 'Quyết toán thù lao thành công',
+        message: `Hệ thống đã chuyển khoản ${parsedAmount.toLocaleString('vi-VN')} ₫ vào ${paymentMethod === 'wallet' ? 'Ví Bác sĩ nội bộ' : 'Tài khoản ngân hàng của bạn'}. Mã GD: ${settlement.transactionRef}.`,
+        metadata: {
+          settlementId: settlement.id,
+          amount: parsedAmount,
+          paymentMethod,
+          transactionRef: settlement.transactionRef,
+        },
+      });
+    } catch (notifErr) {
+      console.warn('Lỗi gửi thông báo quyết toán:', notifErr.message);
+    }
+
     return {
       errCode: 0,
       message: 'Ghi nhận thanh toán tiền cho bác sĩ thành công!',
-      data: settlement,
+      data: {
+        ...settlement.toJSON(),
+        remainingPendingPayout: Math.max(0, pendingPayout - parsedAmount)
+      },
     };
   } catch (error) {
     console.error('Error in createDoctorPayout:', error);

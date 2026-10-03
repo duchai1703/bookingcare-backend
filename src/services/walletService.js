@@ -545,6 +545,19 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     const patientReservedLiability = Number(patientWallets[0]?.totalReserved || 0);
     const totalPatientWallets = parseInt(patientWallets[0]?.walletCount || 0, 10);
 
+    // 1b. Nợ phải trả trong Ví Bác sĩ (Doctor Wallet Liabilities)
+    const doctorWallets = await db.Wallet.findAll({
+      where: { walletType: 'DOCTOR' },
+      attributes: [
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('availableBalance')), 0), 'totalAvailable'],
+        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('reservedBalance')), 0), 'totalReserved'],
+        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'walletCount'],
+      ],
+      raw: true,
+    });
+    const doctorWalletLiability = Number(doctorWallets[0]?.totalAvailable || 0) + Number(doctorWallets[0]?.totalReserved || 0);
+    const totalDoctorWallets = parseInt(doctorWallets[0]?.walletCount || 0, 10);
+
     // 2. Ký quỹ giữ chỗ ca khám đang chờ thực hiện (Active Escrow Holds)
     const activeHolds = await db.Wallet_Hold.findAll({
       where: { status: 'HELD' },
@@ -575,7 +588,7 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     }
 
     // Tổng nghĩa vụ nợ của toàn hệ thống (Total Liabilities)
-    const totalLiabilities = patientAvailableLiability + patientReservedLiability + doctorPayables;
+    const totalLiabilities = patientAvailableLiability + patientReservedLiability + doctorWalletLiability + doctorPayables;
 
     // 4. Dòng tiền thực tế nạp vào hệ thống qua cổng thanh toán (Total Inflow Cash)
     const depositTransactions = await db.Payment_Transaction.findAll({
@@ -588,6 +601,47 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     });
     const totalCashInflow = Number(depositTransactions[0]?.totalDeposited || 0);
     const totalDepositCount = parseInt(depositTransactions[0]?.depositCount || 0, 10);
+
+    // 4b. Dòng tiền thực tế chi trả ra khỏi hệ thống (Total Cash Outflow)
+    let totalDoctorCashPaid = 0;
+    let totalDoctorPayoutCount = 0;
+    try {
+      const docPayoutStats = await db.Doctor_Settlement.findAll({
+        where: { payoutStatus: 'paid', paymentMethod: 'bank_transfer' },
+        attributes: [
+          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('netPayout')), 0), 'totalPaid'],
+          [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'payoutCount'],
+        ],
+        raw: true,
+      });
+      totalDoctorCashPaid = Number(docPayoutStats[0]?.totalPaid || 0);
+      totalDoctorPayoutCount = parseInt(docPayoutStats[0]?.payoutCount || 0, 10);
+    } catch (e) {
+      totalDoctorCashPaid = 0;
+    }
+
+    let totalPatientWithdrawalPaid = 0;
+    let totalWithdrawalCount = 0;
+    try {
+      if (db.Withdrawal_Request) {
+        const withdrawalStats = await db.Withdrawal_Request.findAll({
+          where: { status: 'TRANSFERRED' },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalWithdrawn'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'count'],
+          ],
+          raw: true,
+        });
+        totalPatientWithdrawalPaid = Number(withdrawalStats[0]?.totalWithdrawn || 0);
+        totalWithdrawalCount = parseInt(withdrawalStats[0]?.count || 0, 10);
+      }
+    } catch (e) {
+      totalPatientWithdrawalPaid = 0;
+    }
+
+    const totalCashOutflow = totalDoctorCashPaid + totalPatientWithdrawalPaid;
+    // Số tiền mặt thực tế còn tồn trong két tài khoản ngân hàng của Sàn
+    const realNetCashInTreasury = Math.max(0, totalCashInflow - totalCashOutflow);
 
     // 5. Doanh thu dịch vụ khám đã hoàn tất (Captured) & Tiền đã hoàn trả vào ví (Refunded)
     const capturedHolds = await db.Wallet_Hold.findAll({
@@ -613,15 +667,15 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     const mandatoryReserveCash = Math.round(totalLiabilities * (ratio / 100));
 
     // Số tiền chủ sàn ĐƯỢC PHÉP rút đi đầu tư mà vẫn đảm bảo 100% khả năng hoàn tiền tức thì:
-    // Net Withdrawable = max(0, Total Inflow - Mandatory Reserve - Reserved Balance)
+    // Net Withdrawable = max(0, Real Net Cash - Mandatory Reserve - Reserved Balance)
     const netWithdrawableLiquidity = Math.max(
       0,
-      totalCashInflow - mandatoryReserveCash - patientReservedLiability
+      realNetCashInTreasury - mandatoryReserveCash - patientReservedLiability
     );
 
-    // Hệ số bảo chứng thanh khoản (Solvency Ratio = Cash Inflow / Total Liabilities)
+    // Hệ số bảo chứng thanh khoản (Solvency Ratio = Real Net Cash / Total Liabilities)
     const solvencyRatio = totalLiabilities > 0
-      ? parseFloat((totalCashInflow / totalLiabilities).toFixed(2))
+      ? parseFloat((realNetCashInTreasury / totalLiabilities).toFixed(2))
       : 2.0;
 
     let solvencyStatus = 'OPTIMAL';
@@ -664,7 +718,7 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
     });
 
     const netLedgerBalance = ledgerCredits - ledgerDebits;
-    const sumWalletsBalance = patientAvailableLiability + patientReservedLiability;
+    const sumWalletsBalance = patientAvailableLiability + patientReservedLiability + doctorWalletLiability;
     const discrepancy = Math.abs(sumWalletsBalance - netLedgerBalance);
     const isLedgerBalanced = discrepancy < 0.05;
 
@@ -675,15 +729,21 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
         summary: {
           patientAvailableLiability,
           patientReservedLiability,
+          doctorWalletLiability,
           escrowActiveHolds,
           activeHoldCount,
           doctorPayables,
           totalLiabilities,
           totalCashInflow,
           totalDepositCount,
+          totalCashOutflow,
+          totalDoctorCashPaid,
+          totalPatientWithdrawalPaid,
+          realNetCashInTreasury,
           totalCapturedRevenue,
           totalRefunded,
           totalPatientWallets,
+          totalDoctorWallets,
         },
         solvency: {
           reserveRatio: ratio,
@@ -708,9 +768,90 @@ async function getAdminLiquidityMetrics({ reserveRatio = 40 } = {}) {
   } catch (error) {
     console.error('Error in getAdminLiquidityMetrics:', error);
     return {
-      errCode: 1,
-      errMessage: error.message || 'Lỗi khi tính toán chỉ số thanh khoản',
+      errCode: -1,
+      errMessage: 'Lỗi khi tính toán chỉ số thanh khoản: ' + error.message,
     };
+  }
+}
+
+/**
+ * [PHASE 4] POST /api/v1/admin/financial/recalibrate-ledger
+ * Tự động hiệu chuẩn và tạo bút toán đối ứng chuẩn hóa Sổ cái kép (Ledger Baseline Re-calibration)
+ */
+async function recalibrateLedgerBaseline() {
+  const t = await db.sequelize.transaction();
+  try {
+    const allWallets = await db.Wallet.findAll({
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    let totalAdjusted = 0;
+    let calibratedWalletsCount = 0;
+
+    for (const wallet of allWallets) {
+      const walletTotal = Number(wallet.availableBalance || 0) + Number(wallet.reservedBalance || 0);
+      if (walletTotal <= 0) continue;
+
+      const txStats = await db.Wallet_Transaction.findAll({
+        where: { walletId: wallet.id },
+        attributes: [
+          'direction',
+          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalAmount'],
+        ],
+        group: ['direction'],
+        raw: true,
+        transaction: t,
+      });
+
+      let credits = 0;
+      let debits = 0;
+      txStats.forEach((st) => {
+        if (st.direction === 'CREDIT') credits = Number(st.totalAmount || 0);
+        if (st.direction === 'DEBIT') debits = Number(st.totalAmount || 0);
+      });
+
+      const netTx = credits - debits;
+      const diff = walletTotal - netTx;
+
+      if (Math.abs(diff) >= 0.05) {
+        const direction = diff > 0 ? 'CREDIT' : 'DEBIT';
+        const adjustmentAmount = Math.abs(diff);
+
+        await db.Wallet_Transaction.create(
+          {
+            walletId: wallet.id,
+            direction,
+            amount: adjustmentAmount,
+            balanceAfter: Number(wallet.availableBalance || 0),
+            transactionType: 'INITIAL_BALANCE',
+            referenceType: 'SYSTEM_CALIBRATION',
+            referenceId: `CALIB_W${wallet.id}_${Date.now()}`,
+            idempotencyKey: `CALIB_KEY_W${wallet.id}`,
+            description: `Bút toán đối ứng hiệu chuẩn số dư đầu kỳ chuẩn hóa Sổ cái kép (Ledger Baseline Calibration)`,
+            status: 'COMPLETED',
+          },
+          { transaction: t }
+        );
+
+        totalAdjusted += adjustmentAmount;
+        calibratedWalletsCount++;
+      }
+    }
+
+    await t.commit();
+    return {
+      errCode: 0,
+      message: `Hiệu chuẩn thành công ${calibratedWalletsCount} ví với tổng bút toán đối ứng ${totalAdjusted.toLocaleString('vi-VN')} ₫. Sổ cái kép đã cân bằng!`,
+      data: {
+        calibratedWalletsCount,
+        totalAdjusted,
+      },
+    };
+  } catch (error) {
+    await t.rollback();
+    console.error('Error in recalibrateLedgerBaseline:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi hiệu chuẩn sổ cái: ' + error.message };
   }
 }
 
@@ -1613,6 +1754,7 @@ module.exports = {
   creditDoctorSettlementToWallet,
   // Phase 4 Admin Services
   getAdminLiquidityMetrics,
+  recalibrateLedgerBaseline,
   getAdminWalletTransactions,
   getAdminWalletsList,
   toggleWalletStatus,

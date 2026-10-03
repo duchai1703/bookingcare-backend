@@ -125,6 +125,20 @@ async function handleGetAdminLiquidityMetrics(req, res) {
 }
 
 /**
+ * [PHASE 4] POST /api/v1/admin/financial/recalibrate-ledger
+ * Hiệu chuẩn số dư đầu kỳ Sổ cái kép (Ledger Calibration)
+ */
+async function handleRecalibrateLedgerBaseline(req, res) {
+  try {
+    const result = await walletService.recalibrateLedgerBaseline();
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleRecalibrateLedgerBaseline:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ khi hiệu chuẩn sổ cái' });
+  }
+}
+
+/**
  * [PHASE 4] GET /api/v1/admin/financial/ledger-transactions
  * Lấy danh sách giao dịch Sổ cái toàn sàn (Audit Trail & Ledger Explorer)
  */
@@ -422,6 +436,7 @@ module.exports = {
   handleAdminProcessWithdrawal,
   // Phase 4 Admin Handlers
   handleGetAdminLiquidityMetrics,
+  handleRecalibrateLedgerBaseline,
   handleGetAdminWalletTransactions,
   handleGetAdminWalletsList,
   handleToggleWalletStatus,
