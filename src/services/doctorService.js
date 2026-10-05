@@ -970,7 +970,7 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
         {
           model: db.User,
           as: 'patientData',
-          attributes: ['id', 'email', 'firstName', 'lastName', 'address', 'gender', 'phoneNumber', 'image'],
+          attributes: ['id', 'email', 'firstName', 'lastName', 'address', 'gender', 'birthday', 'phoneNumber', 'image'],
           include: [
             { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
           ],
@@ -1017,16 +1017,33 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
 
     const plain = booking.toJSON ? booking.toJSON() : booking;
 
-    // Tính tuổi bệnh nhân (ưu tiên ngày sinh hồ sơ người thân)
+    // Tính tuổi bệnh nhân chính xác (ưu tiên ngày sinh hồ sơ người thân nếu khám cho người thân, sau đó đến tài khoản bệnh nhân)
     let patientAge = null;
-    const effectiveBirthday = plain.familyMemberData?.birthday || plain.patientBirthday;
+    const isFamily = plain.bookingFor === 'FAMILY' && plain.familyMemberData;
+    const effectiveBirthday = isFamily
+      ? (plain.familyMemberData?.birthday || plain.patientBirthday)
+      : (plain.patientData?.birthday || plain.patientBirthday);
+
     if (effectiveBirthday) {
-      const birthYear = parseInt(effectiveBirthday.substring(0, 4), 10);
-      if (!isNaN(birthYear)) {
+      const birthYear = parseInt(String(effectiveBirthday).substring(0, 4), 10);
+      if (!isNaN(birthYear) && birthYear > 1900 && birthYear <= new Date().getFullYear()) {
         patientAge = new Date().getFullYear() - birthYear;
       }
     }
-    if (!patientAge) patientAge = 35; // Giá trị ngầm định nếu chưa có năm sinh
+
+    // Chuẩn hóa giới tính và tên bệnh nhân thực tế
+    const effectiveGenderKey = isFamily
+      ? (plain.familyMemberData?.gender || plain.patientGender || plain.patientData?.gender)
+      : (plain.patientGender || plain.patientData?.gender);
+    const genderVi = (effectiveGenderKey === 'G1' || effectiveGenderKey === 'M' || effectiveGenderKey === 'MALE')
+      ? 'Nam'
+      : (effectiveGenderKey === 'G2' || effectiveGenderKey === 'F' || effectiveGenderKey === 'FEMALE')
+      ? 'Nữ'
+      : (plain.patientData?.genderData?.valueVi || 'Chưa cập nhật');
+
+    const effectivePatientName = isFamily
+      ? (plain.familyMemberData?.fullName || `${plain.patientData?.lastName || ''} ${plain.patientData?.firstName || ''}`.trim())
+      : `${plain.patientData?.lastName || ''} ${plain.patientData?.firstName || ''}`.trim();
 
     // Lấy lịch sử các lần khám trước đó của bệnh nhân
     const historyBookings = await db.Booking.findAll({
@@ -1077,6 +1094,8 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
       data: {
         ...plain,
         patientAge,
+        patientGenderVi: genderVi,
+        effectivePatientName,
         patientCode: `PT-${String(plain.patientId).padStart(5, '0')}`,
         bookingCode: `#BK-${plain.id}`,
         patientHistory,

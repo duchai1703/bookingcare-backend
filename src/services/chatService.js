@@ -507,11 +507,12 @@ class ChatService {
               {
                 model: db.BookingMedicine,
                 as: 'bookingMedicines',
+                attributes: ['id', 'quantity', 'dosage', 'usageInstructions'],
                 include: [
                   {
                     model: db.Medicine,
                     as: 'medicineData',
-                    attributes: ['id', 'name', 'unit', 'usageInstructions'],
+                    attributes: ['id', 'name', 'unit', 'concentration', 'activeIngredient'],
                   },
                 ],
                 required: false,
@@ -519,7 +520,7 @@ class ChatService {
               {
                 model: db.BookingAttachment,
                 as: 'attachments',
-                attributes: ['id', 'fileName', 'fileUrl', 'fileType', 'description', 'createdAt'],
+                attributes: ['id', 'fileName', 'fileType', 'fileSize', 'fileData', 'category', 'uploadedBy', 'examinationDate', 'note', 'createdAt'],
                 required: false,
               },
               {

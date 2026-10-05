@@ -401,15 +401,15 @@ const routes = (app) => {
   app.get('/api/v1/medicines', catalogController.getAllMedicines);
   app.get('/api/v1/system-settings', catalogController.getSystemSettings);
 
-  // Admin CRUD — MedicalCatalog
-  app.post('/api/v1/medical-catalogs', verifyToken, checkAdminRole, catalogController.createMedicalCatalog);
-  app.put('/api/v1/medical-catalogs/:id', verifyToken, checkAdminRole, catalogController.editMedicalCatalog);
-  app.delete('/api/v1/medical-catalogs/:id', verifyToken, checkAdminRole, catalogController.deleteMedicalCatalog);
+  // Admin & Doctor CRUD — MedicalCatalog
+  app.post('/api/v1/medical-catalogs', verifyToken, checkAdminOrDoctorRole, catalogController.createMedicalCatalog);
+  app.put('/api/v1/medical-catalogs/:id', verifyToken, checkAdminOrDoctorRole, catalogController.editMedicalCatalog);
+  app.delete('/api/v1/medical-catalogs/:id', verifyToken, checkAdminOrDoctorRole, catalogController.deleteMedicalCatalog);
 
-  // Admin CRUD — Medicine
-  app.post('/api/v1/medicines', verifyToken, checkAdminRole, catalogController.createMedicine);
-  app.put('/api/v1/medicines/:id', verifyToken, checkAdminRole, catalogController.editMedicine);
-  app.delete('/api/v1/medicines/:id', verifyToken, checkAdminRole, catalogController.deleteMedicine);
+  // Admin & Doctor CRUD — Medicine
+  app.post('/api/v1/medicines', verifyToken, checkAdminOrDoctorRole, catalogController.createMedicine);
+  app.put('/api/v1/medicines/:id', verifyToken, checkAdminOrDoctorRole, catalogController.editMedicine);
+  app.delete('/api/v1/medicines/:id', verifyToken, checkAdminOrDoctorRole, catalogController.deleteMedicine);
 
   // Admin — SystemSettings
   app.post('/api/v1/system-settings/bulk', verifyToken, checkAdminRole, catalogController.updateBulkSystemSettings);
