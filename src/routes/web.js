@@ -586,6 +586,8 @@ const routes = (app) => {
   app.get('/api/v1/chat/conversations', verifyToken, chatController.getUserConversations);
   app.post('/api/v1/chat/bookings/:bookingId/conversation', verifyToken, chatController.getOrCreateConversationForBooking);
   app.get('/api/v1/chat/conversations/:conversationId/messages', verifyToken, chatController.getConversationMessages);
+  app.get('/api/v1/chat/conversations/:conversationId/workspace', verifyToken, chatController.getConversationWorkspace);
+  app.get('/api/v1/doctor/conversations/:conversationId/workspace', verifyToken, checkDoctorRole, chatController.getConversationWorkspace);
   app.patch('/api/v1/chat/conversations/:conversationId/read', verifyToken, chatController.markMessagesAsRead);
   app.patch('/api/v1/chat/conversations/:conversationId/status', verifyToken, chatController.updateConversationStatus);
 

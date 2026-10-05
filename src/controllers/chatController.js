@@ -180,6 +180,23 @@ const getActiveCall = async (req, res) => {
   }
 };
 
+const getConversationWorkspace = async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const result = await chatService.getConversationWorkspace(conversationId, req.user);
+
+    let status = 200;
+    if (result.errCode === 2) status = 404;
+    else if (result.errCode === 4) status = 403;
+    else if (result.errCode !== 0) status = 400;
+
+    return res.status(status).json(result);
+  } catch (err) {
+    console.error('>>> getConversationWorkspace error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server khi lấy không gian chăm sóc sau khám!' });
+  }
+};
+
 module.exports = {
   getUserConversations,
   getOrCreateConversationForBooking,
@@ -189,4 +206,5 @@ module.exports = {
   getIceServers,
   getBookingCallHistory,
   getActiveCall,
+  getConversationWorkspace,
 };

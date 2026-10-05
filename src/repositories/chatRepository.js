@@ -201,12 +201,32 @@ class ChatRepository {
         {
           model: db.Booking,
           as: 'bookingData',
-          attributes: ['id', 'statusId', 'date', 'timeType', 'patientName', 'encounterStatus', 'consultationCompletedAt', 'followUpExpiresAt'],
+          attributes: [
+            'id',
+            'statusId',
+            'date',
+            'timeType',
+            'patientName',
+            'patientPhoneNumber',
+            'bookingFor',
+            'familyMemberId',
+            'relationship',
+            'diagnosis',
+            'encounterStatus',
+            'consultationCompletedAt',
+            'followUpExpiresAt',
+          ],
           include: [
             {
               model: db.Allcode,
               as: 'timeTypeBooking',
               attributes: ['valueEn', 'valueVi'],
+            },
+            {
+              model: db.Family_Member,
+              as: 'familyMemberData',
+              attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber'],
+              required: false,
             },
           ],
         },
@@ -219,7 +239,7 @@ class ChatRepository {
 
     const plainConversations = conversations.map(c => this.formatConversation(c));
 
-    // Attach latest message and unread count for each conversation
+    // Attach latest message, unread count and enriched patient identity for each conversation
     for (const conv of plainConversations) {
       const latestMsg = await db.ChatMessage.findOne({
         where: { conversationId: conv.id },
@@ -236,6 +256,26 @@ class ChatRepository {
         },
       });
       conv.unreadCount = unreadCount;
+
+      // Enrich 3-tier patient identity for list view
+      const booking = conv.bookingData;
+      const isFamily = Boolean(booking?.familyMemberId || booking?.bookingFor === 'FAMILY');
+      const accountOwnerName = conv.patientUser
+        ? `${conv.patientUser.lastName || ''} ${conv.patientUser.firstName || ''}`.trim() || conv.patientUser.email
+        : 'Chủ tài khoản';
+
+      const actualPatientName = isFamily && booking?.familyMemberData?.fullName
+        ? booking.familyMemberData.fullName
+        : (booking?.patientName || accountOwnerName);
+
+      conv.patientIdentity = {
+        isFamilyMember: isFamily,
+        actualPatientName,
+        accountOwnerName,
+        relationship: booking?.familyMemberData?.relationship || booking?.relationship || (isFamily ? 'NGUOI_THAN' : 'SELF'),
+        gender: booking?.familyMemberData?.gender || booking?.patientGender,
+        birthday: booking?.familyMemberData?.birthday,
+      };
     }
 
     return plainConversations;

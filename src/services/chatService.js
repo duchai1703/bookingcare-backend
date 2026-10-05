@@ -438,6 +438,255 @@ class ChatService {
       };
     }
   }
+
+  /**
+   * [Post-Consultation Care Workspace]
+   * Lấy toàn bộ ngữ cảnh lâm sàng (Clinical Encounter Context) cho Bác sĩ:
+   * - Patient Identity (Bệnh nhân thực tế vs Chủ tài khoản)
+   * - Encounter Snapshot (Chẩn đoán, Dặn dò, Kê đơn, Đính kèm)
+   * - Follow-up Status (Đếm ngược thời gian)
+   * - Call History
+   */
+  async getConversationWorkspace(conversationId, user) {
+    try {
+      const access = await this.verifyConversationAccess(conversationId, user);
+      if (!access.authorized) {
+        return access.error;
+      }
+
+      const conv = await db.Conversation.findOne({
+        where: { id: conversationId },
+        include: [
+          {
+            model: db.User,
+            as: 'patientUser',
+            attributes: ['id', 'email', 'firstName', 'lastName', 'image', 'phoneNumber', 'gender', 'address'],
+          },
+          {
+            model: db.User,
+            as: 'doctorUser',
+            attributes: ['id', 'email', 'firstName', 'lastName', 'image'],
+          },
+          {
+            model: db.Booking,
+            as: 'bookingData',
+            include: [
+              {
+                model: db.Allcode,
+                as: 'timeTypeBooking',
+                attributes: ['valueEn', 'valueVi'],
+              },
+              {
+                model: db.Allcode,
+                as: 'statusData',
+                attributes: ['valueEn', 'valueVi'],
+              },
+              {
+                model: db.Family_Member,
+                as: 'familyMemberData',
+                required: false,
+              },
+              {
+                model: db.Clinic,
+                as: 'clinicData',
+                attributes: ['id', 'name', 'address', 'image'],
+                required: false,
+              },
+              {
+                model: db.Doctor_Assignment,
+                as: 'assignmentData',
+                include: [
+                  {
+                    model: db.Specialty,
+                    as: 'specialtyData',
+                    attributes: ['id', 'name'],
+                  },
+                ],
+                required: false,
+              },
+              {
+                model: db.BookingMedicine,
+                as: 'bookingMedicines',
+                include: [
+                  {
+                    model: db.Medicine,
+                    as: 'medicineData',
+                    attributes: ['id', 'name', 'unit', 'usageInstructions'],
+                  },
+                ],
+                required: false,
+              },
+              {
+                model: db.BookingAttachment,
+                as: 'attachments',
+                attributes: ['id', 'fileName', 'fileUrl', 'fileType', 'description', 'createdAt'],
+                required: false,
+              },
+              {
+                model: db.CallSession,
+                as: 'callSessions',
+                attributes: ['id', 'callType', 'duration', 'status', 'createdAt', 'startedAt', 'endedAt', 'callerId', 'receiverId'],
+                required: false,
+              },
+            ],
+          },
+        ],
+      });
+
+      if (!conv) {
+        return { errCode: 2, message: 'Không tìm thấy cuộc trò chuyện.' };
+      }
+
+      const plain = typeof conv.get === 'function' ? conv.get({ plain: true }) : { ...conv };
+      const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
+      if (plain.patientUser?.image) {
+        plain.patientUser.image = convertBlobToBase64(plain.patientUser.image);
+      }
+      if (plain.doctorUser?.image) {
+        plain.doctorUser.image = convertBlobToBase64(plain.doctorUser.image);
+      }
+
+      const booking = plain.bookingData || {};
+      const familyMember = booking.familyMemberData;
+      const patientUser = plain.patientUser || {};
+      const isFamily = Boolean(booking.familyMemberId || booking.bookingFor === 'FAMILY');
+
+      // 1. Phân giải Patient Identity (Bệnh nhân thực tế vs Chủ tài khoản)
+      let actualPatient = {};
+      const accountOwner = {
+        id: patientUser.id,
+        name: `${patientUser.lastName || ''} ${patientUser.firstName || ''}`.trim() || patientUser.email,
+        phone: patientUser.phoneNumber || '',
+        email: patientUser.email || '',
+        address: patientUser.address || '',
+        image: patientUser.image || null,
+        relationshipLabel: isFamily ? (booking.relationship || familyMember?.relationship || 'Người thân') : 'Chính chủ tài khoản',
+      };
+
+      const genderMap = { G1: 'Nam', G2: 'Nữ', G3: 'Khác', M: 'Nam', F: 'Nữ' };
+
+      if (isFamily && familyMember) {
+        let age = null;
+        if (familyMember.birthday) {
+          const birthYear = parseInt(familyMember.birthday.split('-')[0], 10);
+          if (!isNaN(birthYear)) age = new Date().getFullYear() - birthYear;
+        }
+
+        actualPatient = {
+          id: familyMember.id,
+          name: familyMember.fullName || booking.patientName || 'Bệnh nhân',
+          relationship: familyMember.relationship,
+          relationshipLabel: familyMember.relationship === 'CHILD' ? 'Con'
+            : familyMember.relationship === 'PARENT' ? 'Bố/Mẹ'
+            : familyMember.relationship === 'SPOUSE' ? 'Vợ/Chồng'
+            : 'Người thân',
+          gender: genderMap[familyMember.gender] || familyMember.gender || 'Chưa rõ',
+          birthday: familyMember.birthday || '',
+          age: age,
+          phoneNumber: familyMember.phoneNumber || booking.patientPhoneNumber || '',
+          address: familyMember.address || booking.patientAddress || '',
+          medicalHistory: familyMember.medicalHistory || 'Chưa ghi nhận tiền sử dị ứng hoặc bệnh bẩm sinh đặc biệt',
+          notes: familyMember.notes || '',
+        };
+      } else {
+        let age = null;
+        if (booking.patientBirthday) {
+          const birthYear = parseInt(booking.patientBirthday.split('-')[0], 10);
+          if (!isNaN(birthYear)) age = new Date().getFullYear() - birthYear;
+        }
+        actualPatient = {
+          id: patientUser.id,
+          name: `${patientUser.lastName || ''} ${patientUser.firstName || ''}`.trim() || booking.patientName || patientUser.email,
+          relationship: 'SELF',
+          relationshipLabel: 'Chính chủ tài khoản',
+          gender: genderMap[booking.patientGender] || genderMap[patientUser.gender] || 'Chưa rõ',
+          birthday: booking.patientBirthday || '',
+          age: age,
+          phoneNumber: booking.patientPhoneNumber || patientUser.phoneNumber || '',
+          address: booking.patientAddress || patientUser.address || '',
+          medicalHistory: booking.clinicalNotes || 'Khám cho bản thân',
+          notes: '',
+        };
+      }
+
+      // 2. Phân giải Encounter Context & Follow-up status
+      const isFollowUpActive = this.isFollowUpWindowActive(booking);
+      let remainingHours = 0;
+      let remainingDays = 0;
+      if (booking.followUpExpiresAt && isFollowUpActive) {
+        const diffMs = new Date(booking.followUpExpiresAt) - new Date();
+        remainingHours = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60)));
+        remainingDays = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+      }
+
+      const medicines = (booking.bookingMedicines || []).map((bm) => ({
+        id: bm.id,
+        name: bm.medicineData?.name || 'Thuốc theo chỉ định',
+        unit: bm.medicineData?.unit || 'viên',
+        quantity: bm.quantity || 1,
+        dosage: bm.dosage || '',
+        frequency: bm.frequency || '',
+        instructions: bm.instructions || bm.medicineData?.usageInstructions || '',
+      }));
+
+      const encounter = {
+        bookingId: booking.id,
+        date: booking.date,
+        timeType: booking.timeType,
+        timeLabel: booking.timeTypeBooking?.valueVi || booking.timeTypeBooking?.valueEn || booking.timeType,
+        statusId: booking.statusId,
+        statusLabel: booking.statusData?.valueVi || 'Đã hoàn tất khám',
+        clinicName: booking.clinicData?.name || 'Cơ sở Y tế BookingCare',
+        clinicAddress: booking.clinicData?.address || '',
+        roomNumber: booking.assignmentData?.roomNumber || 'Phòng khám chuyên khoa',
+        specialtyName: booking.assignmentData?.specialtyData?.name || 'Chuyên khoa Y tế',
+        chiefComplaint: booking.chiefComplaint || booking.reason || 'Khám theo lịch hẹn',
+        symptoms: booking.symptoms || '',
+        clinicalNotes: booking.clinicalNotes || '',
+        diagnosis: booking.diagnosis || 'Đang theo dõi sức khỏe tổng quát',
+        treatmentPlan: booking.treatmentPlan || '',
+        careInstructions: booking.careInstructions || 'Nghỉ ngơi, theo dõi sức khỏe và liên hệ lại bác sĩ nếu triệu chứng tiếp diễn.',
+        followUpDate: booking.followUpDate || '',
+        consultationCompletedAt: booking.consultationCompletedAt,
+        followUpExpiresAt: booking.followUpExpiresAt,
+        isFollowUpActive,
+        remainingDays,
+        remainingHours,
+        medicines,
+        attachments: booking.attachments || [],
+      };
+
+      return {
+        errCode: 0,
+        message: 'Lấy dữ liệu không gian chăm sóc sau khám thành công.',
+        data: {
+          conversation: {
+            id: plain.id,
+            bookingId: plain.bookingId,
+            doctorId: plain.doctorId,
+            patientId: plain.patientId,
+            status: plain.status,
+            lastMessageAt: plain.lastMessageAt,
+            isFollowUpActive,
+            isReadOnly: !isFollowUpActive || plain.status === 'CLOSED',
+          },
+          patientIdentity: {
+            isFamilyMember: isFamily,
+            actualPatient,
+            accountOwner,
+          },
+          encounter,
+          callHistory: booking.callSessions || [],
+        },
+      };
+    } catch (err) {
+      console.error('Error in getConversationWorkspace:', err);
+      return {
+        errCode: -1,
+        message: 'Lỗi máy chủ khi lấy dữ liệu không gian chăm sóc sau khám.',
+      };
+    }
+  }
 }
 
 module.exports = new ChatService();
