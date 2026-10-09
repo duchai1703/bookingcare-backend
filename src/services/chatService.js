@@ -70,18 +70,40 @@ class ChatService {
 
   /**
    * Get all conversations accessible to the authenticated user
+   * Sắp xếp theo yêu cầu:
+   * 1. Còn hạn chat lên đầu (xếp theo thời hạn còn lại giảm dần - nhiều hạn nhất ở trên cùng)
+   * 2. Hết hạn chat ở dưới (xếp theo thời gian tin nhắn gần nhất giảm dần)
    */
   async getUserConversations(user) {
     try {
       const conversations = await chatRepository.getConversationsByUser(user.id, user.roleId);
+      const now = Date.now();
       const enhanced = conversations.map((conv) => {
         const isFollowUpActive = this.isFollowUpWindowActive(conv.bookingData);
+        const expiresAt = conv.bookingData?.followUpExpiresAt
+          ? new Date(conv.bookingData.followUpExpiresAt).getTime()
+          : 0;
+        const remainingTimeMs = isFollowUpActive && expiresAt > now ? expiresAt - now : 0;
         return {
           ...conv,
           isFollowUpActive,
+          remainingTimeMs,
           isReadOnly: !isFollowUpActive || conv.status === 'CLOSED',
         };
       });
+
+      // Sắp xếp phân tầng
+      enhanced.sort((a, b) => {
+        if (a.isFollowUpActive && !b.isFollowUpActive) return -1;
+        if (!a.isFollowUpActive && b.isFollowUpActive) return 1;
+        if (a.isFollowUpActive && b.isFollowUpActive) {
+          return b.remainingTimeMs - a.remainingTimeMs; // Nhiều thời gian còn lại hơn ở trên
+        }
+        const timeA = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+        const timeB = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
       return {
         errCode: 0,
         message: 'Lấy danh sách cuộc trò chuyện thành công.',
@@ -657,6 +679,85 @@ class ChatService {
         attachments: booking.attachments || [],
       };
 
+      // [Continuous Care Profile] Lấy tất cả các mốc phiên khám (Encounter Milestones) giữa cặp Bác sĩ - Bệnh nhân này
+      const encounterWhere = {
+        doctorId: plain.doctorId,
+        patientId: plain.patientId,
+        statusId: 'S3',
+      };
+      if (plain.familyMemberId) {
+        encounterWhere.familyMemberId = plain.familyMemberId;
+      } else {
+        encounterWhere.familyMemberId = null;
+      }
+
+      let allEncounters = [];
+      try {
+        const pastBookings = await db.Booking.findAll({
+          where: encounterWhere,
+          attributes: [
+            'id', 'date', 'timeType', 'patientName', 'diagnosis', 'treatmentPlan', 'careInstructions',
+            'consultationCompletedAt', 'followUpExpiresAt', 'createdAt',
+          ],
+          include: [
+            {
+              model: db.Allcode,
+              as: 'timeTypeBooking',
+              attributes: ['valueEn', 'valueVi'],
+            },
+            {
+              model: db.Clinic,
+              as: 'clinicData',
+              attributes: ['id', 'name', 'address'],
+              required: false,
+            },
+            {
+              model: db.BookingMedicine,
+              as: 'bookingMedicines',
+              attributes: ['id', 'quantity', 'dosage', 'usageInstructions'],
+              include: [{ model: db.Medicine, as: 'medicineData', attributes: ['name', 'unit', 'concentration'] }],
+              required: false,
+            },
+            {
+              model: db.BookingAttachment,
+              as: 'attachments',
+              attributes: ['id', 'fileName', 'fileType', 'fileSize', 'category', 'createdAt', 'fileData'],
+              required: false,
+            },
+          ],
+          order: [['date', 'ASC'], ['id', 'ASC']],
+        });
+
+        allEncounters = pastBookings.map((pb) => {
+          const item = pb.get({ plain: true });
+          return {
+            id: item.id,
+            bookingId: item.id,
+            date: item.date,
+            timeType: item.timeType,
+            timeLabel: item.timeTypeBooking?.valueVi || item.timeTypeBooking?.valueEn || item.timeType,
+            diagnosis: item.diagnosis || 'Đang theo dõi sức khỏe',
+            treatmentPlan: item.treatmentPlan || '',
+            careInstructions: item.careInstructions || '',
+            consultationCompletedAt: item.consultationCompletedAt,
+            followUpExpiresAt: item.followUpExpiresAt,
+            createdAt: item.createdAt,
+            clinicName: item.clinicData?.name || 'Cơ sở Y tế BookingCare',
+            medicines: (item.bookingMedicines || []).map((m) => ({
+              name: m.medicineData?.name || 'Thuốc kê đơn',
+              unit: m.medicineData?.unit || 'Viên',
+              concentration: m.medicineData?.concentration || '',
+              quantity: m.quantity || 1,
+              dosage: m.dosage || '',
+              instructions: m.usageInstructions || '',
+            })),
+            attachments: item.attachments || [],
+          };
+        });
+      } catch (e) {
+        console.warn('Could not fetch past encounters:', e.message);
+      }
+
       return {
         errCode: 0,
         message: 'Lấy dữ liệu không gian chăm sóc sau khám thành công.',
@@ -677,6 +778,7 @@ class ChatService {
             accountOwner,
           },
           encounter,
+          allEncounters: allEncounters.length > 0 ? allEncounters : [encounter],
           callHistory: booking.callSessions || [],
         },
       };
