@@ -19,6 +19,8 @@ const financialAutomationController = require('../controllers/financialAutomatio
 const doctorCancellationController = require('../controllers/doctorCancellationController'); // [Doctor Schedule Cancellation Engine]
 const familyMemberController = require('../controllers/familyMemberController'); // [Family Members & Dependents]
 const notificationController = require('../controllers/notificationController'); // [Global Notification Engine]
+const clinicalAssistantController = require('../controllers/clinicalAssistantController'); // [Smart Clinical Assistant Engine]
+const doctorShorthandController = require('../controllers/doctorShorthandController'); // [Universal Shorthand Engine]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -438,6 +440,27 @@ const routes = (app) => {
   app.put('/api/v1/doctor/encounters/:bookingId', verifyToken, checkDoctorRole, doctorController.saveDoctorEncounter);
   app.post('/api/v1/doctor/encounters/:bookingId/attachments', verifyToken, checkDoctorRole, doctorController.uploadEncounterAttachments);
   app.delete('/api/v1/doctor/encounters/:bookingId/attachments/:attachmentId', verifyToken, checkDoctorRole, doctorController.deleteEncounterAttachment);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Smart Clinical Assistant Engine] — ICD-10 Search, Symptoms, Snippets, Context
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/doctor/clinical-search/icd10', verifyToken, checkDoctorRole, clinicalAssistantController.handleSearchIcd10);
+  app.get('/api/v1/doctor/clinical-search/symptoms', verifyToken, checkDoctorRole, clinicalAssistantController.handleSearchSymptoms);
+  app.post('/api/v1/doctor/clinical-preferences', verifyToken, checkDoctorRole, clinicalAssistantController.handleRecordPreference);
+  app.get('/api/v1/doctor/clinical-snippets', verifyToken, checkDoctorRole, clinicalAssistantController.handleGetSnippets);
+  app.post('/api/v1/doctor/clinical-snippets', verifyToken, checkDoctorRole, clinicalAssistantController.handleCreateSnippet);
+  app.delete('/api/v1/doctor/clinical-snippets/:snippetId', verifyToken, checkDoctorRole, clinicalAssistantController.handleDeleteSnippet);
+  app.get('/api/v1/doctor/encounters/:bookingId/context-suggestions', verifyToken, checkDoctorRole, clinicalAssistantController.handleGetContextualSuggestions);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Universal Shorthand Engine] — Auto-complete & Shorthand Lexicon
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/doctor/shorthands/search', verifyToken, checkDoctorRole, doctorShorthandController.handleSearchShorthands);
+  app.get('/api/v1/doctor/shorthands', verifyToken, checkDoctorRole, doctorShorthandController.handleGetDoctorShorthands);
+  app.post('/api/v1/doctor/shorthands', verifyToken, checkDoctorRole, doctorShorthandController.handleCreateShorthand);
+  app.put('/api/v1/doctor/shorthands/:id', verifyToken, checkDoctorRole, doctorShorthandController.handleUpdateShorthand);
+  app.delete('/api/v1/doctor/shorthands/:id', verifyToken, checkDoctorRole, doctorShorthandController.handleDeleteShorthand);
+  app.post('/api/v1/doctor/shorthands/:id/use', verifyToken, checkDoctorRole, doctorShorthandController.handleRecordUsage);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase B] STATISTICS mở rộng — Admin R1
