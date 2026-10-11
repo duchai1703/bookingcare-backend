@@ -21,6 +21,7 @@ const familyMemberController = require('../controllers/familyMemberController');
 const notificationController = require('../controllers/notificationController'); // [Global Notification Engine]
 const clinicalAssistantController = require('../controllers/clinicalAssistantController'); // [Smart Clinical Assistant Engine]
 const doctorShorthandController = require('../controllers/doctorShorthandController'); // [Universal Shorthand Engine]
+const doctorPatientController = require('../controllers/doctorPatientController'); // [Doctor Patient Relationship & Clinical Dossier Hub]
 const { verifyToken, checkAdminRole, checkDoctorRole, checkPatientRole, checkAdminOrDoctorRole } = require('../middleware/authMiddleware');
 const rateLimit = require('express-rate-limit');
 
@@ -461,6 +462,12 @@ const routes = (app) => {
   app.put('/api/v1/doctor/shorthands/:id', verifyToken, checkDoctorRole, doctorShorthandController.handleUpdateShorthand);
   app.delete('/api/v1/doctor/shorthands/:id', verifyToken, checkDoctorRole, doctorShorthandController.handleDeleteShorthand);
   app.post('/api/v1/doctor/shorthands/:id/use', verifyToken, checkDoctorRole, doctorShorthandController.handleRecordUsage);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // [Doctor Patient Relationship & Clinical Dossier Hub] — Quản lý Bệnh nhân
+  // ═══════════════════════════════════════════════════════════════════════
+  app.get('/api/v1/doctor/patients', verifyToken, checkDoctorRole, doctorPatientController.handleGetDoctorPatients);
+  app.get('/api/v1/doctor/patients/:patientKey/summary', verifyToken, checkDoctorRole, doctorPatientController.handleGetDoctorPatientSummary);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Phase B] STATISTICS mở rộng — Admin R1
