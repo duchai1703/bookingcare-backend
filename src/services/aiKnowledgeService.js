@@ -55,8 +55,16 @@ const PLATFORM_POLICIES = Object.freeze([
     title: 'Chính sách hủy lịch khám và hoàn tiền BookingCare',
     category: 'POLICY',
     source: 'BOOKINGCARE_POLICY_ENGINE',
+    version: '1.1.0',
+    content: 'Quy định hủy lịch khám và hoàn tiền tại BookingCare theo Policy Engine chuẩn: 1. Bệnh nhân chủ động hủy lịch: - Hủy trước giờ khám từ 24 giờ trở lên: hoàn 100% tiền khám. - Hủy trước giờ khám từ 12 đến dưới 24 giờ: hoàn 75% tiền khám. - Hủy trước giờ khám từ 0 đến dưới 12 giờ: hoàn 50% tiền khám. - Hủy sau thời điểm khám (quá giờ hẹn): không hỗ trợ hoàn tiền (0%). 2. Bác sĩ báo bận / Hủy lịch: Hệ thống tự động hoàn 100% tiền khám vào ví BookingCare bất kể thời điểm hủy. 3. Trường hợp vắng mặt không đến khám (No-Show): Được xử lý theo chính sách No-Show riêng, hệ thống tự động hoàn 75% giá trị ca khám vào ví BookingCare theo quy chế bảo vệ khách hàng (25% khấu trừ bồi thường thời gian cho bác sĩ). Khi hủy thành công, lịch chuyển sang trạng thái S4 và tiền hoàn được hoàn trả vào ví BookingCare hoặc phương thức thanh toán ban đầu.',
+  },
+  {
+    documentId: 'doc_pol_noshow',
+    title: 'Chính sách xử lý vắng mặt (No-Show) và hoàn tiền BookingCare',
+    category: 'POLICY',
+    source: 'BOOKINGCARE_POLICY_ENGINE',
     version: '1.0.0',
-    content: 'Quy định hủy lịch khám tại BookingCare: 1. Hủy trước giờ khám trên 24 giờ: hoàn 100% tiền khám. 2. Hủy trước từ 12 đến 24 giờ: hoàn 70% tiền khám. 3. Hủy trước từ 2 đến 12 giờ: hoàn 50% tiền khám. 4. Hủy trước dưới 2 giờ hoặc sau giờ khám: không hỗ trợ hoàn tiền (0%). Khi hủy thành công, lịch chuyển sang trạng thái S4 và tiền hoàn được trả về phương thức thanh toán ban đầu hoặc ví BookingCare.',
+    content: 'Quy định xử lý vắng mặt (No-Show) tại BookingCare: Khi bệnh nhân quên không đi khám hoặc vắng mặt không đến theo lịch hẹn đã xác nhận, hệ thống hoặc bác sĩ ghi nhận trạng thái Vắng mặt (No-Show). Theo quy chế bảo vệ quyền lợi khách hàng của BookingCare (policyEngineService & refundGovernanceService), ca khám No-Show được tự động hoàn 75% giá trị ca khám vào ví BookingCare của bệnh nhân; 25% còn lại khấu trừ chi phí vận hành và phân bổ bồi thường thời gian giữ chỗ cho bác sĩ (bác sĩ hưởng 80% phần khấu trừ). Bệnh nhân không cần thao tác hủy thủ công đối với ca No-Show, hệ thống tự động xử lý và gửi thông báo hoàn tiền vào ví.',
   },
   {
     documentId: 'doc_pol_reschedule',

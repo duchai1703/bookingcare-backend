@@ -287,20 +287,48 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), o
     }
   }
 
+  // Canonical policy calculation based on hours before appointment time (hoursBefore):
+  // >= 24h: 100% refund
+  // 12h - 24h: 75% refund
+  // 0h - 12h: 50% refund
+  // < 0h (after appointment time): 0% refund
+  let hoursSinceCreation = 999;
+  if (booking.createdAt) {
+    hoursSinceCreation = Math.max(0, (cancelDate.getTime() - new Date(booking.createdAt).getTime()) / (1000 * 60 * 60));
+  }
+
   // Tổng tiền khám gốc (hỗ trợ bookingPrice chuẩn của Bookings table hoặc snapshot)
   const originalAmount = Number(booking.bookingPrice || booking.totalAmount || booking.depositAmount || snapshot?.totalAmount || 0);
   const refundAmount = Math.round((originalAmount * appliedRefundPercent) / 100);
   const deductionAmount = originalAmount - refundAmount;
 
+  const eligible = appliedRefundPercent > 0;
+  const timingExplanation = isNoShow
+    ? `Bệnh nhân vắng mặt (No-Show): hoàn ${appliedRefundPercent}% theo quy chế bảo vệ khách hàng.`
+    : (hoursBefore >= 24
+      ? 'Hủy trước giờ khám từ 24 giờ trở lên: hoàn 100%.'
+      : hoursBefore >= 12
+        ? 'Hủy trước giờ khám từ 12-24 giờ: hoàn 75%.'
+        : hoursBefore >= 0
+          ? 'Hủy trước giờ khám dưới 12 giờ: hoàn 50%.'
+          : 'Hủy sau thời điểm khám: không đủ điều kiện hoàn tiền.');
+
   return {
     success: true,
+    eligible,
     hoursBefore: Math.round(hoursBefore * 10) / 10,
+    hoursSinceCreation: Math.round(hoursSinceCreation * 10) / 10,
     appliedRefundPercent,
+    refundPercent: appliedRefundPercent,
+    refundRate: appliedRefundPercent,
     refundAmount,
     deductionAmount,
+    originalAmount,
     matchedTier,
+    timingExplanation,
+    reason: timingExplanation,
     isFrozenSnapshotUsed: !!snapshot,
-    policyInfo: snapshot?.refundPolicy || null
+    policyInfo: snapshot?.refundPolicy || null,
   };
 };
 
