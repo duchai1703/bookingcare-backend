@@ -501,6 +501,11 @@ const routes = (app) => {
   app.get('/api/v1/admin/financial/configs', verifyToken, checkAdminRole, walletController.handleGetFinancialConfigs);
   app.put('/api/v1/admin/financial/configs', verifyToken, checkAdminRole, walletController.handleUpdateFinancialConfigs);
   app.get('/api/v1/admin/financial/cash-flows', verifyToken, checkAdminRole, walletController.handleGetFinancialCashFlows);
+  // [Phase 7] Periodic Treasury Cycles & Drilldown
+  app.get('/api/v1/admin/financial/periodic-cycles', verifyToken, checkAdminRole, walletController.handleGetPeriodicTreasuryCycles);
+  // [Phase 6] Float Capital Allocation & Reimbursement
+  app.post('/api/v1/admin/financial/float-allocate', verifyToken, checkAdminRole, walletController.handleAllocateFloatCapital);
+  app.post('/api/v1/admin/financial/float-reimburse', verifyToken, checkAdminRole, walletController.handleReimburseFloatCapital);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Enterprise Refund Governance] Quản trị Hoàn tiền Bệnh nhân — Admin R1 & Patient R3
@@ -517,12 +522,18 @@ const routes = (app) => {
   app.post('/api/v1/admin/financial/doctor-settlements/payout', verifyToken, checkAdminRole, doctorSettlementController.handlePayoutDoctorSettlements);
   app.post('/api/v1/admin/financial/doctor-settlements/release-eligible', verifyToken, checkAdminRole, doctorSettlementController.handleReleaseEligibleSettlements);
   app.post('/api/v1/admin/financial/doctor-settlements/unlock', verifyToken, checkAdminRole, doctorSettlementController.handleUnlockSingleSettlement);
+  app.post('/api/v1/admin/financial/doctor-settlements/auto-run', verifyToken, checkAdminRole, doctorSettlementController.handleAutoRunPayoutCycle);
+  app.get('/api/v1/admin/financial/automation-logs', verifyToken, checkAdminRole, doctorSettlementController.handleGetAutomationLogs);
+  app.get('/api/v1/admin/financial/automation-logs/:id', verifyToken, checkAdminRole, doctorSettlementController.handleGetAutomationLogDetail);
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Financial Automation & Exception Queue] Hàng Đợi Ngoại Lệ & Chu Trình Tự Động Hóa — Admin R1
   // ═══════════════════════════════════════════════════════════════════════
   app.get('/api/v1/admin/financial/exceptions', verifyToken, checkAdminRole, financialAutomationController.handleGetExceptionQueue);
   app.post('/api/v1/admin/financial/automation/run-cycle', verifyToken, checkAdminRole, financialAutomationController.handleRunAutomationCycle);
+  app.get('/api/v1/admin/financial/master-overview', verifyToken, checkAdminRole, financialAutomationController.handleGetMasterOverview);
+  app.post('/api/v1/admin/financial/master-automation-run', verifyToken, checkAdminRole, financialAutomationController.handleRunMasterAutomation);
+
 
   // ═══════════════════════════════════════════════════════════════════════
   // [Financial Policy Engine & Flexible SLA Audit Subsystem] — Admin R1

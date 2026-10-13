@@ -34,7 +34,38 @@ async function handleRunAutomationCycle(req, res) {
   }
 }
 
+/**
+ * GET /api/v1/admin/financial/master-overview
+ * Lấy tổng quan ngân quỹ & điều phối dòng tiền toàn sàn cho Executive Dashboard
+ */
+async function handleGetMasterOverview(req, res) {
+  try {
+    const result = await financialAutomationService.getMasterTreasuryOverview();
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetMasterOverview:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * POST /api/v1/admin/financial/master-automation-run
+ * Kích hoạt chu trình tài chính tự động toàn diện (Master Automation Cycle)
+ */
+async function handleRunMasterAutomation(req, res) {
+  try {
+    const adminId = req.user?.id || 1;
+    const result = await financialAutomationService.runMasterAutomationCycle({ adminId });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleRunMasterAutomation:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetExceptionQueue,
   handleRunAutomationCycle,
+  handleGetMasterOverview,
+  handleRunMasterAutomation,
 };

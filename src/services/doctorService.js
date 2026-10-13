@@ -1193,6 +1193,38 @@ const saveDoctorEncounter = async (bookingId, doctorId, data) => {
       });
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // [Financial Settlement & Capture] Khi hoàn tất phiên khám (complete)
+    // ═══════════════════════════════════════════════════════════
+    if (data.action === 'complete') {
+      try {
+        const walletHold = await db.Wallet_Hold.findOne({
+          where: { bookingId: booking.id, status: 'HELD' },
+        });
+        if (walletHold) {
+          await walletHold.update({ status: 'CAPTURED' });
+          const patientWallet = await db.Wallet.findOne({
+            where: { id: walletHold.walletId },
+          });
+          if (patientWallet) {
+            const curReserved = Number(patientWallet.reservedBalance) || 0;
+            await patientWallet.update({
+              reservedBalance: Math.max(0, curReserved - Number(walletHold.amount)),
+            });
+          }
+        }
+      } catch (holdErr) {
+        console.warn('>>> [WALLET_HOLD_WARNING] Lỗi capture wallet hold:', holdErr.message);
+      }
+
+      // Ghi nhận thù lao bác sĩ trạng thái AVAILABLE (T+0)
+      try {
+        await doctorSettlementService.recordCompletedBookingSettlement(booking.id);
+      } catch (settleErr) {
+        console.error('>>> [SETTLEMENT_ERROR] Không ghi nhận được thù lao ca khám:', settleErr.message);
+      }
+    }
+
     return {
       errCode: 0,
       message: data.action === 'complete'
@@ -1580,11 +1612,20 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
       name: doctorInfo.specialtyData.name,
     } : { id: 1, name: 'Khám chuyên khoa' };
 
-    // 2. Lấy danh sách các đợt đối soát (Settlements) của bác sĩ
+    // 2. Lấy danh sách các đợt đối soát (Settlements) & mục quyết toán từng ca khám của bác sĩ
     const settlements = await db.Doctor_Settlement.findAll({
       where: { doctorId },
       order: [['periodTo', 'DESC'], ['id', 'DESC']],
     });
+
+    const settlementItems = await db.Doctor_Settlement_Item.findAll({
+      where: { doctorId },
+      raw: true,
+    });
+    const settlementItemMap = new Map();
+    for (const item of settlementItems) {
+      settlementItemMap.set(item.bookingId, item);
+    }
 
     // 3. Lấy toàn bộ bookings của bác sĩ
     const bookings = await db.Booking.findAll({
@@ -1679,22 +1720,36 @@ const getDoctorIncomeWorkspace = async (doctorId, query = {}) => {
       } else if (patientPaymentStatus !== 'paid' || b.statusId === 'S1') {
         appPayoutStatus = 'unpaid';
       } else {
-        // Tra cứu trong các đợt đối soát
-        for (const s of settlements) {
-          if (s.payoutStatus === 'paid') {
-            const pFrom = new Date(s.periodFrom);
-            const pTo = new Date(s.periodTo);
-            if (bookingDateObj >= pFrom && bookingDateObj <= pTo) {
-              matchedSettlement = {
-                id: s.id,
-                code: `PAY-${s.id.toString().padStart(6, '0')}`,
-                transactionRef: s.transactionRef,
-                paidAt: s.paidAt,
-                paymentMethod: s.paymentMethod,
-                note: s.note,
-              };
-              appPayoutStatus = 'paid';
-              break;
+        // 1. Tra cứu trực tiếp từ Doctor_Settlement_Item của ca khám
+        const directItem = settlementItemMap.get(b.id);
+        if (directItem && directItem.status === 'PAID') {
+          appPayoutStatus = 'paid';
+          matchedSettlement = {
+            id: directItem.id,
+            code: `SETTLE-${directItem.id}`,
+            transactionRef: directItem.walletTransactionId || `WALLET-TX-${directItem.id}`,
+            paidAt: directItem.paidAt,
+            paymentMethod: directItem.payoutMethod || 'VÍ NỘI BỘ',
+            note: 'Đã thanh toán kết chuyển vào Ví Bác Sĩ',
+          };
+        } else {
+          // 2. Tra cứu trong các đợt đối soát theo kỳ
+          for (const s of settlements) {
+            if (s.payoutStatus === 'paid') {
+              const pFrom = new Date(s.periodFrom);
+              const pTo = new Date(s.periodTo);
+              if (bookingDateObj >= pFrom && bookingDateObj <= pTo) {
+                matchedSettlement = {
+                  id: s.id,
+                  code: `PAY-${s.id.toString().padStart(6, '0')}`,
+                  transactionRef: s.transactionRef,
+                  paidAt: s.paidAt,
+                  paymentMethod: s.paymentMethod,
+                  note: s.note,
+                };
+                appPayoutStatus = 'paid';
+                break;
+              }
             }
           }
         }

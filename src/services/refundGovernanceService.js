@@ -454,7 +454,8 @@ async function processAdminReviewRefund(caseId, { action, overrideRefundAmount, 
       }
 
       const oldBal = Number(wallet.availableBalance) || 0;
-      const newBal = oldBal + finalRefundAmount;
+      const finalRefundNum = Number(finalRefundAmount) || 0;
+      const newBal = oldBal + finalRefundNum;
       wallet.availableBalance = newBal;
       await wallet.save({ transaction: t });
 
@@ -464,7 +465,7 @@ async function processAdminReviewRefund(caseId, { action, overrideRefundAmount, 
         {
           walletId: wallet.id,
           direction: 'CREDIT',
-          amount: finalRefundAmount,
+          amount: finalRefundNum,
           balanceAfter: newBal,
           transactionType: 'REFUND',
           type: 'REFUND',
@@ -486,7 +487,7 @@ async function processAdminReviewRefund(caseId, { action, overrideRefundAmount, 
     // Đồng bộ Booking
     await db.Booking.update(
       {
-        refundAmount: finalRefundAmount,
+        refundAmount: Math.round(Number(finalRefundAmount) || 0),
         refundStatus: 'refunded',
       },
       { where: { id: refundCase.bookingId }, transaction: t }

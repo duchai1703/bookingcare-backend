@@ -393,6 +393,65 @@ async function payoutDoctorSettlementItems({
 
     await t.commit();
 
+    // 4. Ghi Nhật ký Bóc tách Luồng Tiền Tự động (Financial Automation & Money Trace Log)
+    try {
+      const doctorUser = await db.User.findByPk(doctorId, {
+        attributes: ['id', 'firstName', 'lastName', 'email'],
+        raw: true,
+      });
+      const doctorName = doctorUser ? `${doctorUser.lastName || ''} ${doctorUser.firstName || ''}`.trim() : `Bác sĩ #${doctorId}`;
+
+      const bookingIds = itemsToPay.map((it) => it.bookingId);
+      const bookingRecords = await db.Booking.findAll({
+        where: { id: { [Op.in]: bookingIds } },
+        attributes: ['id', 'patientName', 'bookingPrice', 'date'],
+        raw: true,
+      });
+      const bookingMap = new Map();
+      bookingRecords.forEach((b) => bookingMap.set(b.id, b));
+
+      const moneyTraceDetails = itemsToPay.map((it) => {
+        const bk = bookingMap.get(it.bookingId);
+        return {
+          settlementItemId: it.id,
+          bookingId: it.bookingId,
+          bookingCode: `#BK-${it.bookingId}`,
+          patientName: bk?.patientName || 'Bệnh nhân',
+          appointmentDate: it.appointmentDate || bk?.date,
+          doctorId: it.doctorId,
+          doctorName,
+          grossAmount: Number(it.grossAmount || 0),
+          fromAccount: 'Tài khoản Tạm giữ Sàn (Escrow VNPay - TK 3388)',
+          platformFee: Number(it.platformFee || 0),
+          platformFeeRate: Number(it.platformFeeRate || 0),
+          doctorShare: Number(it.netAmount || 0),
+          toWalletId: walletTxId ? `WAL-${String(doctorId).padStart(6, '0')}` : null,
+          toWalletType: 'DOCTOR',
+          walletBalanceBefore: Number(oldBal),
+          walletBalanceAfter: Number(newBal),
+          walletTransactionId: walletTxId,
+          payoutMethod,
+          timestamp: now.toISOString(),
+        };
+      });
+
+      const batchCode = `AUTO-PAYOUT-${moment().format('YYYYMMDD-HHmmss')}-${Math.floor(100 + Math.random() * 900)}`;
+
+      await db.Financial_Automation_Log.create({
+        batchCode,
+        jobType: 'DOCTOR_SETTLEMENT_PAYOUT',
+        status: 'SUCCESS',
+        totalItems: itemsToPay.length,
+        totalAmount: totalPayout,
+        details: JSON.stringify(moneyTraceDetails),
+        triggeredBy: adminId ? 'ADMIN_MANUAL' : 'SYSTEM_CRON',
+        adminId: adminId || null,
+        executionTimeMs: 0,
+      });
+    } catch (logErr) {
+      console.warn('Lỗi ghi Financial_Automation_Log:', logErr.message);
+    }
+
     return {
       errCode: 0,
       message: `Đã chi trả thành công ${totalPayout.toLocaleString('vi-VN')} ₫ cho ${itemsToPay.length} ca khám!`,
@@ -409,9 +468,178 @@ async function payoutDoctorSettlementItems({
   }
 }
 
+/**
+ * 5. Lấy Danh sách Nhật ký Tự động hóa Tài chính (Automation Logs)
+ */
+async function getAutomationLogs({ page = 1, limit = 15, jobType = 'ALL' } = {}) {
+  try {
+    const p = Math.max(1, parseInt(page, 10) || 1);
+    const lim = Math.max(1, Math.min(100, parseInt(limit, 10) || 15));
+    const offset = (p - 1) * lim;
+
+    const where = {};
+    if (jobType && jobType !== 'ALL') {
+      where.jobType = jobType;
+    }
+
+    const { count, rows } = await db.Financial_Automation_Log.findAndCountAll({
+      where,
+      limit: lim,
+      offset,
+      order: [['id', 'DESC']],
+    });
+
+    const parsedRows = rows.map((r) => {
+      let parsedDetails = [];
+      try {
+        parsedDetails = r.details ? JSON.parse(r.details) : [];
+      } catch (e) {
+        parsedDetails = [];
+      }
+      return {
+        id: r.id,
+        batchCode: r.batchCode,
+        jobType: r.jobType,
+        status: r.status,
+        totalItems: r.totalItems,
+        totalAmount: Number(r.totalAmount || 0),
+        triggeredBy: r.triggeredBy,
+        executionTimeMs: r.executionTimeMs,
+        createdAt: r.createdAt,
+        itemCount: parsedDetails.length,
+      };
+    });
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: parsedRows,
+      pagination: {
+        page: p,
+        limit: lim,
+        total: count,
+        totalPages: Math.ceil(count / lim),
+      },
+    };
+  } catch (error) {
+    console.error('Error in getAutomationLogs:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi tải nhật ký tự động hóa' };
+  }
+}
+
+/**
+ * 6. Lấy Chi tiết Bóc tách Luồng Tiền Đi - Đến của một Phiên Nhật ký
+ */
+async function getAutomationLogDetail(logId) {
+  try {
+    const log = await db.Financial_Automation_Log.findByPk(logId);
+    if (!log) {
+      return { errCode: 1, errMessage: 'Không tìm thấy phiên nhật ký tự động hóa' };
+    }
+
+    let parsedDetails = [];
+    try {
+      parsedDetails = log.details ? JSON.parse(log.details) : [];
+    } catch (e) {
+      parsedDetails = [];
+    }
+
+    return {
+      errCode: 0,
+      errMessage: 'OK',
+      data: {
+        id: log.id,
+        batchCode: log.batchCode,
+        jobType: log.jobType,
+        status: log.status,
+        totalItems: log.totalItems,
+        totalAmount: Number(log.totalAmount || 0),
+        triggeredBy: log.triggeredBy,
+        executionTimeMs: log.executionTimeMs,
+        createdAt: log.createdAt,
+        moneyTraceItems: parsedDetails,
+      },
+    };
+  } catch (error) {
+    console.error('Error in getAutomationLogDetail:', error);
+    return { errCode: -1, errMessage: 'Lỗi khi lấy chi tiết phiên nhật ký' };
+  }
+}
+
+/**
+ * 7. Chu trình Kích hoạt Tự động Chi trả Toàn bộ ca AVAILABLE (Auto Run Cycle)
+ * Gom nhóm theo từng bác sĩ và tự động kết chuyển vào ví, đồng thời sinh log truy vết luồng tiền
+ */
+async function autoRunDoctorPayoutCycle({ adminId = null } = {}) {
+  const t0 = Date.now();
+  try {
+    // 1. Lấy toàn bộ các ca khám AVAILABLE
+    const availableItems = await db.Doctor_Settlement_Item.findAll({
+      where: { status: 'AVAILABLE' },
+      order: [['doctorId', 'ASC'], ['id', 'ASC']],
+    });
+
+    if (!availableItems || availableItems.length === 0) {
+      return {
+        errCode: 0,
+        message: 'Hiện không có ca khám nào ở trạng thái Khả dụng (AVAILABLE) để quyết toán',
+        data: { totalProcessed: 0, totalAmount: 0 },
+      };
+    }
+
+    // 2. Nhóm theo doctorId
+    const doctorGroupMap = new Map();
+    for (const item of availableItems) {
+      const docId = item.doctorId;
+      if (!doctorGroupMap.has(docId)) {
+        doctorGroupMap.set(docId, []);
+      }
+      doctorGroupMap.get(docId).push(item);
+    }
+
+    let grandTotalAmount = 0;
+    let grandTotalCount = 0;
+    const allMoneyTraceDetails = [];
+
+    // 3. Xử lý từng bác sĩ
+    for (const [docId, docItems] of doctorGroupMap.entries()) {
+      const docItemIds = docItems.map((x) => x.id);
+      const res = await payoutDoctorSettlementItems({
+        doctorId: docId,
+        itemIds: docItemIds,
+        payoutMethod: 'WALLET',
+        adminId,
+        note: 'Tự động quyết toán chu trình T+0',
+      });
+
+      if (res && res.errCode === 0) {
+        grandTotalAmount += res.data.totalPayout;
+        grandTotalCount += res.data.paidItemCount;
+      }
+    }
+
+    return {
+      errCode: 0,
+      message: `Đã hoàn tất chu trình tự động: Quyết toán thành công ${grandTotalAmount.toLocaleString('vi-VN')} ₫ cho ${grandTotalCount} ca khám của ${doctorGroupMap.size} bác sĩ!`,
+      data: {
+        totalProcessed: grandTotalCount,
+        totalAmount: grandTotalAmount,
+        doctorCount: doctorGroupMap.size,
+        executionTimeMs: Date.now() - t0,
+      },
+    };
+  } catch (error) {
+    console.error('Error in autoRunDoctorPayoutCycle:', error);
+    return { errCode: -1, errMessage: error.message || 'Lỗi khi chạy chu trình tự động quyết toán' };
+  }
+}
+
 module.exports = {
   recordCompletedBookingSettlement,
   releaseEligibleSettlements,
   getDoctorSettlementItems,
   payoutDoctorSettlementItems,
+  getAutomationLogs,
+  getAutomationLogDetail,
+  autoRunDoctorPayoutCycle,
 };

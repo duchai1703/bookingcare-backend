@@ -1,6 +1,7 @@
 // bookingcare-backend/src/controllers/walletController.js
 'use strict';
 
+const db = require('../models');
 const walletService = require('../services/walletService');
 
 /**
@@ -294,6 +295,15 @@ async function handleGetDoctorWallet(req, res) {
     const available = Number(wallet.availableBalance) || 0;
     const reserved = Number(wallet.reservedBalance) || 0;
 
+    let owner = null;
+    try {
+      owner = await db.User.findByPk(doctorId, {
+        attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber'],
+      });
+    } catch (e) {
+      console.warn('Could not load doctor owner details:', e.message);
+    }
+
     const recentTx = await walletService.getWalletTransactions(doctorId, {
       page: 1,
       limit: 10,
@@ -304,13 +314,17 @@ async function handleGetDoctorWallet(req, res) {
       errCode: 0,
       errMessage: 'OK',
       data: {
+        id: wallet.id,
         walletId: wallet.id,
         doctorId,
         walletType: 'DOCTOR',
+        balance: available,
         availableBalance: available,
+        holdBalance: reserved,
         reservedBalance: reserved,
         totalBalance: available + reserved,
         status: wallet.status,
+        owner,
         recentTransactions: recentTx.data?.transactions || [],
       },
     });
@@ -523,7 +537,69 @@ async function handleGetFinancialCashFlows(req, res) {
   }
 }
 
+
+/**
+ * [PHASE 6] POST /api/v1/admin/financial/float-allocate
+ * Admin trích vốn nhàn rỗi đi đầu tư / làm việc khác
+ */
+async function handleAllocateFloatCapital(req, res) {
+  try {
+    const { amount, note, dueDate, overrideConfirm } = req.body;
+    const adminId = req.user?.id;
+    const result = await walletService.allocateFloatCapital({
+      amount,
+      note,
+      dueDate,
+      overrideConfirm,
+      adminId,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleAllocateFloatCapital:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 6] POST /api/v1/admin/financial/float-reimburse
+ * Admin bù hoàn vốn về két sàn
+ */
+async function handleReimburseFloatCapital(req, res) {
+  try {
+    const { amount, note } = req.body;
+    const adminId = req.user?.id;
+    const result = await walletService.reimburseFloatCapital({
+      amount,
+      note,
+      adminId,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleReimburseFloatCapital:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+
+/**
+ * [PHASE 7] GET /api/v1/admin/financial/periodic-cycles
+ * Lấy danh sách chu kỳ ngân quỹ định kỳ & bảng đối soát tổng lũy kế
+ */
+async function handleGetPeriodicTreasuryCycles(req, res) {
+  try {
+    const { months } = req.query;
+    const result = await walletService.getPeriodicTreasuryCycles({ months });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetPeriodicTreasuryCycles:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
+  handleGetPeriodicTreasuryCycles,
+  handleAllocateFloatCapital,
+  handleReimburseFloatCapital,
   handleGetMyWallet,
   handleCreateDepositUrl,
   handleVNPayDepositIPN,

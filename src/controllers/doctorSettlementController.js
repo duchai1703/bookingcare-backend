@@ -98,10 +98,57 @@ async function handleUnlockSingleSettlement(req, res) {
   }
 }
 
+/**
+ * GET /api/v1/admin/financial/automation-logs
+ * Lấy danh sách các phiên chạy tự động hóa tài chính
+ */
+async function handleGetAutomationLogs(req, res) {
+  try {
+    const result = await doctorSettlementService.getAutomationLogs(req.query);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAutomationLogs:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * GET /api/v1/admin/financial/automation-logs/:id
+ * Lấy chi tiết bóc tách luồng tiền đi - đến của một phiên nhật ký
+ */
+async function handleGetAutomationLogDetail(req, res) {
+  try {
+    const { id } = req.params;
+    const result = await doctorSettlementService.getAutomationLogDetail(id);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAutomationLogDetail:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * POST /api/v1/admin/financial/doctor-settlements/auto-run
+ * Kích hoạt chu trình tự động quét và quyết toán toàn bộ các ca AVAILABLE sang ví Bác sĩ
+ */
+async function handleAutoRunPayoutCycle(req, res) {
+  try {
+    const adminId = req.user?.id || 1;
+    const result = await doctorSettlementService.autoRunDoctorPayoutCycle({ adminId });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleAutoRunPayoutCycle:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetAdminSettlementItems,
   handlePayoutDoctorSettlements,
   handleGetDoctorSettlementStatement,
   handleReleaseEligibleSettlements,
   handleUnlockSingleSettlement,
+  handleGetAutomationLogs,
+  handleGetAutomationLogDetail,
+  handleAutoRunPayoutCycle,
 };
