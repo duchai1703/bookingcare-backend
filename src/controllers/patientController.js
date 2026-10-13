@@ -113,6 +113,24 @@ const handleCancelBooking = async (req, res) => {
   }
 };
 
+// GET /api/v1/patient/bookings/:id/cancel-preview — Xem trước chính sách hoàn tiền
+const handleGetCancelPreview = async (req, res) => {
+  try {
+    const patientId = req.user.id;
+    const bookingId = parseInt(req.params.id, 10);
+    if (!bookingId || isNaN(bookingId)) {
+      return res.status(400).json({ errCode: 1, message: 'ID lịch hẹn không hợp lệ!' });
+    }
+    const result = await patientService.getCancelPreview(bookingId, patientId);
+    const statusMap = { 0: 200, 1: 400, 2: 404 };
+    const httpStatus = statusMap[result.errCode] || 500;
+    return res.status(httpStatus).json(result);
+  } catch (err) {
+    console.error('>>> handleGetCancelPreview error:', err);
+    return res.status(500).json({ errCode: -1, message: 'Lỗi server!' });
+  }
+};
+
 // GET /api/v1/patient/bookings/:bookingId/attachments
 const handleGetAttachments = async (req, res) => {
   try {
@@ -297,6 +315,7 @@ module.exports = {
   handleChangePassword,
   getPatientBookings,
   handleCancelBooking,
+  handleGetCancelPreview,
   handleGetAttachments,
   handleUploadAttachment,
   handleDownloadAttachment,

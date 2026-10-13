@@ -445,21 +445,23 @@ const postBookAppointment = async (data, patientId) => {
     // ═══════════════════════════════════════════════════════════
     await t.commit(); // DS-05: commit DB trước
 
-    // Gửi email NGOÀI transaction — lỗi email không ảnh hưởng DB
-    const redirectLink = `${process.env.URL_REACT}/verify-booking?token=${token}&doctorId=${data.doctorId}`;
-    try {
-      await emailService.sendEmailBooking({
-        email: data.email,
-        patientName: data.fullName,
-        doctorName: computedDoctorName,
-        time: computedTimeString || '',
-        date: computedDateString,
-        redirectLink: redirectLink,
-        language: data.language || 'vi',
-      });
-    } catch (emailErr) {
-      // [NEW LOGIC VNPAY-MAIL]: Lỗi 26 — Log cảnh báo, KHÔNG rollback
-      console.warn('>>> [EMAIL_WARNING] Không gửi được email xác thực:', emailErr.message);
+    // Gửi email NGOÀI transaction — lỗi email không ảnh hưởng DB (chỉ gửi email xác thực S1 cho thanh toán truyền thống, không gửi cho Ví BookingCare đã thanh toán và xác nhận S2)
+    if (!isWalletPayment) {
+      const redirectLink = `${process.env.URL_REACT}/verify-booking?token=${token}&doctorId=${data.doctorId}`;
+      try {
+        await emailService.sendEmailBooking({
+          email: data.email,
+          patientName: data.fullName,
+          doctorName: computedDoctorName,
+          time: computedTimeString || '',
+          date: computedDateString,
+          redirectLink: redirectLink,
+          language: data.language || 'vi',
+        });
+      } catch (emailErr) {
+        // [NEW LOGIC VNPAY-MAIL]: Lỗi 26 — Log cảnh báo, KHÔNG rollback
+        console.warn('>>> [EMAIL_WARNING] Không gửi được email xác thực:', emailErr.message);
+      }
     }
 
     // Gửi thông báo cho Bác sĩ về lịch khám mới
@@ -2131,6 +2133,54 @@ const rescheduleBooking = async (bookingId, patientId, payload = {}) => {
   }
 };
 
+// Lấy bản xem trước chính sách hoàn tiền khi hủy lịch (Canonical Policy Engine SSOT)
+const getCancelPreview = async (bookingId, patientId) => {
+  try {
+    if (!bookingId || !patientId) {
+      return { errCode: 1, message: 'Thiếu thông tin lịch hẹn hoặc bệnh nhân!' };
+    }
+    const booking = await db.Booking.findOne({
+      where: { id: bookingId, patientId },
+      include: [
+        { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      ],
+    });
+    if (!booking) {
+      return { errCode: 2, message: 'Không tìm thấy lịch hẹn!' };
+    }
+    const now = new Date();
+    const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
+    const isPaid = ['S2', 'S3'].includes(booking.statusId) || booking.paymentStatus === 'paid';
+    return {
+      errCode: 0,
+      data: {
+        bookingId: booking.id,
+        bookingCode: `#BK-${booking.id}`,
+        statusId: booking.statusId,
+        statusLabel: booking.statusData?.valueVi || booking.statusId,
+        isPaid,
+        hoursBefore: refundCalc.hoursBefore,
+        hoursSinceCreation: refundCalc.hoursSinceCreation,
+        appliedRefundPercent: isPaid ? refundCalc.appliedRefundPercent : 0,
+        refundRate: isPaid ? refundCalc.appliedRefundPercent : 0,
+        refundAmount: isPaid ? refundCalc.refundAmount : 0,
+        originalAmount: refundCalc.originalAmount,
+        timingExplanation: refundCalc.timingExplanation,
+        reason: refundCalc.reason,
+        policyNotice: isPaid
+          ? (refundCalc.refundAmount > 0
+            ? `Theo chính sách hoàn tiền (${refundCalc.timingExplanation}), bạn được hoàn ${refundCalc.appliedRefundPercent}% số tiền khám (${Number(refundCalc.refundAmount).toLocaleString('vi-VN')} VNĐ).`
+            : 'Theo chính sách, lịch hẹn không đủ điều kiện hoàn tiền.')
+          : 'Lịch hẹn chưa thanh toán nên không phát sinh hoàn tiền.',
+        paymentMethod: booking.paymentMethod || (booking.vnpayTransactionNo ? 'VNPAY' : (isPaid ? 'WALLET' : null)),
+      },
+    };
+  } catch (err) {
+    console.error('getCancelPreview error:', err);
+    return { errCode: -1, message: 'Lỗi server khi tính toán hoàn tiền!' };
+  }
+};
+
 module.exports = {
   postBookAppointment,
   postVerifyBookAppointment,
@@ -2139,6 +2189,7 @@ module.exports = {
   changePassword,
   getPatientBookings,
   cancelBooking,
+  getCancelPreview,
   getBookingAttachments,
   uploadBookingAttachment,
   downloadBookingAttachment,
