@@ -199,14 +199,16 @@ async function runPhase08Audit() {
       fixturesCreated.push(journeyBookingId);
 
       const dbBooking = await db.Booking.findByPk(journeyBookingId);
-      assert.strictEqual(dbBooking.statusId, 'S1');
+      assert.strictEqual(dbBooking.statusId, 'S2');
+      assert.strictEqual(dbBooking.paymentStatus, 'paid');
+      assert.strictEqual(dbBooking.paymentMethod, 'WALLET');
       assert.strictEqual(dbBooking.patientId, PATIENT_A_ID);
-      logPass(`JOURNEY A: Health -> Specialty -> Doctor -> Slot -> Real S1 Booking (#${journeyBookingId})`);
+      logPass(`JOURNEY A: Health -> Specialty -> Doctor -> Slot -> Real S2 Wallet Booking (#${journeyBookingId})`);
     } catch (err) {
       logFail('JOURNEY A: Booking journey failed', err);
     }
 
-    // JOURNEY B: Booking -> Payment status lookup -> Real signed VNPay URL
+    // JOURNEY B: Booking -> Payment status lookup (paid for Wallet) -> Unpaid Booking -> Real signed VNPay URL
     try {
       assert(journeyBookingId, 'Requires booking from Journey A');
       const payStatusRes = await axios.get(
@@ -214,13 +216,30 @@ async function runPhase08Audit() {
         { headers: { Authorization: `Bearer ${tokenA}` } }
       );
       assert.strictEqual(payStatusRes.data.status, 'success');
-      assert.strictEqual(payStatusRes.data.paymentStatus, 'unpaid');
+      assert.strictEqual(payStatusRes.data.paymentStatus, 'paid');
 
-      // Request VNPay payment URL
+      // Tạo một booking S1 unpaid để kiểm tra tạo URL thanh toán VNPay
+      const unpaidDate = String(Date.now() + 9 * 86400000);
+      const unpaidBooking = await db.Booking.create({
+        statusId: 'S1',
+        doctorId: DOCTOR_ID,
+        patientId: PATIENT_A_ID,
+        date: unpaidDate,
+        timeType: 'T2',
+        token: 'j_unpaid_' + Date.now(),
+        bookingPrice: 300000,
+        paymentStatus: 'unpaid',
+        paymentMethod: 'VNPAY',
+        patientName: 'Nguyễn Văn Unpaid',
+        patientPhoneNumber: '0901234567',
+      });
+      fixturesCreated.push(unpaidBooking.id);
+
+      // Request VNPay payment URL for unpaid booking
       const payUrlRes = await axios.post(
         `${BASE_URL}/api/v1/ai/booking/pay`,
         {
-          bookingId: journeyBookingId,
+          bookingId: unpaidBooking.id,
           bankCode: 'NCB',
         },
         { headers: { Authorization: `Bearer ${tokenA}` } }
@@ -228,7 +247,7 @@ async function runPhase08Audit() {
       assert.strictEqual(payUrlRes.data.status, 'success');
       assert(payUrlRes.data.paymentUrl.includes('vnp_SecureHash='));
       assert(payUrlRes.data.paymentUrl.includes('vnp_Amount='));
-      logPass('JOURNEY B: Booking -> Live Payment Status (unpaid) -> Real Signed VNPay URL');
+      logPass('JOURNEY B: Booking -> Live Payment Status (paid) & Unpaid Booking -> Real Signed VNPay URL');
     } catch (err) {
       logFail('JOURNEY B: Payment journey failed', err);
     }

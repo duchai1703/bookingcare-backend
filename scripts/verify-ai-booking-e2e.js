@@ -289,7 +289,9 @@ async function runTestSuite() {
       assert.strictEqual(confirmRes.data.type, 'BOOKING_SUCCESS');
       const bookingData = confirmRes.data.data;
       assert(bookingData.bookingId, 'Phải có bookingId thật');
-      assert.strictEqual(bookingData.bookingStatus, 'S1', 'Domain status ban đầu phải là S1 (chờ xác nhận)');
+      assert.strictEqual(bookingData.bookingStatus, 'S2', 'Domain status phải là S2 (xác nhận & thanh toán ví)');
+      assert.strictEqual(bookingData.paymentStatus, 'paid', 'Payment status phải là paid');
+      assert.strictEqual(bookingData.paymentMethod, 'WALLET', 'Payment method phải là WALLET');
       createdBookingId = bookingData.bookingId;
 
       // Verify real PostgreSQL record
@@ -297,9 +299,11 @@ async function runTestSuite() {
       assert(dbBooking, 'Bản ghi Booking phải tồn tại trong PostgreSQL');
       assert.strictEqual(dbBooking.patientId, 52);
       assert.strictEqual(dbBooking.doctorId, doctorId);
-      assert.strictEqual(dbBooking.statusId, 'S1');
+      assert.strictEqual(dbBooking.statusId, 'S2');
+      assert.strictEqual(dbBooking.paymentStatus, 'paid');
+      assert.strictEqual(dbBooking.paymentMethod, 'WALLET');
 
-      logPass(`E2E 03 — EXPLICIT CONFIRMATION: Transaction DB thật thành công, Booking ID: #${createdBookingId}, statusId: S1`);
+      logPass(`E2E 03 — EXPLICIT CONFIRMATION: Transaction DB thật thành công, Booking ID: #${createdBookingId}, statusId: S2, paymentStatus: paid, paymentMethod: WALLET`);
     } catch (err) {
       logFail('E2E 03 — EXPLICIT CONFIRMATION', err);
     }
