@@ -54,10 +54,16 @@ function aiRateLimiter(req, res, next) {
 
   // 1. Concurrent Stream Protection (Max 1 active stream per user)
   if (activeUserStreams.has(userId)) {
-    return res.status(429).json({
-      errCode: 'AI_STREAM_BUSY',
-      message: 'Bạn đang có một phiên trò chuyện đang xử lý. Vui lòng đợi trong giây lát.',
-    });
+    const meta = activeUserStreams.get(userId);
+    // Inline expire zombie lock if older than 45 seconds
+    if (meta && now - meta.startTime > 45000) {
+      activeUserStreams.delete(userId);
+    } else {
+      return res.status(429).json({
+        errCode: 'AI_STREAM_BUSY',
+        message: 'Bạn đang có một phiên trò chuyện đang xử lý. Vui lòng đợi trong giây lát.',
+      });
+    }
   }
 
   // 2. Sliding Window Request Limit
@@ -79,7 +85,7 @@ function aiRateLimiter(req, res, next) {
   // Acquire user stream lock
   activeUserStreams.set(userId, { startTime: now });
 
-  // Hook into response finish / close to release stream mutex automatically
+  // Hook into response finish / close / abort to release stream mutex automatically
   let released = false;
   const releaseLock = () => {
     if (!released) {
@@ -91,6 +97,13 @@ function aiRateLimiter(req, res, next) {
   res.on('finish', releaseLock);
   res.on('close', releaseLock);
   res.on('error', releaseLock);
+  if (typeof req.on === 'function') {
+    req.on('close', releaseLock);
+    req.on('aborted', releaseLock);
+  }
+  if (req.socket && typeof req.socket.on === 'function') {
+    req.socket.on('close', releaseLock);
+  }
 
   // Also attach release callback to req for manual release if needed
   req.releaseAiStreamLock = releaseLock;

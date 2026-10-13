@@ -12,6 +12,7 @@ const {
   extractPeriodFromText,
 } = require('./aiTimezoneUtils');
 const patientService = require('./patientService');
+const { resolveRealSpecialty, REAL_SPECIALTIES_CATALOG } = require('./aiHealthAssessmentService');
 const aiBookingDraftStore = require('../utils/aiBookingDraftStore');
 const idempotencyStore = require('../utils/idempotencyStore');
 
@@ -94,33 +95,58 @@ async function handleSearchDoctorsBySpecialty(args, signal) {
   const safeName = Array.from(sanitizeWildcard(specialtyName.trim())).slice(0, 500).join('');
   if (signal?.aborted) return { error: 'Đã hủy' };
 
-  // Tìm kiếm danh sách chuyên khoa khớp với từ khóa
-  const matchedSpecialties = await db.Specialty.findAll({
-    where: { name: { [Op.iLike || Op.like]: `%${safeName}%` } },
-    attributes: ['id', 'name'],
-    limit: 5,
-    lock: false,
-  });
+  // 1. Phân giải chuyên khoa qua Catalog chuẩn (SSOT Grounding)
+  // Ngăn chặn hoàn toàn việc hallucinate (ví dụ: 'Nội Thần kinh' -> map chuẩn về 'Thần kinh' ID 2)
+  const resolvedCatalog = resolveRealSpecialty(safeName);
+  let specialty = null;
 
-  if (!matchedSpecialties || matchedSpecialties.length === 0) {
-    return { status: 'empty', specialty: safeName, doctors: [], message: 'Không tìm thấy chuyên khoa phù hợp.' };
+  if (resolvedCatalog) {
+    specialty = await db.Specialty.findByPk(resolvedCatalog.id, {
+      attributes: ['id', 'name'],
+      lock: false,
+    });
+    if (!specialty) {
+      specialty = await db.Specialty.findOne({
+        where: { name: { [Op.iLike || Op.like]: resolvedCatalog.name } },
+        attributes: ['id', 'name'],
+        lock: false,
+      });
+    }
   }
-  if (signal?.aborted) return { error: 'Đã hủy' };
 
-  let specialty = matchedSpecialties[0];
-  // Xử lý ambiguity nếu có nhiều hơn 1 chuyên khoa tương đồng (Section X)
-  if (matchedSpecialties.length > 1) {
-    const exactMatch = matchedSpecialties.find(
-      (s) => s.name.toLowerCase() === safeName.toLowerCase()
-    );
-    if (exactMatch) {
-      specialty = exactMatch;
-    } else {
+  // 2. Nếu không khớp catalog alias, truy vấn trực tiếp CSDL Specialty
+  if (!specialty) {
+    const matchedSpecialties = await db.Specialty.findAll({
+      where: { name: { [Op.iLike || Op.like]: `%${safeName}%` } },
+      attributes: ['id', 'name'],
+      limit: 5,
+      lock: false,
+    });
+
+    if (!matchedSpecialties || matchedSpecialties.length === 0) {
       return {
-        status: 'ambiguous',
-        specialties: matchedSpecialties.map((s) => ({ id: s.id, name: s.name })),
-        message: `Hệ thống tìm thấy nhiều chuyên khoa tương đồng: ${matchedSpecialties.map((s) => s.name).join(', ')}. Bạn muốn tìm bác sĩ cho chuyên khoa nào cụ thể?`,
+        status: 'empty',
+        specialty: safeName,
+        doctors: [],
+        message: `Hệ thống hiện chưa có chuyên khoa "${safeName}". Bạn có thể chọn các chuyên khoa sẵn có như: Cơ xương khớp, Thần kinh, Tim mạch, Da liễu, Tiêu hóa...`,
       };
+    }
+    if (signal?.aborted) return { error: 'Đã hủy' };
+
+    specialty = matchedSpecialties[0];
+    if (matchedSpecialties.length > 1) {
+      const exactMatch = matchedSpecialties.find(
+        (s) => s.name.toLowerCase() === safeName.toLowerCase()
+      );
+      if (exactMatch) {
+        specialty = exactMatch;
+      } else {
+        return {
+          status: 'ambiguous',
+          specialties: matchedSpecialties.map((s) => ({ id: s.id, name: s.name })),
+          message: `Hệ thống tìm thấy nhiều chuyên khoa tương đồng: ${matchedSpecialties.map((s) => s.name).join(', ')}. Bạn muốn tìm bác sĩ cho chuyên khoa nào cụ thể?`,
+        };
+      }
     }
   }
 
@@ -531,20 +557,68 @@ async function handleGetMyBookings(args, userId, signal) {
     whereClause.statusId = { [Op.in]: safeStatus.split(',') };
   }
 
+  // Filter by date (today, tomorrow, or timestamp)
+  if (args.date) {
+    const normalizedTs = normalizeNaturalDateToTimestamp(args.date);
+    if (normalizedTs) {
+      whereClause.date = String(normalizedTs);
+    }
+  }
+
+  if (args.doctorId) {
+    const dId = parseInt(String(args.doctorId), 10);
+    if (Number.isFinite(dId) && dId > 0) {
+      whereClause.doctorId = dId;
+    }
+  }
+
+  // Filter by Family Member or Subject
+  if (args.familyMemberId) {
+    const rawFamId = parseInt(String(args.familyMemberId).replace(/[^\d]/g, ''), 10);
+    if (Number.isFinite(rawFamId) && rawFamId > 0) {
+      whereClause.familyMemberId = rawFamId;
+      whereClause.bookingFor = 'FAMILY';
+    }
+  } else if (args.bookingFor) {
+    const bFor = String(args.bookingFor).toUpperCase();
+    if (['SELF', 'FAMILY'].includes(bFor)) {
+      whereClause.bookingFor = bFor;
+    }
+  }
+
+  const safeLimit = Math.min(parseInt(String(args.limit || 5), 10) || 5, 20);
+
   const bookings = await db.Booking.findAll({
     where: whereClause,
     attributes: [
       'id', 'date', 'timeType', 'statusId', 'paymentStatus',
-      'bookingPrice', 'reason', 'patientName', 'createdAt',
+      'bookingPrice', 'reason', 'patientName', 'bookingFor', 'createdAt',
+      'cancellationReason', 'cancellationType', 'refundAmount', 'refundRate', 'refundStatus',
     ],
-    limit: 5,
+    limit: safeLimit,
     order: [['createdAt', 'DESC']],
     lock: false,
     include: [
       {
         model: db.User,
         as: 'doctorBookingData',
-        attributes: ['firstName', 'lastName'],
+        attributes: ['id', 'firstName', 'lastName'],
+        include: [
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            ],
+          },
+        ],
+      },
+      {
+        model: db.Family_Member,
+        as: 'familyMemberData',
+        attributes: ['id', 'fullName', 'relationship'],
       },
       {
         model: db.Allcode,
@@ -559,19 +633,72 @@ async function handleGetMyBookings(args, userId, signal) {
     ],
   });
 
+  let filtered = bookings;
+  if (args.doctorName && typeof args.doctorName === 'string') {
+    const docQuery = args.doctorName.toLowerCase().replace(/^(bác\s*sĩ|bs|dr\.?)\s*/gi, '').trim();
+    filtered = filtered.filter(b => {
+      const d = b.doctorBookingData;
+      const full = `${d?.lastName || ''} ${d?.firstName || ''}`.toLowerCase();
+      return full.includes(docQuery);
+    });
+  }
+
+  if (args.specialtyName && typeof args.specialtyName === 'string') {
+    const specQuery = args.specialtyName.toLowerCase().trim();
+    filtered = filtered.filter(b => {
+      const s = b.doctorBookingData?.doctorInfoData?.specialtyData?.name || '';
+      return s.toLowerCase().includes(specQuery);
+    });
+  }
+
+  if (args.familyMemberName && typeof args.familyMemberName === 'string') {
+    const famQuery = args.familyMemberName.toLowerCase().trim();
+    filtered = filtered.filter(b => {
+      const famName = b.familyMemberData?.fullName || '';
+      return famName.toLowerCase().includes(famQuery);
+    });
+  }
+
   return {
     status: 'success',
-    bookings: bookings.map((b) => {
+    total: filtered.length,
+    bookings: filtered.map((b) => {
       const j = b.toJSON();
+      const parsedDate = new Date(parseInt(j.date, 10));
+      const dateFormatted = !isNaN(parsedDate.getTime())
+        ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
+        : j.date;
+
+      const isPaid = j.paymentStatus === 'paid' || j.statusId === 'S2' || j.statusId === 'S3';
+      const paymentMethod = j.paymentMethod || 'WALLET';
+      const isNoShow = j.cancellationReason === 'PATIENT_NO_SHOW' || j.cancellationType === 'SYSTEM_NO_SHOW' || j.cancellationType === 'NO_SHOW';
+
       return maskPII({
         bookingId: j.id,
+        bookingCode: `#BK-${j.id}`,
         doctor: `${j.doctorBookingData?.lastName || ''} ${j.doctorBookingData?.firstName || ''}`.trim(),
+        specialty: j.doctorBookingData?.doctorInfoData?.specialtyData?.name || '',
+        clinic: j.doctorBookingData?.doctorInfoData?.clinicData?.name || '',
+        clinicAddress: j.doctorBookingData?.doctorInfoData?.clinicData?.address || '',
         date: j.date,
+        dateFormatted,
         time: j.timeTypeBooking?.valueVi,
-        status: j.statusData?.valueVi,
+        status: isNoShow ? 'Vắng mặt (No-Show)' : j.statusData?.valueVi,
         statusId: j.statusId,
-        paymentStatus: j.paymentStatus,
+        cancellationReason: j.cancellationReason || null,
+        cancellationType: j.cancellationType || null,
+        isNoShow,
+        paymentStatus: j.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+        paymentMethod,
+        isPaid,
         price: j.bookingPrice,
+        priceFormatted: j.bookingPrice ? `${Number(j.bookingPrice).toLocaleString('vi-VN')} đ` : '',
+        refundRate: j.refundRate ? Number(j.refundRate) : (isNoShow ? 75 : null),
+        refundAmount: j.refundAmount ? Number(j.refundAmount) : null,
+        bookingFor: j.bookingFor || 'SELF',
+        patientTarget: j.bookingFor === 'FAMILY' && j.familyMemberData
+          ? `${j.familyMemberData.fullName} (${j.familyMemberData.relationship})`
+          : 'Bản thân',
         reason: j.reason ? Array.from(j.reason).slice(0, 200).join('') : '',
       });
     }),
@@ -934,11 +1061,15 @@ async function handleGetFamilyMembers(args, userId, signal) {
       total: res.data.length,
       members: res.data.map((m) => {
         const j = typeof m.toJSON === 'function' ? m.toJSON() : m;
+        const displayName = j.fullName || j.name || 'Người thân';
         return maskPII({
           id: j.id,
-          name: j.name,
+          name: displayName,
+          fullName: displayName,
           relationship: j.relationship,
           gender: j.gender,
+          phoneNumber: j.phoneNumber || '',
+          birthday: j.birthday || '',
           isPrimary: j.isPrimary,
         });
       }),
@@ -946,6 +1077,436 @@ async function handleGetFamilyMembers(args, userId, signal) {
   } catch (err) {
     console.error('[AI_FN] getFamilyMembers error:', err?.message || err);
     return { status: 'error', message: 'Lỗi khi tra cứu danh sách người thân.' };
+  }
+}
+
+// Handler 9B: createFamilyMember (Authenticated — Patient IDOR protected)
+async function handleCreateFamilyMember(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để tạo hồ sơ người thân.' };
+  }
+
+  const {
+    fullName,
+    relationship,
+    gender,
+    birthday,
+    dateOfBirth,
+    phoneNumber,
+    phone,
+    address,
+    nationalId,
+    medicalHistory,
+    drugAllergies,
+    notes,
+  } = args;
+
+  if (!fullName || typeof fullName !== 'string' || fullName.trim().length < 2) {
+    return {
+      status: 'error',
+      error: 'validation_error',
+      message: 'Họ và tên người thân là bắt buộc và phải có ít nhất 2 ký tự.',
+    };
+  }
+
+  const rawPhone = phoneNumber || phone;
+  if (rawPhone && typeof rawPhone === 'string' && rawPhone.trim()) {
+    const phoneRegex = /^[0-9]{10,11}$/;
+    if (!phoneRegex.test(rawPhone.trim())) {
+      return {
+        status: 'error',
+        error: 'validation_error',
+        message: 'Số điện thoại người thân không hợp lệ (cần 10-11 chữ số).',
+      };
+    }
+  }
+
+  // Normalize relationship
+  let rel = 'OTHER';
+  if (relationship) {
+    const rUpper = String(relationship).trim().toUpperCase();
+    if (['CHILD', 'CON', 'CON GÁI', 'CON TRAI'].includes(rUpper)) rel = 'CHILD';
+    else if (['PARENT', 'BỐ', 'MẸ', 'BO', 'ME', 'CHA', 'MẸ ĐẺ', 'BỐ ĐẺ'].includes(rUpper)) rel = 'PARENT';
+    else if (['SPOUSE', 'VỢ', 'CHỒNG', 'VO', 'CHONG'].includes(rUpper)) rel = 'SPOUSE';
+    else rel = 'OTHER';
+  }
+
+  // Normalize gender
+  let g = 'G1';
+  if (gender) {
+    const gUpper = String(gender).trim().toUpperCase();
+    if (['G1', 'M', 'MALE', 'NAM'].includes(gUpper)) g = 'G1';
+    else if (['G2', 'F', 'FEMALE', 'NỮ', 'NU'].includes(gUpper)) g = 'G2';
+    else g = 'G3';
+  }
+
+  // Format birthday from birthday or dateOfBirth
+  const finalBirthday = birthday || dateOfBirth || null;
+
+  // Merge drugAllergies into medicalHistory
+  let finalMedicalHistory = medicalHistory ? String(medicalHistory).trim() : '';
+  if (drugAllergies && typeof drugAllergies === 'string' && drugAllergies.trim()) {
+    const cleanAllergy = drugAllergies.trim();
+    if (!finalMedicalHistory.toLowerCase().includes(cleanAllergy.toLowerCase())) {
+      finalMedicalHistory = finalMedicalHistory
+        ? `${finalMedicalHistory}; Dị ứng: ${cleanAllergy}`
+        : `Dị ứng: ${cleanAllergy}`;
+    }
+  }
+
+  try {
+    const familyMemberService = require('./familyMemberService');
+    const res = await familyMemberService.createFamilyMember(safeUserId, {
+      fullName: fullName.trim(),
+      relationship: rel,
+      gender: g,
+      birthday: finalBirthday,
+      phoneNumber: rawPhone ? String(rawPhone).trim() : null,
+      address: address ? address.trim() : null,
+      nationalId: nationalId ? nationalId.trim() : null,
+      medicalHistory: finalMedicalHistory || null,
+      notes: notes ? notes.trim() : null,
+    });
+
+    if (res.errCode !== 0 || !res.data) {
+      return {
+        status: 'error',
+        error: 'creation_failed',
+        message: res.message || 'Không thể tạo hồ sơ người thân.',
+      };
+    }
+
+    const created = res.data;
+    return {
+      status: 'success',
+      type: 'FAMILY_MEMBER_CREATED',
+      message: `Đã thêm hồ sơ người thân "${created.fullName}" vào sổ y bạ thành công!`,
+      data: {
+        id: created.id,
+        fullName: created.fullName,
+        relationship: created.relationship,
+        gender: created.gender,
+        birthday: created.birthday,
+        phoneNumber: created.phoneNumber,
+        address: created.address,
+        nationalId: created.nationalId,
+        medicalHistory: created.medicalHistory,
+        notes: created.notes,
+      },
+    };
+  } catch (err) {
+    console.error('[AI_FN] createFamilyMember error:', err?.message || err);
+    return { status: 'error', message: 'Lỗi khi tạo hồ sơ người thân.' };
+  }
+}
+
+// Handler 9C: getWalletTransactions (Authenticated — Patient IDOR protected)
+async function handleGetWalletTransactions(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để xem lịch sử giao dịch ví.' };
+  }
+
+  try {
+    const walletService = require('./walletService');
+    const safeLimit = Math.min(parseInt(String(args.limit || 5), 10) || 5, 20);
+    const res = await walletService.getWalletTransactions(safeUserId, {
+      page: 1,
+      limit: safeLimit,
+      type: args.type,
+    });
+
+    if (res.errCode !== 0 || !res.data) {
+      return { status: 'empty', message: res.errMessage || 'Không thể tra cứu lịch sử giao dịch ví.' };
+    }
+
+    const txList = res.data.transactions || [];
+    if (txList.length === 0) {
+      return { status: 'empty', message: 'Bạn chưa có giao dịch nào phát sinh trên ví BookingCare.' };
+    }
+
+    let availableBalance = 0;
+    try {
+      const overviewRes = await walletService.getWalletOverview(safeUserId);
+      if (overviewRes && overviewRes.errCode === 0 && overviewRes.data) {
+        availableBalance = Number(overviewRes.data.availableBalance) || 0;
+      }
+    } catch {
+      // Non-blocking fallback
+    }
+
+    return {
+      status: 'success',
+      balance: availableBalance,
+      balanceFormatted: `${availableBalance.toLocaleString('vi-VN')} đ`,
+      total: res.data.total || txList.length,
+      transactions: txList.map((tx) => {
+        const j = typeof tx.toJSON === 'function' ? tx.toJSON() : tx;
+        const amt = Number(j.amount) || 0;
+        const bal = Number(j.balanceAfter) || 0;
+        return {
+          id: j.id,
+          direction: j.direction,
+          amount: amt,
+          amountFormatted: `${amt.toLocaleString('vi-VN')} đ`,
+          balanceAfter: bal,
+          balanceAfterFormatted: `${bal.toLocaleString('vi-VN')} đ`,
+          type: j.transactionType,
+          referenceType: j.referenceType,
+          referenceId: j.referenceId,
+          description: j.description,
+          status: j.status,
+          date: j.createdAt,
+        };
+      }),
+    };
+  } catch (err) {
+    console.error('[AI_FN] getWalletTransactions error:', err?.message || err);
+    return { status: 'error', message: 'Lỗi khi tra cứu lịch sử giao dịch ví.' };
+  }
+}
+
+// Handler 9D: getAppointmentDetail (Authenticated — Patient IDOR protected)
+async function handleGetAppointmentDetail(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để xem chi tiết lịch khám.' };
+  }
+
+  const whereClause = { patientId: safeUserId };
+  const queryBookingId = args.bookingId || args.bookingCode;
+  if (queryBookingId) {
+    const rawId = String(queryBookingId).replace(/[^\d]/g, '');
+    if (rawId) {
+      whereClause.id = parseInt(rawId, 10);
+    }
+  }
+
+  const booking = await db.Booking.findOne({
+    where: whereClause,
+    order: [['createdAt', 'DESC']],
+    include: [
+      {
+        model: db.User,
+        as: 'doctorBookingData',
+        attributes: ['id', 'firstName', 'lastName'],
+        include: [
+          { model: db.Allcode, as: 'positionData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+          {
+            model: db.Doctor_Info,
+            as: 'doctorInfoData',
+            attributes: ['specialtyId', 'clinicId'],
+            include: [
+              { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+              { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+            ],
+          },
+        ],
+      },
+      {
+        model: db.Family_Member,
+        as: 'familyMemberData',
+        attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber', 'medicalHistory'],
+      },
+      { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+      { model: db.Review, as: 'reviewData', attributes: ['id', 'rating', 'comment'] },
+      {
+        model: db.BookingMedicine,
+        as: 'bookingMedicines',
+        include: [{ model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'unit'] }],
+      },
+      {
+        model: db.BookingAttachment,
+        as: 'attachments',
+        attributes: ['id', 'fileName', 'fileType', 'fileSize', 'createdAt'],
+      },
+    ],
+  });
+
+  if (!booking) {
+    return { status: 'empty', message: 'Không tìm thấy thông tin lịch hẹn yêu cầu.' };
+  }
+
+  // IDOR check
+  if (Number(booking.patientId) !== safeUserId) {
+    return { status: 'error', error: 'unauthorized', message: 'Bạn không có quyền xem lịch hẹn của người khác.' };
+  }
+
+  const parsedDate = new Date(parseInt(booking.date, 10));
+  const dateFormatted = !isNaN(parsedDate.getTime())
+    ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
+    : booking.date;
+
+  const timeLabel = booking.timeTypeBooking?.valueVi || booking.timeType;
+  const doctor = booking.doctorBookingData;
+  const docName = doctor ? `${doctor.lastName || ''} ${doctor.firstName || ''}`.trim() : 'Bác sĩ';
+  const posName = doctor?.positionData?.valueVi || '';
+  const specName = doctor?.doctorInfoData?.specialtyData?.name || '';
+  const clinicName = doctor?.doctorInfoData?.clinicData?.name || '';
+  const clinicAddress = doctor?.doctorInfoData?.clinicData?.address || '';
+
+  const bookingPrice = Number(booking.bookingPrice) || 0;
+  const bookingPriceFormatted = `${bookingPrice.toLocaleString('vi-VN')} VNĐ`;
+
+  const medicines = (booking.bookingMedicines || []).map(bm => ({
+    name: bm.medicineData?.name || 'Thuốc',
+    unit: bm.medicineData?.unit || 'viên',
+    quantity: bm.quantity,
+    usage: bm.usageInstructions || bm.usage || '',
+  }));
+
+  const attachments = (booking.attachments || []).map(att => ({
+    id: att.id,
+    fileName: att.fileName,
+    fileType: att.fileType,
+    fileSize: att.fileSize,
+  }));
+
+  const isPaid = booking.paymentStatus === 'paid' || booking.statusId === 'S2' || booking.statusId === 'S3';
+  const paymentMethod = booking.paymentMethod || (booking.vnpayTransactionNo ? 'VNPAY' : 'WALLET');
+
+  return {
+    status: 'success',
+    bookingId: booking.id,
+    bookingCode: `#BK-${booking.id}`,
+    bookingFor: booking.bookingFor || 'SELF',
+    patient: {
+      name: booking.patientName || '',
+      phone: booking.patientPhoneNumber || '',
+      address: booking.patientAddress || '',
+      gender: booking.patientGender || '',
+    },
+    familyMember: booking.bookingFor === 'FAMILY' && booking.familyMemberData ? {
+      id: booking.familyMemberData.id,
+      name: booking.familyMemberData.fullName,
+      relationship: booking.familyMemberData.relationship,
+      gender: booking.familyMemberData.gender,
+      birthday: booking.familyMemberData.birthday,
+    } : null,
+    doctor: {
+      doctorId: booking.doctorId,
+      name: docName,
+      position: posName,
+      specialty: specName,
+      clinic: clinicName,
+      address: clinicAddress,
+    },
+    schedule: {
+      date: booking.date,
+      dateFormatted,
+      timeSlot: timeLabel,
+    },
+    bookingStatus: {
+      statusId: booking.statusId,
+      statusLabel: (booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW')
+        ? 'Vắng mặt (No-Show)'
+        : (booking.statusData?.valueVi || booking.statusId),
+      isPaid,
+      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentMethod,
+      isNoShow: booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW',
+    },
+    appointmentStatus: {
+      statusId: booking.statusId,
+      statusLabel: (booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW')
+        ? 'Vắng mặt (No-Show)'
+        : (booking.statusData?.valueVi || booking.statusId),
+      isPaid,
+      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentMethod,
+      isNoShow: booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW',
+    },
+    cancellation: booking.statusId === 'S4' ? {
+      isNoShow: booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW',
+      cancellationType: booking.cancellationType || null,
+      cancellationReason: booking.cancellationReason || null,
+      cancelledAt: booking.cancelledAt || null,
+      reasonExplanation: (booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW')
+        ? 'Ca khám ghi nhận vắng mặt (No-Show). Hệ thống tự động hoàn 75% giá trị ca khám vào ví BookingCare theo chính sách bảo vệ khách hàng.'
+        : (booking.cancellationType === 'DOCTOR'
+          ? `Bác sĩ báo bận: ${booking.cancellationReason || 'Lịch bận đột xuất'}. Đã hoàn 100% vào Ví.`
+          : `Bệnh nhân chủ động hủy: ${booking.cancellationReason || 'Theo yêu cầu bệnh nhân'}.`),
+    } : null,
+    financial: {
+      price: bookingPrice,
+      priceFormatted: bookingPriceFormatted,
+      isPaid,
+      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentMethod,
+      refundRate: booking.refundRate ? Number(booking.refundRate) : ((booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW') ? 75 : null),
+      refundAmount: booking.refundAmount || null,
+      refundMethod: booking.refundMethod || null,
+      refundStatus: booking.refundStatus || null,
+    },
+    clinical: {
+      reason: booking.reason || '',
+      symptoms: booking.symptoms || '',
+      clinicalNotes: booking.clinicalNotes || '',
+      medicines,
+      attachmentsCount: attachments.length,
+      attachments,
+    },
+    isReviewed: !!booking.reviewData,
+    review: booking.reviewData ? {
+      rating: booking.reviewData.rating,
+      comment: booking.reviewData.comment,
+    } : null,
+  };
+}
+
+// Handler 9E: getMyNotifications (Authenticated — Patient IDOR protected)
+async function handleGetMyNotifications(args, userId, signal) {
+  if (signal?.aborted) return { error: 'Đã hủy' };
+
+  const safeUserId = parseInt(String(userId), 10);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) {
+    return { error: 'Yêu cầu đăng nhập tài khoản bệnh nhân để xem thông báo.' };
+  }
+
+  try {
+    const notificationService = require('./notificationService');
+    const limit = Math.min(parseInt(String(args.limit || 5), 10) || 5, 20);
+    const [notifRes, unreadRes] = await Promise.all([
+      notificationService.getUserNotifications(safeUserId, { limit, isRead: args.isRead }),
+      notificationService.getUnreadCount(safeUserId),
+    ]);
+
+    const notifData = notifRes?.data;
+    const notifications = notifData?.notifications || [];
+    const unreadCount = unreadRes?.data?.unreadCount || 0;
+
+    if (notifications.length === 0) {
+      return {
+        status: 'empty',
+        unreadCount: 0,
+        message: 'Bạn không có thông báo nào.',
+      };
+    }
+
+    return {
+      status: 'success',
+      unreadCount,
+      total: notifData?.total || notifications.length,
+      notifications: notifications.map((n) => ({
+        id: n.id,
+        title: n.title,
+        message: n.message,
+        type: n.type,
+        isRead: n.isRead,
+        date: n.createdAt,
+      })),
+    };
+  } catch (err) {
+    console.error('[AI_FN] getMyNotifications error:', err?.message || err);
+    return { status: 'error', message: 'Lỗi khi tra cứu thông báo.' };
   }
 }
 
@@ -1060,8 +1621,19 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
     };
   }
 
-  // 3. Resolve doctorId (from args or context.lastDoctorId or name lookup)
+  // 3. Resolve doctorId (from args or scheduleId lookup or context.lastDoctorId or name lookup)
   let doctorId = parseInt(String(args.doctorId || ''), 10);
+  const rawScheduleId = parseInt(String(args.scheduleId || ''), 10);
+  if (!Number.isFinite(doctorId) || doctorId <= 0) {
+    if (Number.isFinite(rawScheduleId) && rawScheduleId > 0) {
+      try {
+        const sch = await db.Schedule.findByPk(rawScheduleId, { attributes: ['doctorId'], lock: false });
+        if (sch?.doctorId) doctorId = sch.doctorId;
+      } catch (schErr) {
+        console.warn('[AI_DRAFT] schedule lookup error:', schErr?.message);
+      }
+    }
+  }
   if (!Number.isFinite(doctorId) || doctorId <= 0) {
     if (args.doctorName && typeof args.doctorName === 'string') {
       const safeDoctorName = Array.from(sanitizeWildcard(args.doctorName.trim())).slice(0, 200).join('');
@@ -1231,27 +1803,88 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
 
   // 8. Resolve Family Member if booking for family
   let resolvedFamilyMember = null;
-  const bookingFor = args.bookingFor === 'FAMILY' ? 'FAMILY' : 'SELF';
-  if (bookingFor === 'FAMILY' && args.familyMemberId) {
-    const famId = parseInt(String(args.familyMemberId), 10);
-    const fam = await db.Family_Member.findOne({
-      where: { id: famId, userId: safeUserId },
-      lock: false,
-    });
-    if (!fam) {
-      return {
-        status: 'error',
-        error: 'family_member_not_found',
-        message: 'Không tìm thấy hồ sơ người thân hoặc bạn không có quyền truy cập hồ sơ này.',
+  const bookingFor = (args.bookingFor === 'FAMILY' || args.familyMemberId || args.familyMemberName || args.relationship || args.newFamilyMember) ? 'FAMILY' : 'SELF';
+  if (bookingFor === 'FAMILY') {
+    if (args.familyMemberId) {
+      const famId = parseInt(String(args.familyMemberId), 10);
+      const fam = await db.Family_Member.findOne({
+        where: { id: famId, userId: safeUserId },
+        lock: false,
+      });
+      if (!fam) {
+        return {
+          status: 'error',
+          error: 'family_member_not_found',
+          message: 'Không tìm thấy hồ sơ người thân hoặc bạn không có quyền truy cập hồ sơ này.',
+        };
+      }
+      resolvedFamilyMember = {
+        id: fam.id,
+        fullName: fam.fullName,
+        relationship: fam.relationship,
+        gender: fam.gender,
+        phoneNumber: fam.phoneNumber,
+        birthday: fam.birthday,
       };
+    } else if (args.newFamilyMember && typeof args.newFamilyMember === 'object') {
+      const newFamResult = await handleCreateFamilyMember(args.newFamilyMember, safeUserId, signal);
+      if (newFamResult.status !== 'success' || !newFamResult.data?.id) {
+        return {
+          status: 'error',
+          error: newFamResult.error || 'family_creation_failed',
+          message: newFamResult.message || 'Không thể tạo hồ sơ người thân mới.',
+        };
+      }
+      resolvedFamilyMember = newFamResult.data;
+    } else if (args.familyMemberName || args.relationship) {
+      const allFams = await db.Family_Member.findAll({
+        where: { userId: safeUserId },
+        lock: false,
+      });
+
+      let matched = [];
+      const targetName = (args.familyMemberName || '').trim().toLowerCase();
+
+      let targetRel = null;
+      if (args.relationship) {
+        const rUpper = String(args.relationship).trim().toUpperCase();
+        if (['CHILD', 'CON', 'CON GÁI', 'CON TRAI'].includes(rUpper)) targetRel = 'CHILD';
+        else if (['PARENT', 'BỐ', 'MẸ', 'BO', 'ME', 'CHA', 'MẸ ĐẺ', 'BỐ ĐẺ'].includes(rUpper)) targetRel = 'PARENT';
+        else if (['SPOUSE', 'VỢ', 'CHỒNG', 'VO', 'CHONG'].includes(rUpper)) targetRel = 'SPOUSE';
+        else targetRel = 'OTHER';
+      }
+
+      if (targetName) {
+        matched = allFams.filter(f => f.fullName && f.fullName.toLowerCase().includes(targetName));
+      } else if (targetRel) {
+        matched = allFams.filter(f => f.relationship === targetRel);
+      }
+
+      if (matched.length === 1) {
+        const fam = matched[0];
+        resolvedFamilyMember = {
+          id: fam.id,
+          fullName: fam.fullName,
+          relationship: fam.relationship,
+          gender: fam.gender,
+          phoneNumber: fam.phoneNumber,
+          birthday: fam.birthday,
+        };
+      } else if (matched.length > 1) {
+        return {
+          status: 'ambiguous_family_member',
+          error: 'ambiguous_family_member',
+          members: matched.map(m => ({ id: m.id, fullName: m.fullName, relationship: m.relationship })),
+          message: `Hệ thống tìm thấy ${matched.length} hồ sơ người thân (${matched.map(m => m.fullName).join(', ')}). Bạn muốn đặt lịch cho người thân nào cụ thể?`,
+        };
+      } else {
+        return {
+          status: 'family_member_not_found',
+          error: 'family_member_not_found',
+          message: 'Chưa tìm thấy người thân này trong sổ y bạ của bạn. Bạn vui lòng cung cấp họ tên và số điện thoại người thân để mình hỗ trợ thêm vào sổ y bạ trước khi đặt lịch nhé.',
+        };
+      }
     }
-    resolvedFamilyMember = {
-      id: fam.id,
-      fullName: fam.fullName,
-      relationship: fam.relationship,
-      gender: fam.gender,
-      phoneNumber: fam.phoneNumber,
-    };
   }
 
   // 9. Format Date & Time
@@ -1261,6 +1894,48 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
     : schedule.date;
 
   const timeLabel = schedule.timeTypeData?.valueVi || schedule.timeType;
+
+  // Check patient wallet balance
+  let walletBalance = 0;
+  let hasSufficientBalance = false;
+  try {
+    const patientWallet = await db.Wallet.findOne({
+      where: { ownerId: safeUserId, walletType: 'PATIENT' },
+      lock: false,
+    });
+    if (patientWallet) {
+      walletBalance = Number(patientWallet.availableBalance) || 0;
+      hasSufficientBalance = walletBalance >= priceNumeric;
+    }
+  } catch (wErr) {
+    console.warn('[AI_DRAFT] Wallet check warning:', wErr?.message);
+  }
+
+  // Sanitize reason to avoid hallucinating specialty or generic boilerplate as medical reason
+  let cleanReason = typeof args.reason === 'string' ? args.reason.trim() : '';
+  const specialtyTitle = doctor.doctorInfoData?.specialtyData?.name || specialtyName || '';
+  const lowerReason = cleanReason.toLowerCase();
+  const lowerSpecialty = specialtyTitle.toLowerCase();
+  if (
+    cleanReason &&
+    (
+      lowerReason === 'khám bệnh' ||
+      lowerReason === 'khám định kỳ' ||
+      lowerReason === 'khám' ||
+      lowerReason === 'tư vấn sức khỏe' ||
+      lowerReason === 'tư vấn' ||
+      (specialtyTitle && (
+        lowerReason === `khám ${lowerSpecialty}` ||
+        lowerReason === `khám ${lowerSpecialty} định kỳ` ||
+        lowerReason === `khám chuyên khoa ${lowerSpecialty}` ||
+        lowerReason === `tư vấn ${lowerSpecialty}` ||
+        lowerReason === `tư vấn chuyên khoa ${lowerSpecialty}`
+      ))
+    )
+  ) {
+    // Hallucinated or boilerplate inferred by model, user didn't specify actual medical reason
+    cleanReason = '';
+  }
 
   // 10. Generate In-Memory Draft with Single-Use Confirmation Token
   const draftPayload = {
@@ -1293,24 +1968,33 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
     },
     bookingFor,
     familyMember: resolvedFamilyMember,
-    reason: args.reason || '',
+    reason: cleanReason,
     price: {
       amount: priceNumeric,
       currency: 'VND',
       formatted: priceFormatted,
     },
+    wallet: {
+      balance: walletBalance,
+      formattedBalance: `${walletBalance.toLocaleString('vi-VN')} đ`,
+      hasSufficientBalance,
+    },
     bookingStatus: 'DRAFT',
     paymentStatus: 'unpaid',
-    paymentMethod: 'VNPAY',
+    paymentMethod: 'WALLET',
     disclaimer: 'Thông tin lịch được kiểm tra tại thời điểm tạo draft. Lịch hẹn chưa được lưu vào cơ sở dữ liệu cho đến khi bạn xác nhận.',
   };
 
   const draft = aiBookingDraftStore.createDraft(draftPayload);
 
+  const draftMessage = hasSufficientBalance
+    ? 'Bản nháp đặt lịch đã được chuẩn bị thành công. Vui lòng kiểm tra và bấm "Xác nhận đặt lịch" để hoàn tất thanh toán bằng Ví BookingCare.'
+    : `Bản nháp đặt lịch đã được chuẩn bị. Lưu ý: Số dư ví BookingCare (${walletBalance.toLocaleString('vi-VN')} đ) không đủ để thanh toán giá khám (${priceFormatted}). Vui lòng nạp thêm tiền vào ví để hoàn tất đặt lịch.`;
+
   return {
     status: 'success',
     type: 'BOOKING_DRAFT',
-    message: 'Bản nháp đặt lịch đã được chuẩn bị thành công. Vui lòng kiểm tra và bấm "Xác nhận đặt lịch" để hoàn tất.',
+    message: draftMessage,
     draft,
   };
 }
@@ -1421,20 +2105,28 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
     }
 
     // 6. Execute Existing Domain Service (patientService.postBookAppointment)
+    const isFamilyBooking = draft.bookingFor === 'FAMILY' && draft.familyMember;
     const bookingData = {
       email: draft.patient.email,
-      fullName: draft.patient.displayName,
+      fullName: isFamilyBooking ? draft.familyMember.fullName : draft.patient.displayName,
       doctorId: draft.doctor.doctorId,
       date: draft.schedule.date,
       timeType: draft.schedule.timeType,
-      phoneNumber: draft.patient.phoneNumber || args.phoneNumber || '0900000000',
-      gender: draft.patient.gender || 'G1',
+      phoneNumber: isFamilyBooking
+        ? (draft.familyMember.phoneNumber || draft.patient.phoneNumber || '0900000000')
+        : (draft.patient.phoneNumber || args.phoneNumber || '0900000000'),
+      gender: isFamilyBooking
+        ? (draft.familyMember.gender || 'G1')
+        : (draft.patient.gender || 'G1'),
+      birthday: isFamilyBooking ? (draft.familyMember.birthday || '') : (draft.patient.birthday || ''),
       address: draft.patient.address || '',
       reason: args.reason || args.notes || draft.reason || 'Đặt khám qua AI Chatbot BookingCare',
       bookingFor: draft.bookingFor,
-      familyMemberId: draft.familyMember?.id,
+      familyMemberId: isFamilyBooking ? draft.familyMember.id : undefined,
+      relationship: isFamilyBooking ? draft.familyMember.relationship : undefined,
       clinicId: draft.doctor.clinicId,
       language: args.language || 'vi',
+      paymentMethod: 'WALLET',
     };
 
     const domainResult = await patientService.postBookAppointment(bookingData, safeUserId);
@@ -1448,6 +2140,8 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
       else if (domainResult.errCode === 4) mappedCode = 'slot_no_longer_available';
       else if (domainResult.errCode === 5) mappedCode = 'unauthorized';
       else if (domainResult.errCode === 6 || domainResult.errCode === 7) mappedCode = 'doctor_unavailable';
+      else if (domainResult.errCode === -10) mappedCode = 'insufficient_wallet_balance';
+      else if (domainResult.errCode === -11) mappedCode = 'unauthorized';
 
       return {
         status: 'error',
@@ -1459,16 +2153,16 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
     // 7. Build Canonical BOOKING_SUCCESS Result
     const successPayload = {
       bookingId: domainResult.data?.bookingId,
-      bookingStatus: domainResult.data?.statusId || 'S1',
-      paymentMethod: domainResult.data?.paymentMethod || 'VNPAY',
-      paymentStatus: 'unpaid',
+      bookingStatus: domainResult.data?.statusId || 'S2',
+      paymentMethod: domainResult.data?.paymentMethod || 'WALLET',
+      paymentStatus: 'paid',
       doctor: draft.doctor,
       schedule: draft.schedule,
       patient: draft.patient,
       price: draft.price,
       createdAt: new Date().toISOString(),
-      message: domainResult.message || 'Đặt lịch thành công! Vui lòng kiểm tra email để xác nhận lịch hẹn.',
-      nextStep: 'Kiểm tra hộp thư email và bấm vào liên kết xác nhận để hoàn tất thủ tục.',
+      message: domainResult.message || 'Đặt lịch khám và thanh toán bằng Ví BookingCare thành công! Lịch hẹn của bạn đã được xác nhận.',
+      nextStep: 'Lịch khám của bạn đã được thanh toán và xác nhận thành công (S2). Vui lòng đến đúng giờ hẹn tại cơ sở y tế.',
     };
 
     await idempotencyStore.setDone(lockKey, successPayload);
@@ -1502,7 +2196,7 @@ async function handlePrepareCancellationDraft(args, userId, signal) {
   }
 
   // 1. Resolve Booking ID
-  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  let bookingId = parseInt(String(args.bookingId || args.bookingCode || '').replace(/[^\d]/g, ''), 10);
   if (!bookingId || isNaN(bookingId)) {
     // Nếu user không truyền bookingId, tìm lịch hẹn sắp tới gần nhất (S1, S1.5, S2)
     const latestActiveBooking = await db.Booking.findOne({
@@ -1857,7 +2551,7 @@ async function handlePrepareRescheduleDraft(args, userId, signal) {
   }
 
   // 1. Resolve Booking ID
-  let bookingId = parseInt(String(args.bookingId || ''), 10);
+  let bookingId = parseInt(String(args.bookingId || args.bookingCode || '').replace(/[^\d]/g, ''), 10);
   if (!bookingId || isNaN(bookingId)) {
     const latestActiveBooking = await db.Booking.findOne({
       where: {
@@ -1947,7 +2641,7 @@ async function handlePrepareRescheduleDraft(args, userId, signal) {
     return {
       status: 'error',
       error: 'booking_not_reschedulable',
-      message: `Lịch hẹn #${oldBooking.id} không ở trạng thái hợp lệ để đổi lịch (đã bị hủy hoặc không hoạt động).`,
+      message: `Lịch hẹn #${oldBooking.id} không ở trạng thái hợp lệ để đổi lịch. Chỉ có thể đổi lịch cho ca khám đang hoạt động hoặc ca đã bị Bác sĩ/Cơ sở y tế hủy.`,
       bookingId: oldBooking.id,
     };
   }
@@ -2732,6 +3426,68 @@ const aiToolRegistry = {
     handler: (args, userId, signal) => handleGetWalletBalance(args, userId, signal),
   },
 
+  getWalletTransactions: {
+    description: 'Xem lịch sử giao dịch và biến động số dư ví BookingCare của bệnh nhân đang đăng nhập (giao dịch thanh toán lịch hẹn, nạp tiền, hoàn tiền).',
+    type: 'read_only',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'integer',
+          description: 'Số lượng giao dịch gần nhất cần lấy (mặc định 5, tối đa 20)',
+        },
+        type: {
+          type: 'string',
+          description: 'Lọc loại giao dịch (VD: "BOOKING_PAYMENT", "REFUND", "DEPOSIT")',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handleGetWalletTransactions(args, userId, signal),
+  },
+
+  getAppointmentDetail: {
+    description: 'Xem thông tin chi tiết một ca khám bệnh của bệnh nhân (bác sĩ, chuyên khoa, phòng khám, cơ sở y tế, địa chỉ, thời gian hẹn, giá khám, tình trạng thanh toán, đơn thuốc đã kê, tài liệu đính kèm, chính sách hoàn tiền).',
+    type: 'read_only',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        bookingId: {
+          type: 'integer',
+          description: 'Mã lịch hẹn cần xem chi tiết (optional, nếu để trống sẽ lấy lịch hẹn gần nhất)',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handleGetAppointmentDetail(args, userId, signal),
+  },
+
+  getMyNotifications: {
+    description: 'Xem thông báo và số lượng thông báo chưa đọc của bệnh nhân (thông báo xác nhận lịch, đổi lịch, hủy lịch, hoàn tiền, thanh toán).',
+    type: 'read_only',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'integer',
+          description: 'Số thông báo cần lấy (mặc định 5, tối đa 20)',
+        },
+        isRead: {
+          type: 'boolean',
+          description: 'Lọc thông báo đã đọc (true) hoặc chưa đọc (false)',
+        },
+      },
+    },
+    handler: (args, userId, signal) => handleGetMyNotifications(args, userId, signal),
+  },
+
   getFamilyMembers: {
     description: 'Xem danh sách hồ sơ người thân trong sổ y bạ của bệnh nhân đang đăng nhập.',
     type: 'read_only',
@@ -2743,6 +3499,67 @@ const aiToolRegistry = {
       properties: {},
     },
     handler: (args, userId, signal) => handleGetFamilyMembers(args, userId, signal),
+  },
+
+  createFamilyMember: {
+    description: 'Tạo mới hồ sơ người thân vào sổ y bạ gia đình của bệnh nhân đang đăng nhập (đặt lịch cho người thân chưa có trong danh sách).',
+    type: 'transactional',
+    allowedRoles: ['R3'],
+    requiresAuth: true,
+    enabled: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        fullName: {
+          type: 'string',
+          description: 'Họ và tên đầy đủ của người thân (tối thiểu 2 ký tự, bắt buộc)',
+        },
+        relationship: {
+          type: 'string',
+          enum: ['CHILD', 'PARENT', 'SPOUSE', 'OTHER'],
+          description: 'Mối quan hệ với bệnh nhân: CHILD (con), PARENT (bố/mẹ), SPOUSE (vợ/chồng), OTHER (người thân khác)',
+        },
+        gender: {
+          type: 'string',
+          enum: ['G1', 'G2', 'G3'],
+          description: 'Giới tính: G1 (Nam), G2 (Nữ), G3 (Khác)',
+        },
+        birthday: {
+          type: 'string',
+          description: 'Ngày sinh dạng YYYY-MM-DD',
+        },
+        dateOfBirth: {
+          type: 'string',
+          description: 'Ngày sinh dạng YYYY-MM-DD (alias của birthday)',
+        },
+        phoneNumber: {
+          type: 'string',
+          description: 'Số điện thoại liên hệ (10-11 số)',
+        },
+        phone: {
+          type: 'string',
+          description: 'Số điện thoại liên hệ (alias của phoneNumber)',
+        },
+        address: {
+          type: 'string',
+          description: 'Địa chỉ nơi ở',
+        },
+        medicalHistory: {
+          type: 'string',
+          description: 'Tiền sử bệnh lý nếu có',
+        },
+        drugAllergies: {
+          type: 'string',
+          description: 'Dị ứng thuốc nếu có',
+        },
+        notes: {
+          type: 'string',
+          description: 'Ghi chú thêm',
+        },
+      },
+      required: ['fullName'],
+    },
+    handler: (args, userId, signal) => handleCreateFamilyMember(args, userId, signal),
   },
 
   // --- Transactional Tools (Phase 05: Real Booking / Phase 06: Cancellation) ---
@@ -2777,7 +3594,7 @@ const aiToolRegistry = {
         },
         reason: {
           type: 'string',
-          description: 'Lý do khám hoặc triệu chứng của bệnh nhân',
+          description: 'Lý do khám hoặc triệu chứng do người dùng nêu rõ. TUYỆT ĐỐI KHÔNG tự suy diễn lý do từ chuyên khoa của bác sĩ. Nếu người dùng chưa nêu thì để trống "".',
         },
         bookingFor: {
           type: 'string',
@@ -2786,7 +3603,19 @@ const aiToolRegistry = {
         },
         familyMemberId: {
           type: 'integer',
-          description: 'ID hồ sơ người thân nếu đặt cho người thân',
+          description: 'ID hồ sơ người thân nếu đặt cho người thân đã có trong sổ y bạ',
+        },
+        familyMemberName: {
+          type: 'string',
+          description: 'Tên người thân trong sổ y bạ nếu chưa có ID',
+        },
+        relationship: {
+          type: 'string',
+          description: 'Mối quan hệ (bố, mẹ, con, vợ, chồng, PARENT, CHILD, SPOUSE)',
+        },
+        newFamilyMember: {
+          type: 'object',
+          description: 'Thông tin người thân mới để tạo nhanh vào sổ y bạ ngay khi đặt lịch (fullName, relationship, gender, phoneNumber)',
         },
       },
       required: [],
@@ -2825,7 +3654,7 @@ const aiToolRegistry = {
   // [Phase 06B] IN-CHAT CANCELLATION DRAFT & CONFIRMATION
   // ═══════════════════════════════════════════════════════════════════
   prepareCancellationDraft: {
-    description: 'Chuẩn bị bản nháp xác nhận hủy lịch khám (Cancellation Draft). Trả về thông tin chi tiết lịch hẹn, chính sách hoàn tiền và phiếu xác nhận hủy.',
+    description: 'Chuẩn bị bản nháp xác nhận hủy lịch khám (Cancellation Draft). CHỈ sử dụng khi người dùng thực sự yêu cầu hành động HỦY một lịch hẹn cụ thể (VD: "Tôi muốn hủy lịch này", "Hủy lịch mã #123"). TUYỆT ĐỐI KHÔNG gọi công cụ này khi người dùng chỉ hỏi thông tin chính sách, hỏi về điều kiện hoàn tiền, hoặc hỏi chung chung về No-Show / quên đi khám.',
     type: 'transactional',
     allowedRoles: ['R3'],
     requiresAuth: true,
@@ -2874,7 +3703,7 @@ const aiToolRegistry = {
   },
 
   cancelMyBooking: {
-    description: 'Yêu cầu hủy lịch hẹn của bệnh nhân. Sẽ tạo bản nháp xác nhận hủy lịch với thông tin hoàn tiền để bệnh nhân xác nhận trước khi thực hiện.',
+    description: 'Yêu cầu hủy lịch hẹn của bệnh nhân. Chỉ sử dụng khi bệnh nhân yêu cầu hủy một lịch hẹn cụ thể. Tuyệt đối không gọi khi người dùng chỉ hỏi về chính sách hoàn tiền hoặc vắng mặt No-Show.',
     type: 'transactional',
     allowedRoles: ['R3'],
     requiresAuth: true,
@@ -3160,6 +3989,12 @@ module.exports = {
   handleGetMyBookings,
   handleSearchDoctorsBySpecialty,
   handleGetAvailableSchedules,
+  handleCreateFamilyMember,
+  handleGetFamilyMembers,
+  handleGetWalletBalance,
+  handleGetWalletTransactions,
+  handleGetAppointmentDetail,
+  handleGetMyNotifications,
   maskPII,
   truncateResult,
 };

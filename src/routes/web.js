@@ -211,6 +211,7 @@ const routes = (app) => {
   // [Phase 9.3 FIX] POST /bookings chuyển từ Public vào Protected — bệnh nhân PHẢI đăng nhập để đặt lịch
   app.post('/api/v1/bookings', verifyToken, checkPatientRole, patientController.postBookAppointment);
   app.get('/api/v1/patient/bookings', verifyToken, checkPatientRole, patientController.getPatientBookings);
+  app.get('/api/v1/patient/bookings/:id/cancel-preview', verifyToken, checkPatientRole, patientController.handleGetCancelPreview);
   app.put('/api/v1/patient/bookings/:id/cancel', verifyToken, checkPatientRole, patientController.handleCancelBooking);
   // [Phase 2] Smart Reschedule APIs — Protected (R3 only)
   app.get('/api/v1/patient/bookings/:id/reschedule-options', verifyToken, checkPatientRole, patientController.handleGetRescheduleOptions);

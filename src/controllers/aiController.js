@@ -46,6 +46,10 @@ const {
   extractJsonFromModelOutput,
   getHealthAssessmentModel,
   RISK_LEVELS,
+  activeHealthAssessments,
+  createActiveAssessment,
+  getActiveAssessment,
+  updateActiveAssessment,
 } = require('../services/aiHealthAssessmentService');
 
 // Global Active Stream Counter
@@ -320,6 +324,33 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
         timestamp: Date.now(),
       };
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } else if (fnResult.status === 'needs_slot_selection') {
+      const optData = fnResult.options || {};
+      const schedules = Array.isArray(optData.availableSchedules) ? optData.availableSchedules : [];
+      const payload = {
+        event: 'slot:search',
+        type: 'SLOT_SEARCH_RESULTS',
+        data: {
+          doctor: {
+            doctorId: optData.booking?.doctorId || fnResult.bookingId,
+            name: optData.booking?.doctorBookingData ? `${optData.booking.doctorBookingData.lastName || ''} ${optData.booking.doctorBookingData.firstName || ''}`.trim() : 'Bác sĩ phụ trách',
+          },
+          date: optData.booking?.date,
+          slots: schedules.map((s) => ({
+            scheduleId: s.id,
+            timeType: s.timeType,
+            displayTime: s.timeTypeData?.valueVi || s.timeType,
+            period: (['T1', 'T2', 'T3', 'T4'].includes(s.timeType) ? 'morning' : 'afternoon'),
+            status: (s.remaining > 0 || s.currentNumber < s.maxNumber) ? 'AVAILABLE' : 'FULL',
+            remaining: Math.max(0, (s.maxNumber || 10) - (s.currentNumber || 0)),
+          })),
+          status: 'success',
+          message: fnResult.message || 'Vui lòng chọn khung giờ khám mới.',
+          rescheduleBookingId: fnResult.bookingId,
+          timestamp: Date.now(),
+        },
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
     } else if (fnResult.status === 'error') {
       const payload = {
         event: 'booking:reschedule-error',
@@ -370,6 +401,229 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     }
   }
+
+  // 10. Appointment Detail Event
+  if (toolName === 'getAppointmentDetail') {
+    if (fnResult.status === 'success') {
+      const payload = {
+        event: 'appointment:detail',
+        type: 'APPOINTMENT_DETAIL',
+        data: fnResult,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 11. Wallet Transactions Event
+  if (toolName === 'getWalletTransactions') {
+    if (fnResult.status === 'success') {
+      const payload = {
+        event: 'wallet:transactions',
+        type: 'WALLET_TRANSACTIONS',
+        data: fnResult,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 12. Create Family Member Event
+  if (toolName === 'createFamilyMember') {
+    if (fnResult.status === 'success') {
+      const payload = {
+        event: 'family:created',
+        type: 'FAMILY_MEMBER_CREATED',
+        data: fnResult.data,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 12B. Get Family Members Event (Phase 06E / Test D Parity)
+  if (toolName === 'getFamilyMembers') {
+    if (fnResult.status === 'success' || Array.isArray(fnResult.data) || Array.isArray(fnResult)) {
+      const list = fnResult.data || (Array.isArray(fnResult) ? fnResult : []);
+      const payload = {
+        event: 'family:list',
+        type: 'FAMILY_LIST',
+        data: {
+          familyMembers: list,
+          count: list.length,
+        },
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 13. Notifications Event
+  if (toolName === 'getMyNotifications') {
+    if (fnResult.status === 'success') {
+      const payload = {
+        event: 'notification:list',
+        type: 'NOTIFICATION_LIST',
+        data: fnResult,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+
+  // 14. Appointment List Event (Phase 06 / Test 5 Parity)
+  if (toolName === 'getMyBookings') {
+    if (fnResult.status === 'success') {
+      const payload = {
+        event: 'appointment:list',
+        type: 'APPOINTMENT_LIST',
+        data: fnResult,
+        timestamp: Date.now(),
+      };
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    }
+  }
+}
+
+/**
+ * Deduplicate and sanitize LLM prose accompanying structured UI cards
+ * Enforces Single Response Contract: Structured Card = Source of Truth.
+ * Prose must not duplicate doctor listings, slot times, or details already rendered by the card.
+ */
+function sanitizeStructuredProse(text, toolName, fnResult) {
+  if (!text || typeof text !== 'string') return '';
+  let cleaned = text.trim();
+
+  // 1. Loại bỏ các khối placeholder do model tự sinh dạng [Danh sách bác sĩ ...], [Thông tin ...]
+  cleaned = cleaned.replace(/\[\s*(?:Danh sách|Thông tin|Chi tiết|Kết quả|Bác sĩ|Lịch khám|Slot)[^\]]*\]/gi, '').trim();
+
+  // 2. Nếu là tool tìm kiếm bác sĩ (searchDoctorsBySpecialty, searchDoctorsByName, universalSystemSearch)
+  if (['searchDoctorsBySpecialty', 'searchDoctorsByName', 'universalSystemSearch'].includes(toolName)) {
+    // Loại bỏ các dòng gạch đầu dòng / số thứ tự liệt kê lại bác sĩ, địa chỉ, giá tiền
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Bác sĩ|BS|ThS|TS|PGS|GS|Chuyên khoa|Bệnh viện|Phòng khám|Giá|Địa chỉ).*$/gim, '').trim();
+    if (!cleaned) {
+      cleaned = 'Dưới đây là danh sách bác sĩ phù hợp, bạn có thể chọn bác sĩ để xem lịch khám.';
+    }
+  }
+
+  // 3. Nếu là tool tra cứu lịch khám (getAvailableSchedules)
+  if (toolName === 'getAvailableSchedules') {
+    // Loại bỏ các dòng liệt kê khung giờ (vd: - 8:00 - 9:00, * 08:00 - 09:00)
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)?\s*(?:T\d+:?\s*)?\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}.*$/gim, '').trim();
+    const rawSlots = Array.isArray(fnResult?.availableSlots) ? fnResult.availableSlots : (Array.isArray(fnResult?.schedules) ? fnResult.schedules : []);
+    const hasSlots = rawSlots.length > 0;
+    if (!hasSlots) {
+      // SlotPicker đã hiển thị rõ ràng hộp thông báo: "Bác sĩ hiện không có lịch trống vào ngày... Vui lòng chọn ngày khác."
+      // Nếu model lặp lại thông báo không có lịch trống -> loại bỏ thông báo trùng, chuyển thành lời khuyên chọn ngày khác
+      if (/không có lịch|hết lịch|chưa có lịch/i.test(cleaned)) {
+        cleaned = 'Bạn có thể chọn ngày khác trên lịch để xem khung giờ trống nhé.';
+      }
+    } else {
+      if (!cleaned || /dưới đây là/i.test(cleaned)) {
+        cleaned = 'Bạn có thể chọn một khung giờ khám bên trên để tiếp tục đặt lịch.';
+      }
+    }
+  }
+
+  // 4. Nếu là tool tạo bản nháp đặt lịch (prepareBookingDraft)
+  if (toolName === 'prepareBookingDraft') {
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Bác sĩ|Thời gian|Khung giờ|Ngày khám|Giá khám|Số dư|Phương thức).*$/gim, '').trim();
+    if (!cleaned) {
+      cleaned = 'Mình đã chuẩn bị bản nháp đặt lịch, bạn vui lòng kiểm tra thông tin và bấm xác nhận trên thẻ.';
+    }
+  }
+
+  // 5. Nếu là tool xác nhận đặt lịch (confirmCreateBooking)
+  if (toolName === 'confirmCreateBooking') {
+    cleaned = 'Lịch hẹn đã được xác nhận thành công.';
+  }
+
+  // 6. Nếu là tool tạo bản nháp hủy lịch (prepareCancellationDraft, cancelMyBooking)
+  if (toolName === 'prepareCancellationDraft' || toolName === 'cancelMyBooking') {
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã lịch|Bác sĩ|Thời gian|Chính sách|Hoàn tiền|Số tiền).*$/gim, '').trim();
+    if (!cleaned) {
+      cleaned = 'Mình đã tạo bản nháp hủy lịch, bạn vui lòng kiểm tra thông tin hoàn tiền và bấm xác nhận trên thẻ.';
+    }
+  }
+
+  // 7. Nếu là tool xác nhận hủy lịch (confirmCancelBooking)
+  if (toolName === 'confirmCancelBooking') {
+    cleaned = 'Lịch hẹn đã được hủy thành công.';
+  }
+
+  // 8. Nếu là tool tạo bản nháp đổi lịch (prepareRescheduleDraft, rescheduleMyBooking, requestSmartReschedule)
+  if (toolName === 'prepareRescheduleDraft' || toolName === 'rescheduleMyBooking' || toolName === 'requestSmartReschedule') {
+    if (fnResult?.status === 'unsupported') {
+      cleaned = fnResult.message || 'Hiện tại BookingCare chưa hỗ trợ đổi lịch trực tiếp cho bệnh nhân qua chức năng này. Quý khách vui lòng hủy lịch hẹn hiện tại và đặt lịch khám mới nếu muốn thay đổi thời gian.';
+    } else if (fnResult?.status === 'needs_slot_selection') {
+      cleaned = 'Dưới đây là các khung giờ khám còn trống của bác sĩ. Bạn vui lòng bấm chọn một khung giờ mới trên thẻ để tiếp tục đổi lịch.';
+    } else {
+      cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Lịch cũ|Lịch mới|Bác sĩ|Thời gian|Chênh lệch).*$/gim, '').trim();
+      if (!cleaned) {
+        cleaned = 'Mình đã tạo bản nháp đổi lịch khám, bạn vui lòng kiểm tra thông tin thay đổi và bấm xác nhận trên thẻ.';
+      }
+    }
+  }
+
+  // 9. Nếu là tool xác nhận đổi lịch (confirmRescheduleBooking)
+  if (toolName === 'confirmRescheduleBooking') {
+    cleaned = 'Lịch hẹn đã được đổi thành công.';
+  }
+
+  // 10. Nếu là tool khởi tạo thanh toán (initiateBookingPayment)
+  if (toolName === 'initiateBookingPayment') {
+    cleaned = 'Bạn vui lòng bấm nút trên thẻ để chuyển đến cổng thanh toán VNPay an toàn.';
+  }
+
+  // 11. Nếu là tool tạo người thân (createFamilyMember)
+  if (toolName === 'createFamilyMember') {
+    if (fnResult.status === 'success' && fnResult.data) {
+      cleaned = `Đã thêm hồ sơ người thân "${fnResult.data.fullName}" vào sổ y bạ thành công. Bạn có thể tiếp tục đặt lịch cho người thân bất cứ lúc nào!`;
+    }
+  }
+
+  // 12. Nếu là tool chi tiết lịch khám (getAppointmentDetail)
+  if (toolName === 'getAppointmentDetail') {
+    // Loại bỏ các khối json hoặc bullet dài bị lặp lại nếu có thẻ
+    cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
+  }
+
+  // 13. Nếu là tool giao dịch ví (getWalletTransactions)
+  if (toolName === 'getWalletTransactions') {
+    cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
+  }
+
+  // 14. Nếu là tool danh sách lịch khám (getMyBookings)
+  if (toolName === 'getMyBookings') {
+    cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã|Lịch|Bác sĩ|Thời gian|Khung giờ|Trạng thái|Giá|Chuyên khoa|Phòng khám).*$/gim, '').trim();
+    const hasBookings = Array.isArray(fnResult?.bookings) && fnResult.bookings.length > 0;
+    if (hasBookings) {
+      // Loại bỏ hoàn toàn các câu mâu thuẫn "Hiện tại, bạn không có lịch khám nào..."
+      cleaned = cleaned.replace(/^(?:Hiện\s*tại,?\s*)?(?:bạn\s*)?không\s*có\s*lịch\s*(?:khám|hẹn)?\s*(?:nào)?(?:.*hôm\s*nay)?(?:\.|\n)?/gim, '').trim();
+      cleaned = cleaned.replace(/bạn\s*không\s*có\s*lịch\s*(?:khám|hẹn)\s*nào/gi, '').trim();
+      if (!cleaned || /không có lịch/i.test(cleaned)) {
+        cleaned = 'Dưới đây là lịch khám của bạn:';
+      }
+    } else {
+      cleaned = 'Bạn hiện chưa có lịch khám nào trong hệ thống.';
+    }
+  }
+
+  // 15. Nếu là tool xem danh sách người thân (getFamilyMembers)
+  if (toolName === 'getFamilyMembers') {
+    cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
+    const list = Array.isArray(fnResult?.data) ? fnResult.data : (Array.isArray(fnResult) ? fnResult : []);
+    if (list.length > 0) {
+      cleaned = 'Dưới đây là danh sách người thân trong sổ y bạ của bạn:';
+    } else {
+      cleaned = 'Bạn hiện chưa lưu hồ sơ người thân nào trong sổ y bạ. Bạn có thể thêm người thân bất cứ lúc nào!';
+    }
+  }
+
+  // Xóa các khoảng trống và ngắt dòng dư thừa
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned;
 }
 
 /**
@@ -430,11 +684,23 @@ async function streamChat(req, res) {
   }
 
   // 5. Message Body Validation
-  const { message = '', history = [], language = 'vi', imageId, conversationId } = req.body;
+  const {
+    message = '',
+    history = [],
+    language = 'vi',
+    imageId,
+    conversationId,
+    isFollowUp,
+    assessmentId,
+    questionId,
+    optionId,
+    value,
+    followUpPayload,
+  } = req.body;
   const rawText = typeof message === 'string' ? message.trim() : '';
 
   // Khi có ảnh, tin nhắn văn bản có thể để trống
-  if (!rawText && !imageId) {
+  if (!rawText && !imageId && !isFollowUp && !followUpPayload) {
     return res.status(400).json({
       errCode: 'AI_INVALID_INPUT',
       message: 'Vui lòng nhập nội dung tin nhắn hoặc đính kèm hình ảnh.',
@@ -481,7 +747,20 @@ async function streamChat(req, res) {
   }
 
   // 8. DETERMINISTIC INTENT CLASSIFICATION
-  const intentResult = classifyIntent(cleanMessage, Boolean(imageId));
+  const intentInput = (isFollowUp || assessmentId || followUpPayload)
+    ? {
+        text: cleanMessage,
+        hasImage: Boolean(imageId),
+        isFollowUp: Boolean(isFollowUp),
+        assessmentId,
+        questionId,
+        optionId,
+        value,
+        followUpPayload,
+      }
+    : cleanMessage;
+
+  const intentResult = classifyIntent(intentInput, Boolean(imageId));
   const intent = intentResult.intent;
   aiLogger.info(requestId, 'AI_REQUEST_START', {
     userId,
@@ -534,6 +813,58 @@ async function streamChat(req, res) {
     const nowUTC = new Date().toISOString();
 
     // ═══════════════════════════════════════════════════════════════════
+    // CASE A0: HEALTH ASSESSMENT FOLLOW-UP (P0 State Update)
+    // Cập nhật câu trả lời vào active assessment đang chạy, không tạo mới
+    // ═══════════════════════════════════════════════════════════════════
+    if (intentResult.intent === INTENTS.HEALTH_ASSESSMENT_FOLLOW_UP) {
+      const followUpMeta = intentResult.extractedEntities || {};
+      const targetAssessmentId = followUpMeta.assessmentId || assessmentId;
+
+      aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_FOLLOW_UP_START', {
+        userId,
+        assessmentId: targetAssessmentId,
+        questionId: followUpMeta.questionId,
+        optionId: followUpMeta.optionId,
+        value: followUpMeta.value,
+      });
+
+      const updateResult = updateActiveAssessment({
+        assessmentId: targetAssessmentId,
+        questionId: followUpMeta.questionId,
+        optionId: followUpMeta.optionId,
+        value: followUpMeta.value,
+        answerText: followUpMeta.answerText || cleanMessage,
+      });
+
+      if (updateResult.success) {
+        const updatedData = updateResult.data;
+
+        res.write(`data: ${JSON.stringify({
+          event: 'health:assessment',
+          type: 'HEALTH_ASSESSMENT',
+          data: updatedData,
+          assessment: updatedData,
+          healthAssessment: updatedData,
+          isFollowUpUpdate: true,
+          assessmentId: updatedData.assessmentId,
+        })}\n\n`);
+
+        res.write('data: [DONE]\n\n');
+        res.end();
+
+        aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_FOLLOW_UP_COMPLETED', {
+          userId,
+          assessmentId: updatedData.assessmentId,
+          answeredCount: updatedData.answeredQuestionIds?.length,
+          latencyMs: Date.now() - startTime,
+        });
+        return;
+      } else {
+        aiLogger.warn(requestId, 'AI_HEALTH_ASSESSMENT_FOLLOW_UP_NOT_FOUND', { assessmentId: targetAssessmentId });
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // CASE A: HEALTH ASSESSMENT ORCHESTRATOR (Phase 03 Flow)
     // Kích hoạt khi:
     // 1. Có imageId đính kèm
@@ -541,9 +872,27 @@ async function streamChat(req, res) {
     // 3. Có ngữ cảnh theo dõi (follow-up) từ lượt trước (ảnh cũ, triệu chứng cũ)
     // ═══════════════════════════════════════════════════════════════════
     const initialHealthContext = extractHealthContext(cleanMessage, history, null);
-    const isHealthAssessmentFlow = Boolean(imageId) ||
-      intentResult.intent === INTENTS.HEALTH_QUERY ||
-      initialHealthContext.isFollowUp;
+    const nonHealthIntents = [
+      INTENTS.CANCEL_BOOKING_QUERY,
+      INTENTS.RESCHEDULE_QUERY,
+      INTENTS.BOOKING_QUERY,
+      INTENTS.APPOINTMENT_DETAIL_QUERY,
+      INTENTS.MY_BOOKING_QUERY,
+      INTENTS.DOCTOR_QUERY,
+      INTENTS.SLOT_QUERY,
+      INTENTS.SPECIALTY_QUERY,
+      INTENTS.CLINIC_QUERY,
+      INTENTS.WALLET_QUERY,
+      INTENTS.WALLET_TRANSACTIONS_QUERY,
+      INTENTS.PAYMENT_QUERY,
+      INTENTS.FAMILY_QUERY,
+      INTENTS.NOTIFICATION_QUERY,
+      INTENTS.POLICY_QUERY,
+      INTENTS.GENERAL_QUERY,
+    ];
+    const isNonHealthIntent = nonHealthIntents.includes(intentResult.intent);
+    // Operational intent MUST WIN over image and health context
+    const isHealthAssessmentFlow = !isNonHealthIntent && (Boolean(imageId) || intentResult.intent === INTENTS.HEALTH_QUERY || initialHealthContext.isFollowUp);
 
     if (isHealthAssessmentFlow) {
       let tempImageData = null;
@@ -593,6 +942,7 @@ async function streamChat(req, res) {
       const modelContent = imagePart ? [imagePart, assessmentPrompt] : assessmentPrompt;
       const streamResult = await assessmentModel.generateContentStream(modelContent);
       let fullResponseText = '';
+      let streamedProse = '';
 
       for await (const chunk of streamResult.stream) {
         if (!isClientConnected || signal.aborted) break;
@@ -600,40 +950,61 @@ async function streamChat(req, res) {
         const delta = chunk.text ? chunk.text() : '';
         if (delta && !res.writableEnded) {
           fullResponseText += delta;
-          const safeChunk = delta.replace(/\n\ndata:/g, '\n\n data:');
-          res.write(`data: ${JSON.stringify({
-            text: safeChunk,
-            isHealthAssessment: true,
-            hasImage: Boolean(imageId),
-            imageId: imageId || undefined
-          })}\n\n`);
         }
       }
 
       if (fullResponseText && !res.writableEnded && isClientConnected) {
         // Trích xuất khối JSON từ output của model
         const rawJson = extractJsonFromModelOutput(fullResponseText);
-        // Chuẩn hóa và thẩm định cấu trúc theo Canonical HEALTH_ASSESSMENT Schema
-        const sanitizedAssessment = validateAndSanitizeAssessment(rawJson, healthContext);
 
-        // Backward compatibility: gửi visionAnalysis nếu có ảnh
-        if (imageId && currentVisionData) {
-          const structuredVision = createStructuredVisionResult({
-            text: fullResponseText,
-            imageId,
-            mimeType: tempImageData?.metadata?.mimeType,
+        if (rawJson) {
+          // Chuẩn hóa và thẩm định cấu trúc theo Canonical HEALTH_ASSESSMENT Schema
+          const sanitizedAssessment = validateAndSanitizeAssessment(rawJson, healthContext);
+
+          // Tạo active assessment trong in-memory SSOT registry để duy trì stable assessmentId
+          const activeRecord = createActiveAssessment({
+            initialComplaint: cleanMessage,
+            symptoms: healthContext.symptoms,
+            painLocation: healthContext.symptoms[0] || null,
+            rawAssessment: sanitizedAssessment,
+            userId,
           });
-          res.write(`data: ${JSON.stringify({ visionAnalysis: structuredVision })}\n\n`);
-        }
 
-        // Phát sinh và gửi Canonical HEALTH_ASSESSMENT event về Frontend
-        res.write(`data: ${JSON.stringify({
-          event: 'health:assessment',
-          type: 'HEALTH_ASSESSMENT',
-          data: sanitizedAssessment.data,
-          assessment: sanitizedAssessment.data,
-          healthAssessment: sanitizedAssessment.data,
-        })}\n\n`);
+          sanitizedAssessment.data.assessmentId = activeRecord.assessmentId;
+          sanitizedAssessment.data.initialComplaint = activeRecord.initialComplaint;
+          sanitizedAssessment.data.painLocation = activeRecord.painLocation;
+          sanitizedAssessment.data.answers = activeRecord.answers;
+          sanitizedAssessment.data.answeredQuestionIds = activeRecord.answeredQuestionIds;
+
+          // Backward compatibility: gửi visionAnalysis nếu có ảnh
+          if (imageId && currentVisionData) {
+            const structuredVision = createStructuredVisionResult({
+              text: fullResponseText,
+              imageId,
+              mimeType: tempImageData?.metadata?.mimeType,
+            });
+            res.write(`data: ${JSON.stringify({ visionAnalysis: structuredVision })}\n\n`);
+          }
+
+          // Phát sinh và gửi Canonical HEALTH_ASSESSMENT event về Frontend (Single Response Contract)
+          res.write(`data: ${JSON.stringify({
+            event: 'health:assessment',
+            type: 'HEALTH_ASSESSMENT',
+            data: sanitizedAssessment.data,
+            assessment: sanitizedAssessment.data,
+            healthAssessment: sanitizedAssessment.data,
+            assessmentId: activeRecord.assessmentId,
+          })}\n\n`);
+        } else {
+          // Fallback an toàn khi model không tạo ra JSON hợp lệ (Section 14)
+          const fallbackNotice = 'Dạ, tôi đã tiếp nhận thông tin của bạn. Tuy nhiên, thông tin hiện tại chưa đủ để đưa ra đánh giá sơ bộ cụ thể. Bạn vui lòng mô tả chi tiết hơn về vị trí đau, thời gian xuất hiện hoặc đến cơ sở y tế gần nhất nếu cần thăm khám trực tiếp.';
+          res.write(`data: ${JSON.stringify({
+            text: fallbackNotice,
+            isHealthAssessment: true,
+            hasImage: Boolean(imageId),
+            imageId: imageId || undefined
+          })}\n\n`);
+        }
       }
 
       aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_COMPLETED', {
@@ -688,16 +1059,6 @@ async function streamChat(req, res) {
 
     const geminiHistory = contextBundle.geminiHistory;
 
-    // Phát sinh sự kiện KNOWLEDGE_CITATIONS về Frontend nếu RAG tìm thấy nguồn chính thức
-    if (contextBundle.citations && contextBundle.citations.length > 0 && isClientConnected && !res.writableEnded) {
-      res.write(`data: ${JSON.stringify({
-        event: 'knowledge:citations',
-        type: 'KNOWLEDGE_CITATIONS',
-        data: { citations: contextBundle.citations },
-        timestamp: Date.now(),
-      })}\n\n`);
-    }
-
     // 11. BUILD GEMINI MODEL WITH REGISTERED TOOLS & AUGMENTED CONTEXT
     let augmentedSystemPrompt = SYSTEM_PROMPT;
     if (contextBundle.systemInstructionAugmentation) {
@@ -723,6 +1084,7 @@ async function streamChat(req, res) {
     let isFirstRound = true;
     let roundCount = 0;
     let lastFnResult = null;
+    let lastExecutedTool = null;
 
     while (roundCount < 5) {
       if (!isClientConnected || signal.aborted) break;
@@ -750,6 +1112,7 @@ async function streamChat(req, res) {
 
         if (fCalls && fCalls.length > 0) {
           const pendingFunctionCall = fCalls[0];
+          lastExecutedTool = pendingFunctionCall.name;
           isFirstRound = false;
           roundCount++;
 
@@ -797,14 +1160,26 @@ async function streamChat(req, res) {
           currentMessage = [{
             functionResponse: {
               name: pendingFunctionCall.name,
-              response: typeof fnResult === 'object' ? fnResult : { result: fnResult },
+              response: typeof fnResult === 'object'
+                ? { ...fnResult, _uiNotice: 'Thông tin chi tiết đã hiển thị đầy đủ trên Thẻ giao diện. Hãy chỉ đưa ra 1-2 câu dẫn ngắn gọn, KHÔNG lặp lại chi tiết bác sĩ, giá tiền hay giờ khám trong văn bản.' }
+                : { result: fnResult },
               ...(pendingFunctionCall.id ? { id: pendingFunctionCall.id } : {}),
             },
           }];
           continue;
         }
 
-        // Không có tool call -> gửi text trực tiếp về client SSE
+        // Không có tool call -> Đây là lượt hỏi đáp thông tin thuần văn bản. Phát sinh KNOWLEDGE_CITATIONS nếu có nguồn phù hợp
+        if (contextBundle.citations && contextBundle.citations.length > 0 && isClientConnected && !res.writableEnded) {
+          res.write(`data: ${JSON.stringify({
+            event: 'knowledge:citations',
+            type: 'KNOWLEDGE_CITATIONS',
+            data: { citations: contextBundle.citations },
+            timestamp: Date.now(),
+          })}\n\n`);
+        }
+
+        // Gửi text trực tiếp về client SSE
         const initialText = response.text ? response.text() : '';
         if (initialText && !res.writableEnded && isClientConnected) {
           const safeText = initialText.replace(/\n\ndata:/g, '\n\n data:');
@@ -846,6 +1221,7 @@ async function streamChat(req, res) {
         const nextFCalls = response.functionCalls ? response.functionCalls() : null;
 
         if (nextFCalls && nextFCalls.length > 0) {
+          lastExecutedTool = nextFCalls[0].name;
           roundCount++;
           const toolStartTime = Date.now();
           let fnResult;
@@ -889,14 +1265,19 @@ async function streamChat(req, res) {
           currentMessage = [{
             functionResponse: {
               name: nextFCalls[0].name,
-              response: typeof fnResult === 'object' ? fnResult : { result: fnResult },
+              response: typeof fnResult === 'object'
+                ? { ...fnResult, _uiNotice: 'Thông tin chi tiết đã hiển thị đầy đủ trên Thẻ giao diện. Hãy chỉ đưa ra 1-2 câu dẫn ngắn gọn, KHÔNG lặp lại chi tiết bác sĩ, giá tiền hay giờ khám trong văn bản.' }
+                : { result: fnResult },
               ...(nextFCalls[0].id ? { id: nextFCalls[0].id } : {}),
             },
           }];
           continue;
         }
 
-        const finalText = response.text ? response.text() : '';
+        const rawFinalText = response.text ? response.text() : '';
+        const finalText = lastExecutedTool
+          ? sanitizeStructuredProse(rawFinalText, lastExecutedTool, lastFnResult)
+          : rawFinalText;
         if (finalText && !res.writableEnded && isClientConnected) {
           const safeText = finalText.replace(/\n\ndata:/g, '\n\n data:');
           res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
