@@ -23,6 +23,73 @@ const IMAGE_QUALITY = {
   NOT_APPLICABLE: 'NOT_APPLICABLE',
 };
 
+// Danh mục Chuyên khoa Chuẩn từ CSDL BookingCare (Ground Truth SSOT)
+const REAL_SPECIALTIES_CATALOG = [
+  { id: 1, name: 'Cơ xương khớp', aliases: ['co xuong khop', 'xuong khop', 'khop', 'cot song', 'dau lung', 'thoai hoa'] },
+  { id: 2, name: 'Thần kinh', aliases: ['than kinh', 'noi than kinh', 'dau dau', 'chong mat', 'tien dinh', 'tai bien'] },
+  { id: 3, name: 'Tim mạch', aliases: ['tim mach', 'benh tim', 'huyet ap', 'hoi hop', 'kho tho do tim'] },
+  { id: 4, name: 'Tai Mũi Họng', aliases: ['tai mui hong', 'viem tai', 'viem mui', 'viem hong', 'amidan', 'viem xoang'] },
+  { id: 5, name: 'Da liễu', aliases: ['da lieu', 'di ung da', 'man ngua', 'mun', 'phat ban', 'me day'] },
+  { id: 6, name: 'Tiêu hóa', aliases: ['tieu hoa', 'da day', 'dai trang', 'gan mat', 'tieu chay', 'buon non'] },
+  { id: 7, name: 'Nhi khoa', aliases: ['nhi khoa', 'nhi', 'tre em', 'em be', 'so sinh'] },
+  { id: 8, name: 'Mắt', aliases: ['mat', 'nhan khoa', 'thi luc', 'dau mat', 'do mat', 'kham mat'] },
+  { id: 9, name: 'Răng Hàm Mặt', aliases: ['rang ham mat', 'nha khoa', 'dau rang', 'sau rang', 'nuou'] },
+  { id: 10, name: 'Sản phụ khoa', aliases: ['san phu khoa', 'phu khoa', 'san khoa', 'thai san', 'kinh nguyet'] },
+  { id: 11, name: 'Hô hấp', aliases: ['ho hap', 'phoi', 'phe quan', 'ho lau ngay', 'hen'] },
+  { id: 12, name: 'Nội tiết', aliases: ['noi tiet', 'tieu duong', 'tuyen giap'] },
+  { id: 13, name: 'Thận - Tiết niệu', aliases: ['than - tiet nieu', 'tiet nieu', 'bang quang', 'tieu buot', 'soi than', 'suy than'] },
+  { id: 14, name: 'Ung bướu', aliases: ['ung buou', 'ung thu', 'khoi u', 'hach'] },
+  { id: 15, name: 'Tâm thần', aliases: ['tam than', 'tam ly', 'tram cam', 'mat ngu', 'lo au'] },
+];
+
+function resolveRealSpecialty(inputName) {
+  if (!inputName || typeof inputName !== 'string') return null;
+  const raw = inputName.trim();
+  const lower = raw.toLowerCase();
+  const stripped = lower
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+
+  // Chuẩn hóa loại bỏ các tiền tố thông dụng như 'chuyên khoa', 'khoa', 'bác sĩ'
+  const normalizedQuery = stripped.replace(/^(chuyen\s*khoa|khoa|bac\s*si|bs|phong\s*kham)\s+/i, '').trim();
+
+  // 1. Exact name match (trực tiếp hoặc qua normalized prefix)
+  for (const item of REAL_SPECIALTIES_CATALOG) {
+    if (item.name.toLowerCase() === lower) return item;
+    const itemStripped = item.name.toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd');
+    if (itemStripped === stripped || itemStripped === normalizedQuery) return item;
+  }
+
+  // 2. Exact alias match
+  for (const item of REAL_SPECIALTIES_CATALOG) {
+    for (const alias of item.aliases) {
+      if (alias === stripped || alias === normalizedQuery) {
+        return item;
+      }
+    }
+  }
+
+  // 3. Multi-word phrase boundary match (chỉ match nếu alias >= 2 từ hoặc >= 5 ký tự để tránh va chạm âm tiết đơn)
+  for (const item of REAL_SPECIALTIES_CATALOG) {
+    for (const alias of item.aliases) {
+      if (alias.length >= 5 || alias.includes(' ')) {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(^|\\s)${escaped}($|\\s)`, 'i');
+        if (regex.test(stripped) || regex.test(normalizedQuery)) {
+          return item;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 // 2. SYSTEM INSTRUCTION CHUYÊN BIỆT CHO ĐÁNH GIÁ SỨC KHỎE SƠ BỘ
 const HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION = `Bạn là Trợ lý AI Đánh giá Sức khỏe Sơ bộ của nền tảng y tế BookingCare.
 Người dùng là Bệnh nhân (R3) đang cung cấp thông tin triệu chứng hoặc hình ảnh để nhờ bạn tư vấn định hướng.
@@ -57,7 +124,7 @@ Người dùng là Bệnh nhân (R3) đang cung cấp thông tin triệu chứng
    - KHÔNG chỉ định tên bác sĩ cụ thể, không ranking bác sĩ, không tạo lịch hẹn hay giao dịch trong lượt này.
 
 8. BẢO ĐẢM ĐỊNH DẠNG JSON CẤU TRÚC (STRUCTURED OUTPUT CONTRACT):
-   - Khi trả về đánh giá sơ bộ, bạn PHẢI trả lời kèm khối JSON định dạng \`\`\`json ... \`\`\` với schema sau:
+   - Bạn PHẢI trả về DUY NHẤT một khối JSON định dạng \`\`\`json ... \`\`\` theo đúng schema. TUYỆT ĐỐI KHÔNG xuất bất kỳ văn bản chào hỏi, giải thích bên ngoài hay lặp lại chi tiết bên ngoài khối JSON. Toàn bộ nhận định, tóm tắt, giải thích khả năng, câu hỏi làm rõ và khuyến cáo an toàn PHẢI nằm hoàn toàn bên trong các trường của khối JSON bên dưới:
 {
   "summary": "Tóm tắt ngắn gọn tình trạng từ triệu chứng hoặc hình ảnh",
   "observations": ["Quan sát hoặc dữ kiện triệu chứng 1", "Dữ kiện 2"],
@@ -106,7 +173,6 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
       // Nếu turn trước có visionAnalysis
       if (item.visionAnalysis) {
         context.historicalVision = item.visionAnalysis;
-        context.isFollowUp = true;
       }
 
       // Nhận diện câu hỏi AI đã hỏi trước đó
@@ -122,21 +188,42 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
         }
       }
 
-      // Trích xuất triệu chứng đã nhắc đến
-      extractKeywords(lower, context.symptoms);
+      // Trích xuất triệu chứng đã nhắc đến (CHỈ từ tin nhắn của người dùng, TUYỆT ĐỐI không trích xuất từ câu hỏi sàng lọc của AI)
+      if (item.role === 'user') {
+        extractKeywords(lower, context.symptoms);
+      }
     }
   }
 
   // 2. Trích xuất triệu chứng từ tin nhắn hiện tại
-  extractKeywords(lowerCurrent, context.symptoms);
+  const currentTurnSymptoms = [];
+  extractKeywords(lowerCurrent, currentTurnSymptoms);
+  currentTurnSymptoms.forEach((s) => {
+    if (!context.symptoms.includes(s)) context.symptoms.push(s);
+  });
 
   // 3. Nhận diện các red flags cấp cứu hoặc nguy cơ cao deterministically
   checkDeterministicRedFlags(lowerCurrent, context);
 
-  // 4. Nếu tin nhắn hiện tại là câu trả lời ngắn cho câu hỏi trước ("Nó ngứa nhiều", "Bắt đầu từ hôm qua", "Không sốt")
+  // 4. Nhận diện các ý định phi y tế / thao tác hệ thống (hủy lịch, tìm bác sĩ, xem lịch hẹn, ví...)
+  const strippedCurrent = lowerCurrent
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+
+  const isOperationalIntent =
+    /(hủy\s*(lịch|bỏ|hẹn)?|đổi\s*(lịch|ngày|giờ)?|dời\s*lịch|bác\s*sĩ|phòng\s*khám|chuyên\s*khoa|lịch\s*hẹn|ví|tiền|thanh\s*toán|đặt\s*(lịch|hẹn|giúp|hộ)?|book|người\s*thân|hồ\s*sơ|sổ\s*y\s*bạ|gia\s*đình|thêm\s*người\s*thân)/i.test(lowerCurrent) ||
+    /(huy\s*(lich|bo|hen)?|doi\s*(lich|ngay|gio)?|doi\s*sang\s*ngay\s*mai|bac\s*si|phong\s*kham|chuyen\s*khoa|lich\s*hen|vi|tien|thanh\s*toan|dat\s*(lich|hen|giup|ho)?|book|nguoi\s*than|ho\s*so|so\s*y\s*ba|gia\s*dinh|them\s*nguoi\s*than)/i.test(strippedCurrent);
+
+  // 5. CHỈ coi là follow-up nếu KHÔNG PHẢI thao tác hệ thống và có nội dung sức khỏe ở lượt hiện tại
+  const isPlausibleHealthAnswer = context.askedQuestions.length > 0 &&
+    /(hôm|ngày|tuần|tháng|bị|đỡ|nặng|sốt|đau|ngứa|rát|sưng|có|không|chưa|vẫn)/i.test(lowerCurrent);
+
   if (
+    !isOperationalIntent &&
     history.length > 0 &&
-    (context.historicalVision || context.symptoms.length > 0) &&
+    (currentTurnSymptoms.length > 0 || isPlausibleHealthAnswer) &&
     !currentVisionData
   ) {
     context.isFollowUp = true;
@@ -150,6 +237,12 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
  * Trích xuất từ khóa triệu chứng phổ biến (sử dụng ranh giới từ để tránh khớp chuỗi con)
  */
 function extractKeywords(text, list) {
+  // Loại bỏ các cụm phủ định để không trích xuất triệu chứng giả
+  const sanitizedText = text
+    .replace(/không\s*(có)?\s*(tiền\s*sử)?\s*bệnh\b/gi, '')
+    .replace(/không\s*dị\s*ứng\b/gi, '')
+    .replace(/không\s*(bị\s*)?(đau|ngứa|sốt|rát|sưng|nôn|khó\s*thở)\b/gi, '');
+
   const symptomKeywords = [
     'ngứa', 'đau', 'rát', 'sốt', 'nổi mẩn', 'mẩn đỏ', 'phát ban',
     'sưng', 'phù nề', 'mụn nước', 'bong tróc', 'chảy dịch', 'chảy mủ',
@@ -160,7 +253,7 @@ function extractKeywords(text, list) {
   for (const kw of symptomKeywords) {
     const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`(^|[^a-zA-Z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ])${escaped}($|[^a-zA-Z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ])`, 'i');
-    if (regex.test(text) && !list.includes(kw)) {
+    if (regex.test(sanitizedText) && !list.includes(kw)) {
       list.push(kw);
     }
   }
@@ -280,6 +373,363 @@ function sanitizeMedicalWording(text = '') {
   return sanitized;
 }
 
+const QUESTION_TYPES = {
+  BINARY: 'BINARY',
+  SINGLE_CHOICE: 'SINGLE_CHOICE',
+  MULTI_CHOICE: 'MULTI_CHOICE',
+  OPEN_TEXT: 'OPEN_TEXT',
+};
+
+const CANONICAL_QUESTIONS = {
+  painLocation: {
+    questionId: 'painLocation',
+    type: QUESTION_TYPES.OPEN_TEXT,
+    canonicalText: 'Vị trí chính xác nơi bạn cảm thấy đau hoặc khó chịu là ở đâu?',
+    placeholder: 'Nhập vị trí đau cụ thể (ví dụ: cổ tay phải, khớp ngón tay, thắt lưng)...',
+    options: null,
+  },
+  onset: {
+    questionId: 'onset',
+    type: QUESTION_TYPES.SINGLE_CHOICE,
+    canonicalText: 'Cơn đau xuất hiện như thế nào?',
+    options: [
+      { optionId: 'onset_trauma', label: 'Sau chấn thương', value: 'AFTER_TRAUMA', text: 'Cơn đau xuất hiện sau chấn thương hoặc va chạm' },
+      { optionId: 'onset_gradual', label: 'Đau âm ỉ / kéo dài', value: 'GRADUAL_CHRONIC', text: 'Cơn đau âm ỉ, kéo dài và tăng dần theo thời gian' },
+      { optionId: 'onset_spontaneous', label: 'Tự nhiên đau', value: 'SPONTANEOUS', text: 'Cơn đau xuất hiện tự nhiên, không do chấn thương' },
+    ],
+  },
+  duration: {
+    questionId: 'duration',
+    type: QUESTION_TYPES.SINGLE_CHOICE,
+    canonicalText: 'Cơn đau đã kéo dài bao lâu?',
+    options: [
+      { optionId: 'duration_less_than_1_day', label: '< 1 ngày', value: 'LESS_THAN_1_DAY', text: 'Triệu chứng mới xuất hiện dưới 1 ngày' },
+      { optionId: 'duration_1_to_7_days', label: '1 - 7 ngày', value: '1_TO_7_DAYS', text: 'Triệu chứng kéo dài từ 1 đến 7 ngày' },
+      { optionId: 'duration_more_than_1_week', label: '> 1 tuần', value: 'MORE_THAN_1_WEEK', text: 'Triệu chứng đã kéo dài hơn 1 tuần' },
+    ],
+  },
+  painSeverity: {
+    questionId: 'painSeverity',
+    type: QUESTION_TYPES.SINGLE_CHOICE,
+    canonicalText: 'Mức độ đau của bạn như thế nào?',
+    options: [
+      { optionId: 'severity_mild', label: 'Nhẹ / Âm ỉ', value: 'MILD', text: 'Mức độ đau nhẹ, âm ỉ' },
+      { optionId: 'severity_moderate', label: 'Vừa phải', value: 'MODERATE', text: 'Mức độ đau vừa phải' },
+      { optionId: 'severity_severe', label: 'Dữ dội', value: 'SEVERE', text: 'Cơn đau dữ dội, khó chịu nhiều' },
+    ],
+  },
+  numbness: {
+    questionId: 'numbness',
+    type: QUESTION_TYPES.BINARY,
+    canonicalText: 'Bạn có cảm thấy tê bì hoặc châm chích ở vùng bị đau không?',
+    options: [
+      { optionId: 'numbness_yes', label: 'Có', value: true, text: 'Có tê bì hoặc châm chích' },
+      { optionId: 'numbness_no', label: 'Không', value: false, text: 'Không tê bì' },
+    ],
+  },
+  swelling: {
+    questionId: 'swelling',
+    type: QUESTION_TYPES.BINARY,
+    canonicalText: 'Vùng đau có bị sưng nề hoặc tấy đỏ không?',
+    options: [
+      { optionId: 'swelling_yes', label: 'Có', value: true, text: 'Có sưng nề hoặc tấy đỏ' },
+      { optionId: 'swelling_no', label: 'Không', value: false, text: 'Không sưng nề' },
+    ],
+  },
+  mobility: {
+    questionId: 'mobility',
+    type: QUESTION_TYPES.BINARY,
+    canonicalText: 'Cơn đau có làm bạn bị hạn chế vận động hoặc khó cử động không?',
+    options: [
+      { optionId: 'mobility_yes', label: 'Có', value: true, text: 'Có hạn chế vận động' },
+      { optionId: 'mobility_no', label: 'Không', value: false, text: 'Không hạn chế vận động' },
+    ],
+  },
+  weakness: {
+    questionId: 'weakness',
+    type: QUESTION_TYPES.BINARY,
+    canonicalText: 'Bạn có cảm thấy yếu cơ hoặc giảm sức cầm nắm không?',
+    options: [
+      { optionId: 'weakness_yes', label: 'Có', value: true, text: 'Có yếu cơ hoặc giảm sức nắm' },
+      { optionId: 'weakness_no', label: 'Không', value: false, text: 'Không yếu cơ' },
+    ],
+  },
+};
+
+function hashCode(str = '') {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
+}
+
+/**
+ * Phân giải câu hỏi lâm sàng về schema chuẩn (Canonical Question Resolver)
+ * Ngăn chặn tuyệt đối question/option mismatch
+ */
+function resolveCanonicalQuestion(questionText) {
+  if (typeof questionText !== 'string' || !questionText.trim()) return null;
+  const qLower = questionText.toLowerCase().trim();
+
+  // 1. Vị trí đau -> OPEN_TEXT (Tuyệt đối KHÔNG Yes/No)
+  if (/(vị\s*trí|chính\s*xác.*ở\s*đâu|ở\s*vị\s*trí\s*nào|đau\s*ở\s*đâu|chỗ\s*nào)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.painLocation,
+      question: questionText,
+    };
+  }
+
+  // 2. Khởi phát / Onset -> SINGLE_CHOICE
+  if (
+    /(chấn\s*thương|tai\s*nạn).*hay.*(tự\s*nhiên)/i.test(qLower) ||
+    /(xuất\s*hiện\s*(như\s*)?thế\s*nào|khởi\s*phát|bắt\s*đầu\s*(như\s*)?thế\s*nào)/i.test(qLower) ||
+    /(do\s*nguyên\s*nhân\s*gì|nguyên\s*nhân\s*khởi\s*phát)/i.test(qLower)
+  ) {
+    return {
+      ...CANONICAL_QUESTIONS.onset,
+      question: questionText,
+    };
+  }
+
+  // 3. Thời gian kéo dài / Duration -> SINGLE_CHOICE
+  if (/(thời\s*gian|bao\s*lâu|từ\s*khi\s*nào|mấy\s*ngày|kéo\s*dài)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.duration,
+      question: questionText,
+    };
+  }
+
+  // 4. Mức độ đau / Severity -> SINGLE_CHOICE
+  if (/(mức\s*độ|đau\s*nhiều|dữ\s*dội|âm\s*ỉ|nhẹ)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.painSeverity,
+      question: questionText,
+    };
+  }
+
+  // 5. Tê bì / Numbness -> BINARY
+  if (/(tê\s*bì|châm\s*chích|ngứa\s*ran|tê\s*ngón|tê\s*tay)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.numbness,
+      question: questionText,
+    };
+  }
+
+  // 6. Sưng nề / Swelling -> BINARY
+  if (/(sưng|phù\s*nề|tấy\s*đỏ|nóng\s*đỏ)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.swelling,
+      question: questionText,
+    };
+  }
+
+  // 7. Vận động / Mobility -> BINARY
+  if (/(hạn\s*chế|cử\s*động|vận\s*động|cứng\s*khớp)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.mobility,
+      question: questionText,
+    };
+  }
+
+  // 8. Yếu cơ / Weakness -> BINARY
+  if (/(yếu\s*cơ|giảm\s*sức|cầm\s*nắm)/i.test(qLower)) {
+    return {
+      ...CANONICAL_QUESTIONS.weakness,
+      question: questionText,
+    };
+  }
+
+  // 9. Generic Yes/No câu hỏi nhị phân
+  if (
+    /(có\s*.*(không|chưa)|không\?|không\s*ạ\?|phải\s*không|đúng\s*không|hay\s*không)/i.test(qLower)
+  ) {
+    const fallbackId = 'bin_' + Math.abs(hashCode(qLower)).toString(36);
+    return {
+      questionId: fallbackId,
+      type: QUESTION_TYPES.BINARY,
+      question: questionText,
+      options: [
+        { optionId: `${fallbackId}_yes`, label: 'Có', value: true, text: 'Có, tôi có dấu hiệu này' },
+        { optionId: `${fallbackId}_no`, label: 'Không', value: false, text: 'Không, tôi không có dấu hiệu này' },
+      ],
+    };
+  }
+
+  // 10. Default fallback nếu kết thúc bằng dấu hỏi mà không match cụ thể -> OPEN_TEXT
+  const fallbackId = 'open_' + Math.abs(hashCode(qLower)).toString(36);
+  return {
+    questionId: fallbackId,
+    type: QUESTION_TYPES.OPEN_TEXT,
+    question: questionText,
+    placeholder: 'Nhập câu trả lời của bạn...',
+    options: null,
+  };
+}
+
+/**
+ * Tự động tạo các lựa chọn có cấu trúc (clickable choice options) cho câu hỏi làm rõ y tế
+ * @param {string} questionText
+ * @returns {Array<{optionId: string, label: string, value: any, text: string}>|null}
+ */
+function generateStructuredOptionsForQuestion(questionText) {
+  if (typeof questionText !== 'string') return null;
+  const canonical = resolveCanonicalQuestion(questionText);
+  if (canonical && Array.isArray(canonical.options)) {
+    return canonical.options;
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ACTIVE HEALTH ASSESSMENTS IN-MEMORY SSOT REGISTRY
+// Duy trì trạng thái duy nhất của mỗi cuộc hội thoại đánh giá sức khỏe
+// ═══════════════════════════════════════════════════════════════════════
+const activeHealthAssessments = new Map();
+
+function generateAssessmentId() {
+  const ts = Date.now().toString(36).toUpperCase();
+  const rand = Math.floor(1000 + Math.random() * 9000);
+  return `HA-${ts}-${rand}`;
+}
+
+function createActiveAssessment({ initialComplaint = '', symptoms = [], painLocation = null, rawAssessment = {}, userId = null }) {
+  const assessmentId = generateAssessmentId();
+  const now = Date.now();
+
+  const record = {
+    assessmentId,
+    userId: userId || 'anonymous',
+    initialComplaint: initialComplaint || (symptoms.length > 0 ? symptoms.join(', ') : ''),
+    painLocation: painLocation || (symptoms.length > 0 ? symptoms[0] : null),
+    symptoms: [...symptoms],
+    answers: {},
+    answeredQuestionIds: [],
+    pendingQuestionIds: [],
+    assessmentData: rawAssessment,
+    createdAt: now,
+    updatedAt: now,
+    active: true,
+  };
+
+  activeHealthAssessments.set(assessmentId, record);
+  return record;
+}
+
+function getActiveAssessment(assessmentId) {
+  if (!assessmentId) return null;
+  const item = activeHealthAssessments.get(assessmentId);
+  if (!item || !item.active) return null;
+  return item;
+}
+
+function updateActiveAssessment({ assessmentId, questionId, optionId, value, answerText }) {
+  const record = getActiveAssessment(assessmentId);
+  if (!record) {
+    return {
+      success: false,
+      error: 'ASSESSMENT_NOT_FOUND',
+      message: 'Không tìm thấy đánh giá sức khỏe đang hoạt động hoặc đã hết phiên.',
+    };
+  }
+
+  const cleanQId = String(questionId || '').trim();
+  record.answers[cleanQId] = {
+    optionId: optionId || null,
+    value: value !== undefined ? value : answerText,
+    answerText: answerText || String(value),
+    answeredAt: Date.now(),
+  };
+
+  if (!record.answeredQuestionIds.includes(cleanQId)) {
+    record.answeredQuestionIds.push(cleanQId);
+  }
+
+  // Update canonical domain attributes
+  if (cleanQId === 'duration') {
+    record.duration = value;
+  } else if (cleanQId === 'onset') {
+    record.onset = value;
+  } else if (cleanQId === 'numbness') {
+    record.numbness = value;
+  } else if (cleanQId === 'painLocation') {
+    record.painLocation = answerText || value;
+  } else if (cleanQId === 'painSeverity') {
+    record.painSeverity = value;
+  } else if (cleanQId === 'swelling') {
+    record.swelling = value;
+  }
+
+  record.updatedAt = Date.now();
+
+  // Merge into assessmentData
+  const data = record.assessmentData?.data || record.assessmentData || {};
+
+  // Synthesize updated observations with clinical context
+  const existingObs = Array.isArray(data.observations) ? data.observations : [];
+  const updatedObs = [...existingObs];
+
+  let answerDesc = '';
+  if (cleanQId === 'duration') {
+    const durLabel = value === 'LESS_THAN_1_DAY' ? 'dưới 1 ngày' : (value === '1_TO_7_DAYS' ? '1 - 7 ngày' : (value === 'MORE_THAN_1_WEEK' ? 'trên 1 tuần' : String(answerText || value)));
+    answerDesc = `Thời gian triệu chứng kéo dài: ${durLabel}.`;
+  } else if (cleanQId === 'numbness') {
+    answerDesc = value === true || String(value).toLowerCase() === 'true'
+      ? 'Ghi nhận có triệu chứng tê bì, châm chích kèm theo.'
+      : 'Ghi nhận không có biểu hiện tê bì, châm chích.';
+  } else if (cleanQId === 'onset') {
+    const onsetLabel = value === 'AFTER_TRAUMA' ? 'sau chấn thương hoặc va chạm' : (value === 'GRADUAL_CHRONIC' ? 'đau âm ỉ kéo dài' : 'tự nhiên đau');
+    answerDesc = `Hình thái khởi phát: ${onsetLabel}.`;
+  } else if (cleanQId === 'painLocation') {
+    answerDesc = `Vị trí đau cụ thể: ${answerText || value}.`;
+  } else if (cleanQId === 'swelling') {
+    answerDesc = value === true || String(value).toLowerCase() === 'true'
+      ? 'Ghi nhận vùng đau có biểu hiện sưng nề hoặc tấy đỏ.'
+      : 'Không có biểu hiện sưng nề rõ rệt.';
+  } else {
+    answerDesc = `Thông tin bổ sung (${cleanQId}): ${answerText || value}.`;
+  }
+
+  if (answerDesc && !updatedObs.includes(answerDesc)) {
+    updatedObs.push(answerDesc);
+  }
+
+  // Update followUpQuestions: LOẠI BỎ câu hỏi đã trả lời
+  let currentQuestions = Array.isArray(data.followUpQuestions) ? data.followUpQuestions : [];
+  let remainingQuestions = currentQuestions.filter((q) => {
+    const qId = q.questionId || (typeof q === 'object' ? q.id : null);
+    if (qId && record.answeredQuestionIds.includes(qId)) return false;
+    return true;
+  });
+
+  const updatedData = {
+    ...data,
+    assessmentId: record.assessmentId,
+    initialComplaint: record.initialComplaint,
+    painLocation: record.painLocation,
+    observations: updatedObs.slice(0, 7),
+    followUpQuestions: remainingQuestions,
+    answers: record.answers,
+    answeredQuestionIds: record.answeredQuestionIds,
+    lastAnsweredQuestion: cleanQId,
+    isFollowUpUpdate: true,
+    timestamp: Date.now(),
+  };
+
+  record.assessmentData = {
+    type: 'HEALTH_ASSESSMENT',
+    data: updatedData,
+  };
+
+  return {
+    success: true,
+    assessmentId: record.assessmentId,
+    data: updatedData,
+    assessment: updatedData,
+  };
+}
+
 /**
  * Thẩm định và chuẩn hóa toàn diện cấu trúc Health Assessment
  * Đảm bảo Frontend nhận được payload tin cậy 100%, không bị crash do malformed output
@@ -324,9 +774,23 @@ function validateAndSanitizeAssessment(rawData = {}, context = {}) {
     ? sanitizeMedicalWording(data.uncertainty.trim())
     : 'Thông tin này chỉ mang tính định hướng sơ bộ từ mô tả hoặc hình ảnh, hoàn toàn không thay thế cho thăm khám lâm sàng trực tiếp.';
 
-  // 5. Follow-up Questions (Khử trùng lặp và giới hạn 3-5 câu)
+  // 5. Follow-up Questions (Khử trùng lặp và đính kèm structured options tương tác)
   const rawQuestions = Array.isArray(data.followUpQuestions) ? data.followUpQuestions : [];
-  const followUpQuestions = filterAndDeduplicateQuestions(rawQuestions, ctxAsked);
+  const followUpQuestionTexts = filterAndDeduplicateQuestions(rawQuestions, ctxAsked);
+  const followUpQuestions = followUpQuestionTexts.map((q) => {
+    const qText = typeof q === 'string' ? q : (q?.question || q?.text || '');
+    const canonical = resolveCanonicalQuestion(qText);
+    const providedOptions = Array.isArray(q?.options) ? q.options : null;
+    const derivedOptions = providedOptions || canonical?.options || generateStructuredOptionsForQuestion(qText);
+
+    return {
+      questionId: canonical?.questionId || q?.questionId || `q_${Math.abs(hashCode(qText)).toString(36)}`,
+      type: canonical?.type || (derivedOptions ? QUESTION_TYPES.SINGLE_CHOICE : QUESTION_TYPES.OPEN_TEXT),
+      question: qText,
+      placeholder: canonical?.placeholder || null,
+      options: derivedOptions,
+    };
+  });
 
   // 6. Red Flags
   const redFlagsSet = new Set([
@@ -345,45 +809,61 @@ function validateAndSanitizeAssessment(rawData = {}, context = {}) {
       ? 'Bạn nên sớm đến cơ sở y tế hoặc bệnh viện chuyên khoa để được bác sĩ thăm khám và đánh giá cụ thể.'
       : 'Theo dõi sự thay đổi của triệu chứng và chủ động đặt lịch khám chuyên khoa phù hợp nếu không thuyên giảm.');
 
-  // 9. Suggested Specialties
+  // 9. Suggested Specialties — Grounded against real DB catalog
   let suggestedSpecialties = [];
   if (Array.isArray(data.suggestedSpecialties)) {
-    suggestedSpecialties = data.suggestedSpecialties
-      .map((sp) => {
-        if (typeof sp === 'string') {
-          return { name: sp.trim(), reason: 'Phù hợp với nhóm triệu chứng hiện tại.' };
-        }
-        if (sp && typeof sp === 'object' && sp.name) {
-          return {
-            name: String(sp.name).trim(),
-            reason: String(sp.reason || 'Chuyên khoa phù hợp để thăm khám và tư vấn trực tiếp.').trim(),
-          };
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .slice(0, 3);
+    for (const sp of data.suggestedSpecialties) {
+      const rawName = typeof sp === 'string' ? sp : (sp?.name || '');
+      const rawReason = typeof sp === 'object' ? (sp?.reason || '') : '';
+      const resolved = resolveRealSpecialty(rawName);
+      if (resolved && !suggestedSpecialties.some((s) => s.id === resolved.id)) {
+        suggestedSpecialties.push({
+          id: resolved.id,
+          name: resolved.name,
+          reason: rawReason || `Chuyên khoa ${resolved.name} phù hợp trong danh mục BookingCare để thăm khám trực tiếp.`,
+        });
+      }
+    }
   }
 
-  // Tự động suy luận chuyên khoa nếu model chưa đưa ra
+  // Tự động suy luận chuyên khoa nếu model chưa đưa ra hoặc hallucinate chuyên khoa không có trong CSDL
   if (suggestedSpecialties.length === 0) {
     if (context.symptoms.some((s) => ['ngứa', 'nổi mẩn', 'mẩn đỏ', 'phát ban', 'mụn nước', 'bong tróc'].includes(s))) {
       suggestedSpecialties.push({
+        id: 5,
         name: 'Da liễu',
         reason: 'Các biểu hiện trên da phù hợp với chuyên khoa Da liễu.',
       });
     } else if (context.symptoms.some((s) => ['đau họng', 'ho', 'sổ mũi', 'nghẹt mũi'].includes(s))) {
       suggestedSpecialties.push({
+        id: 4,
         name: 'Tai Mũi Họng',
         reason: 'Triệu chứng đường hô hấp trên phù hợp với chuyên khoa Tai Mũi Họng.',
       });
     } else if (context.symptoms.some((s) => ['đau bụng', 'buồn nôn', 'tiêu chảy'].includes(s))) {
       suggestedSpecialties.push({
+        id: 6,
         name: 'Tiêu hóa',
         reason: 'Triệu chứng đường tiêu hóa phù hợp với chuyên khoa Tiêu hóa.',
       });
+    } else if (context.symptoms.some((s) => ['đau đầu', 'chóng mặt'].includes(s))) {
+      suggestedSpecialties.push({
+        id: 2,
+        name: 'Thần kinh',
+        reason: 'Triệu chứng đau đầu hoặc chóng mặt phù hợp với chuyên khoa Thần kinh.',
+      });
+    } else if (context.symptoms.some((s) => ['đau khớp', 'đau lưng', 'mỏi gối'].includes(s))) {
+      suggestedSpecialties.push({
+        id: 1,
+        name: 'Cơ xương khớp',
+        reason: 'Biểu hiện đau khớp, đau lưng phù hợp với chuyên khoa Cơ xương khớp.',
+      });
     }
   }
+
+  const specialtyNotice = suggestedSpecialties.length === 0
+    ? 'Hiện hệ thống chưa có chuyên khoa phù hợp trong danh mục.'
+    : null;
 
   // 10. Image Quality
   let imageQuality = IMAGE_QUALITY.NOT_APPLICABLE;
@@ -416,14 +896,20 @@ function validateAndSanitizeAssessment(rawData = {}, context = {}) {
       riskLevel: evaluatedRisk,
       recommendedNextStep,
       suggestedSpecialties,
+      specialtyNotice,
       safetyNotice,
       needsMedicalAttention,
       imageQuality,
       basedOn: {
-        image: Boolean(context.hasImage || context.historicalVision),
+        image: Boolean(context.hasImage),
         symptoms: context.symptoms.length > 0,
         conversationContext: Boolean(context.isFollowUp || context.historicalVision),
       },
+      assessmentId: data.assessmentId || context.assessmentId || undefined,
+      initialComplaint: data.initialComplaint || context.initialComplaint || (context.symptoms?.length > 0 ? context.symptoms.join(', ') : undefined),
+      painLocation: data.painLocation || context.painLocation || (context.symptoms?.length > 0 ? context.symptoms[0] : undefined),
+      answers: data.answers || context.answers || {},
+      answeredQuestionIds: data.answeredQuestionIds || context.answeredQuestionIds || [],
       timestamp: Date.now(),
     },
   };
@@ -459,11 +945,7 @@ function buildHealthAssessmentPrompt(context) {
 
   prompt += `
 ═══ YÊU CẦU ĐÁNH GIÁ SƠ BỘ ═══
-1. Cung cấp câu trả lời ân cần, giải thích sơ bộ triệu chứng/ảnh mà không kết luận chẩn đoán xác định.
-2. Nêu rõ giới hạn của tư vấn từ xa và mức độ không chắc chắn.
-3. Đặt ra 2-4 câu hỏi trọng tâm nếu còn thiếu thông tin lâm sàng (không hỏi lại những gì bệnh nhân đã nói).
-4. Đưa ra khuyến cáo an toàn và gợi ý chuyên khoa phù hợp (không đưa tên bác sĩ hay slot đặt lịch).
-5. BẮT BUỘC trả về kèm khối JSON đánh giá sơ bộ:
+Hãy phân tích kỹ các triệu chứng và hình ảnh (nếu có), sau đó trả về DUY NHẤT một khối JSON đánh giá sơ bộ theo đúng cấu trúc sau (TUYỆT ĐỐI KHÔNG thêm bất kỳ văn bản chào hỏi, giải thích hay lời khuyên nào bên ngoài khối JSON):
 \`\`\`json
 {
   "summary": "...",
@@ -531,6 +1013,8 @@ function getHealthAssessmentModel(customOptions = {}) {
 module.exports = {
   RISK_LEVELS,
   IMAGE_QUALITY,
+  QUESTION_TYPES,
+  CANONICAL_QUESTIONS,
   HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION,
   extractHealthContext,
   evaluateRiskLevel,
@@ -540,4 +1024,13 @@ module.exports = {
   buildHealthAssessmentPrompt,
   extractJsonFromModelOutput,
   getHealthAssessmentModel,
+  resolveRealSpecialty,
+  REAL_SPECIALTIES_CATALOG,
+  generateStructuredOptionsForQuestion,
+  resolveCanonicalQuestion,
+  activeHealthAssessments,
+  generateAssessmentId,
+  createActiveAssessment,
+  getActiveAssessment,
+  updateActiveAssessment,
 };
