@@ -13,13 +13,14 @@ const policyEngineService = require('./policyEngineService');
 const REASON_RULES = {
   // Nhóm Bác sĩ / Phòng khám / Hệ thống: Luôn hoàn 100%
   DOCTOR_UNAVAILABLE: { defaultRate: 100, label: 'Bác sĩ bận đột xuất / Không thể tiếp nhận', force100: true },
+  DOCTOR_CANCELLED: { defaultRate: 100, label: 'Bác sĩ bận đột xuất / Hủy ca khám', force100: true },
   CLINIC_FORCE_MAJEURE: { defaultRate: 100, label: 'Cơ sở y tế đóng cửa / Sự cố bất khả kháng', force100: true },
   SYSTEM_DUPLICATE_PAYMENT: { defaultRate: 100, label: 'Lỗi hệ thống / Thanh toán trùng lặp', force100: true },
 
   // Nhóm Bệnh nhân chủ động hủy: Tính theo thời gian thực tế
   PATIENT_ON_TIME: { defaultRate: 100, label: 'Bệnh nhân hủy đúng hạn (>= 24h)', force100: false },
   PATIENT_LATE: { defaultRate: null, label: 'Bệnh nhân hủy cận giờ (< 24h)', force100: false },
-  PATIENT_NO_SHOW: { defaultRate: 0, label: 'Bệnh nhân không đến khám (No-show)', force100: false },
+  PATIENT_NO_SHOW: { defaultRate: 75, label: 'Bệnh nhân không đến khám (No-show, Tự động hoàn)', force100: false, isNoShow: true },
 
   // Nhóm Admin xử lý ngoại lệ
   ADMIN_DISPUTE_RESOLUTION: { defaultRate: null, label: 'Giải quyết tranh chấp khiếu nại (Admin)', force100: false },
@@ -94,7 +95,7 @@ async function createRefundCase({
       nonRefundableAmount = 0;
     } else {
       // Tính theo policySnapshot lúc đặt lịch
-      const calcResult = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
+      const calcResult = policyEngineService.calculateRefundFromBookingSnapshot(booking, now, { cancellationReason });
       refundRate = calcResult.appliedRefundPercent || 0;
       refundAmount = Math.round((paidAmount * refundRate) / 100);
       nonRefundableAmount = Math.max(0, paidAmount - refundAmount);
@@ -248,6 +249,7 @@ async function getAdminRefundCases({
   limit = 15,
   status = 'ALL',
   cancellationReason = 'ALL',
+  reason,
   search = '',
 } = {}) {
   try {
@@ -257,7 +259,16 @@ async function getAdminRefundCases({
 
     const where = {};
     if (status && status !== 'ALL') where.status = status;
-    if (cancellationReason && cancellationReason !== 'ALL') where.cancellationReason = cancellationReason;
+    const activeReason = (cancellationReason && cancellationReason !== 'ALL')
+      ? cancellationReason
+      : (reason && reason !== 'ALL' ? reason : null);
+    if (activeReason) {
+      if (activeReason === 'DOCTOR_UNAVAILABLE') {
+        where.cancellationReason = { [Op.in]: ['DOCTOR_UNAVAILABLE', 'DOCTOR_CANCELLED'] };
+      } else {
+        where.cancellationReason = activeReason;
+      }
+    }
 
     const bookingWhere = {};
     if (search && search.trim()) {
@@ -492,6 +503,31 @@ async function processAdminReviewRefund(caseId, { action, overrideRefundAmount, 
       },
       { where: { id: refundCase.bookingId }, transaction: t }
     );
+
+    // Nếu là ca No-Show có khoản giữ lại (nonRefundableAmount > 0) -> Tạo khoản bồi thường thù lao cho Bác sĩ
+    if (refundCase.cancellationReason === 'PATIENT_NO_SHOW' && Number(refundCase.nonRefundableAmount) > 0) {
+      try {
+        const doctorSettlementService = require('./doctorSettlementService');
+        let docCompRate = 80;
+        let parsedSnap = null;
+        try {
+          parsedSnap = typeof refundCase.calculationSnapshot === 'string'
+            ? JSON.parse(refundCase.calculationSnapshot)
+            : refundCase.calculationSnapshot;
+        } catch (e) {}
+        if (parsedSnap?.policySnapshotUsed?.rules?.noShowDoctorCompensationPercent) {
+          docCompRate = Number(parsedSnap.policySnapshotUsed.rules.noShowDoctorCompensationPercent);
+        }
+        await doctorSettlementService.recordNoShowDoctorCompensation({
+          bookingId: refundCase.bookingId,
+          nonRefundableAmount: refundCase.nonRefundableAmount,
+          doctorCompensationPercent: docCompRate,
+          externalTransaction: t,
+        });
+      } catch (compErr) {
+        console.warn('Lỗi ghi nhận bồi thường thù lao bác sĩ No-show:', compErr.message);
+      }
+    }
 
     await t.commit();
     return {

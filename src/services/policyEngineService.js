@@ -217,7 +217,7 @@ const freezeBookingFinancials = async ({ doctorId, clinicId, totalAmount, bookin
  * @param {object} booking Instance hoặc Plain Object của Booking
  * @param {Date|string} cancelledAt Thời điểm hủy khám
  */
-const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date()) => {
+const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), options = {}) => {
   let snapshot = null;
   if (typeof booking.policySnapshot === 'string') {
     try {
@@ -254,8 +254,13 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date()) =
       { minHoursBefore: 12, refundPercent: 75 },
       { minHoursBefore: 0, refundPercent: 50 },
     ],
-    defaultRefundPercent: 0
+    defaultRefundPercent: 0,
+    noShowRefundPercent: 75,
+    noShowDoctorCompensationPercent: 80,
+    noShowAutoScanHours: 4,
   };
+
+  const isNoShow = options.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationReason === 'PATIENT_NO_SHOW';
 
   const tiers = Array.isArray(refundRules.tiers) ? [...refundRules.tiers] : [];
   // Sắp xếp các mốc thời gian từ cao xuống thấp (24h -> 12h -> 0h)
@@ -264,11 +269,21 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date()) =
   let appliedRefundPercent = refundRules.defaultRefundPercent ?? 0;
   let matchedTier = null;
 
-  for (const tier of tiers) {
-    if (hoursBefore >= tier.minHoursBefore) {
-      appliedRefundPercent = tier.refundPercent;
-      matchedTier = tier;
-      break;
+  if (isNoShow) {
+    appliedRefundPercent = refundRules.noShowRefundPercent !== undefined
+      ? Number(refundRules.noShowRefundPercent)
+      : 75;
+    matchedTier = {
+      label: 'Bệnh nhân vắng mặt (No-Show) - Hoàn theo quy chế bảo vệ khách hàng',
+      refundPercent: appliedRefundPercent,
+    };
+  } else {
+    for (const tier of tiers) {
+      if (hoursBefore >= tier.minHoursBefore) {
+        appliedRefundPercent = tier.refundPercent;
+        matchedTier = tier;
+        break;
+      }
     }
   }
 
@@ -1052,9 +1067,12 @@ const seedDefaultPoliciesIfEmpty = async () => {
         { minHoursBefore: 0, refundPercent: 50, label: 'Hủy sát giờ khám (< 12 giờ)' }
       ],
       defaultRefundPercent: 0,
-      note: 'Sau khi qua giờ khám hoặc vắng mặt không báo trước sẽ không được hoàn tiền.'
+      noShowRefundPercent: 75,
+      noShowDoctorCompensationPercent: 80,
+      noShowAutoScanHours: 4,
+      note: 'Ca khám bệnh nhân không đến (No-Show) tự động hoàn 75% cho khách hàng và phân bổ 80% phần giữ lại bồi thường thời gian cho bác sĩ.'
     }),
-    description: 'Quy định hoàn tiền theo mốc thời gian báo trước đối với các lịch khám đã thanh toán trước.',
+    description: 'Quy định hoàn tiền theo mốc thời gian và tự động hoàn 75% khi bệnh nhân vắng mặt (No-Show).',
     isLocked: false,
     createdById: 1
   });

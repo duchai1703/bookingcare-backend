@@ -634,6 +634,73 @@ async function autoRunDoctorPayoutCycle({ adminId = null } = {}) {
   }
 }
 
+/**
+ * Ghi nhận bồi thường thù lao cho Bác sĩ khi ca khám bị No-Show (Bệnh nhân vắng mặt)
+ */
+async function recordNoShowDoctorCompensation({
+  bookingId,
+  nonRefundableAmount,
+  doctorCompensationPercent = 80,
+  externalTransaction = null,
+}) {
+  const t = externalTransaction || (await db.sequelize.transaction());
+  try {
+    const booking = await db.Booking.findByPk(bookingId, { transaction: t });
+    if (!booking) throw new Error(`Không tìm thấy ca khám #${bookingId}`);
+
+    // Kiểm tra ràng buộc duy nhất (Chống tạo 2 khoản thù lao cho 1 ca khám)
+    const existing = await db.Doctor_Settlement_Item.findOne({
+      where: { bookingId },
+      transaction: t,
+    });
+    if (existing) {
+      if (!externalTransaction) await t.commit();
+      return { errCode: 0, message: 'Khoản bù đắp No-show đã tồn tại', data: existing };
+    }
+
+    const retained = Number(nonRefundableAmount || 0);
+    if (retained <= 0) {
+      if (!externalTransaction) await t.commit();
+      return { errCode: 0, message: 'Không có số tiền giữ lại để bồi thường' };
+    }
+
+    // Tỷ lệ bác sĩ hưởng từ khoản giữ lại (mặc định 80%, sàn 20%)
+    const docRate = Math.min(100, Math.max(0, Number(doctorCompensationPercent) || 80));
+    const netAmount = Math.round((retained * docRate) / 100);
+    const platformFee = Math.max(0, retained - netAmount);
+
+    const now = new Date();
+    const settlementItem = await db.Doctor_Settlement_Item.create(
+      {
+        bookingId: booking.id,
+        doctorId: booking.doctorId,
+        clinicId: booking.clinicId || null,
+        appointmentDate: booking.date ? new Date(Number(booking.date) || booking.date) : now,
+        grossAmount: retained,
+        platformFeeRate: 100 - docRate,
+        platformFee,
+        clinicShareRate: 0,
+        clinicShare: 0,
+        adjustmentAmount: 0,
+        netAmount,
+        policySnapshot: booking.policySnapshot,
+        status: 'AVAILABLE', // Sẵn sàng quyết toán cho bác sĩ
+        earnedAt: now,
+        availableAt: now,
+        note: `Bồi thường giữ chỗ do Bệnh nhân vắng mặt (No-Show) - Hưởng ${docRate}% khoản khấu trừ`,
+      },
+      { transaction: t }
+    );
+
+    if (!externalTransaction) await t.commit();
+    return { errCode: 0, data: settlementItem };
+  } catch (error) {
+    if (!externalTransaction) await t.rollback();
+    console.error('Error in recordNoShowDoctorCompensation:', error);
+    return { errCode: 1, errMessage: error.message };
+  }
+}
+
 module.exports = {
   recordCompletedBookingSettlement,
   releaseEligibleSettlements,
@@ -642,4 +709,5 @@ module.exports = {
   getAutomationLogs,
   getAutomationLogDetail,
   autoRunDoctorPayoutCycle,
+  recordNoShowDoctorCompensation,
 };

@@ -429,7 +429,7 @@ async function getMasterTreasuryOverview() {
             { cancelledByRole: 'DOCTOR' },
             {
               cancellationReason: {
-                [Op.in]: ['DOCTOR_UNAVAILABLE', 'DOCTOR_CANCELLED', 'CLINIC_FORCE_MAJEURE', 'SYSTEM_DUPLICATE_PAYMENT', 'PATIENT_ON_TIME'],
+                [Op.in]: ['DOCTOR_UNAVAILABLE', 'DOCTOR_CANCELLED', 'CLINIC_FORCE_MAJEURE', 'SYSTEM_DUPLICATE_PAYMENT', 'PATIENT_ON_TIME', 'PATIENT_NO_SHOW'],
               },
             },
           ],
@@ -598,6 +598,64 @@ async function runMasterAutomationCycle({ adminId = 1 } = {}) {
       messages: [],
     };
 
+    // ── GIAI ĐOẠN 0: TỰ ĐỘNG CHỐT CÁC CA QUÁ HẠN KHÔNG ĐẾN (NO-SHOW AUTO SCAN) ──
+    const now = new Date();
+    try {
+      let autoScanHours = 4;
+      try {
+        const activePolicy = await db.Financial_Policy.findOne({
+          where: { code: 'POL_REFUND_RULE', status: 'ACTIVE' },
+          order: [['version', 'DESC']],
+        });
+        if (activePolicy && activePolicy.rules) {
+          const r = typeof activePolicy.rules === 'string' ? JSON.parse(activePolicy.rules) : activePolicy.rules;
+          if (r.noShowAutoScanHours) autoScanHours = Number(r.noShowAutoScanHours);
+        }
+      } catch (pe) {}
+
+      const cutoffTime = new Date(now.getTime() - autoScanHours * 60 * 60 * 1000);
+      const expiredBookings = await db.Booking.findAll({
+        where: {
+          statusId: 'S2',
+          paymentStatus: 'paid',
+        },
+        limit: 20,
+      });
+
+      let autoNoShowCount = 0;
+      for (const b of expiredBookings) {
+        let appTime = null;
+        if (b.date) {
+          const rawDate = Number(b.date);
+          if (!isNaN(rawDate) && rawDate > 1000000000) {
+            appTime = new Date(rawDate);
+          } else {
+            appTime = new Date(b.date);
+          }
+        }
+        if (appTime && appTime < cutoffTime) {
+          b.statusId = 'S4';
+          b.cancellationType = 'SYSTEM_NO_SHOW';
+          b.cancellationReason = 'PATIENT_NO_SHOW';
+          b.cancelledAt = now;
+          await b.save();
+
+          await refundGovernanceService.createRefundCase({
+            bookingId: b.id,
+            cancelledByRole: 'SYSTEM',
+            cancellationReason: 'PATIENT_NO_SHOW',
+            cancellationNote: `Hệ thống tự động chốt vắng mặt sau ${autoScanHours}h quá hạn`,
+          });
+          autoNoShowCount++;
+        }
+      }
+      if (autoNoShowCount > 0) {
+        report.messages.push(`Tự động chốt vắng mặt (No-Show) cho ${autoNoShowCount} ca khám quá hạn.`);
+      }
+    } catch (scanErr) {
+      console.warn('Lỗi auto-scan No-Show:', scanErr.message);
+    }
+
     // ── GIAI ĐOẠN 1: QUYẾT TOÁN THÙ LAO CA KHÁM (DOCTOR SETTLEMENTS) ──
     const settlementRes = await doctorSettlementService.autoRunDoctorPayoutCycle({ adminId });
     if (settlementRes && settlementRes.errCode === 0) {
@@ -617,7 +675,7 @@ async function runMasterAutomationCycle({ adminId = 1 } = {}) {
             { cancelledByRole: 'DOCTOR' },
             {
               cancellationReason: {
-                [Op.in]: ['DOCTOR_UNAVAILABLE', 'DOCTOR_CANCELLED', 'CLINIC_FORCE_MAJEURE', 'SYSTEM_DUPLICATE_PAYMENT', 'PATIENT_ON_TIME'],
+                [Op.in]: ['DOCTOR_UNAVAILABLE', 'DOCTOR_CANCELLED', 'CLINIC_FORCE_MAJEURE', 'SYSTEM_DUPLICATE_PAYMENT', 'PATIENT_ON_TIME', 'PATIENT_NO_SHOW'],
               },
             },
           ],

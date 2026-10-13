@@ -769,11 +769,12 @@ const cancelBooking = async (data) => {
     }
 
     const prevStatus = booking.statusId;
+    const isNoShow = data.isNoShow === true || data.cancellationReason === 'PATIENT_NO_SHOW' || data.reason === 'PATIENT_NO_SHOW';
 
     // ===== THAO TÁC 1: S1/S2 → S4 (trong transaction t) =====
     booking.statusId = 'S4';
-    booking.cancellationType = 'DOCTOR';
-    booking.cancellationReason = data.reason || 'Bác sĩ hủy lịch hẹn';
+    booking.cancellationType = isNoShow ? 'NO_SHOW' : 'DOCTOR';
+    booking.cancellationReason = isNoShow ? 'PATIENT_NO_SHOW' : (data.reason || 'Bác sĩ hủy lịch hẹn');
     booking.cancelledAt = new Date();
     await booking.save({ transaction: t });
 
@@ -791,15 +792,17 @@ const cancelBooking = async (data) => {
       });
 
       // ═══════════════════════════════════════════════════════════
-      // [Refund Governance] Bác sĩ hủy ca khám đã xác nhận (S2) → Tự động hoàn tiền 100% cho bệnh nhân
+      // [Refund Governance] Tạo Refund Case tương ứng
       // ═══════════════════════════════════════════════════════════
       try {
         await refundGovernanceService.createRefundCase({
           bookingId: booking.id,
           cancelledByRole: 'DOCTOR',
           cancelledById: data.doctorId,
-          cancellationReason: 'DOCTOR_UNAVAILABLE',
-          cancellationNote: data.reason || 'Bác sĩ hủy lịch hẹn',
+          cancellationReason: isNoShow ? 'PATIENT_NO_SHOW' : 'DOCTOR_UNAVAILABLE',
+          cancellationNote: isNoShow
+            ? (data.note || data.cancellationNote || 'Bác sĩ xác nhận bệnh nhân vắng mặt (No-Show)')
+            : (data.reason || data.cancellationNote || 'Bác sĩ hủy lịch hẹn'),
           externalTransaction: t,
         });
       } catch (refundErr) {
@@ -812,11 +815,15 @@ const cancelBooking = async (data) => {
 
     // Gửi thông báo hủy lịch cho Bệnh nhân
     try {
+      const notifTitle = isNoShow ? 'Lịch hẹn ghi nhận Vắng mặt (No-Show)' : 'Lịch hẹn đã bị bác sĩ hủy';
+      const notifMsg = isNoShow
+        ? `Lịch hẹn #${booking.id} đã được xác nhận vắng mặt. Hệ thống sẽ tự động hoàn tiền theo chính sách vào ví của bạn.`
+        : `Bác sĩ đã hủy lịch hẹn #${booking.id}. Lý do: ${booking.cancellationReason || 'Bác sĩ bận việc đột xuất'}.`;
       await notificationService.createAndSendNotification({
         recipientId: booking.patientId,
         type: 'BOOKING_CANCELLED',
-        title: 'Lịch hẹn đã bị bác sĩ hủy',
-        message: `Bác sĩ đã hủy lịch hẹn #${booking.id}. Lý do: ${booking.cancellationReason || 'Bác sĩ bận việc đột xuất'}.`,
+        title: notifTitle,
+        message: notifMsg,
         entityType: 'BOOKING',
         entityId: booking.id,
         data: {
@@ -824,6 +831,7 @@ const cancelBooking = async (data) => {
           doctorId: data.doctorId,
           reason: booking.cancellationReason,
           cancelledBy: 'DOCTOR',
+          isNoShow,
         },
       });
     } catch (notifErr) {
