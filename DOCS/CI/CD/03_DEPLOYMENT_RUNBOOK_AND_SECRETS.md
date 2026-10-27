@@ -103,9 +103,9 @@ Nếu sau khi deploy phiên bản mới phát sinh lỗi nghiêm trọng (API cr
    ```bash
    git log --oneline -n 5
    ```
-3. Checkout về commit ổn định (Ví dụ commit `5e3daad`):
+3. Checkout về commit ổn định (Ví dụ commit `5cb9a82`):
    ```bash
-   git checkout 5e3daad
+   git checkout 5cb9a82
    sudo bash deploy.sh
    ```
 4. Kiểm tra lại trạng thái container:
@@ -116,12 +116,32 @@ Nếu sau khi deploy phiên bản mới phát sinh lỗi nghiêm trọng (API cr
 
 ---
 
-## 5. BẢNG KIỂM TRA TRƯỚC KHI BÀN GIAO (PRE-HANDOVER CHECKLIST)
+## 5. XỬ LÝ SỰ CỐ PIPELINE & RUNNERS THỰC CHIẾN (TROUBLESHOOTING)
+
+### Sự cố 1: Job bị treo `Pending` với thông báo *"waiting to be picked by a runner"*
+* **Nguyên nhân:** Các Runner trên hệ thống GitLab này (`gitlab.s2.ttpprojects.com`) đều có gắn thẻ Tags và **từ chối nhận job không có tag**.
+* **Khắc phục:**
+  * Kiểm tra danh sách runner tại *Settings > CI/CD > Runners*:
+    * Runner #5 có tag: `dockerrunner`, `test`, `build`.
+    * Runner #4 có tag: `deploy`, `hostdockerrunner`.
+  * Trong `.gitlab-ci.yml`, bắt buộc phải khai báo:
+    * `tags: [dockerrunner]` cho các job test và build.
+    * `tags: [deploy]` cho job deploy.
+
+### Sự cố 2: Pipeline báo lỗi đỏ *"jobs:<job_name>:script config should be a string"*
+* **Nguyên nhân:** Lỗi phân tích cú pháp YAML. Trong câu lệnh `echo`, xuất hiện dấu hai chấm kèm dấu cách (`: `) khiến YAML hiểu nhầm là một Key của Object thay vì chuỗi.
+* **Khắc phục:**
+  * Luôn bọc toàn bộ câu lệnh trong nháy đơn: `'echo "Tin nhắn - $BIEN"'`.
+  * Chạy lệnh chẩn đoán bắt buộc: `npx -y js-yaml .gitlab-ci.yml` trước khi commit.
+
+---
+
+## 6. BẢNG KIỂM TRA TRƯỚC KHI BÀN GIAO (PRE-HANDOVER CHECKLIST)
 
 Trước khi bàn giao hệ thống cho người mới hoặc đưa vào bảo vệ đồ án:
 - [x] Cấu hình Dual-Push Git đồng bộ đồng thời cả GitHub và GitLab.
 - [x] Lịch sử commit của 2 nền tảng khớp nhau 100%.
-- [x] Tệp `.gitlab-ci.yml` đã được định nghĩa và kiểm tra cú pháp.
+- [x] Tệp `.gitlab-ci.yml` đã được định nghĩa, kiểm tra cú pháp và gán đúng Runner Tags (`dockerrunner`, `deploy`).
 - [x] Tệp `.github/workflows/ci.yml` đã được thiết lập để giữ Badge xanh.
 - [x] Cấu trúc tài liệu `DOCS/CI/CD/` được phân tách khoa học, có mục lục và hướng dẫn chi tiết.
 - [x] Không có bất kỳ file chứa mật khẩu (`.env`, `.env.production`) nào bị commit vào Git.
