@@ -1,7 +1,6 @@
 # =========================================================================
 # BOOKINGCARE BACKEND — PRODUCTION CI/CD PIPELINE (.gitlab-ci.yml)
 # Phục vụ: Kiểm thử tự động, đóng gói Docker Image và Triển khai Production
-# Tương thích: GitLab 15+, Docker-in-Docker, Node.js 18 LTS
 # =========================================================================
 
 stages:
@@ -10,10 +9,10 @@ stages:
   - deploy
 
 variables:
-  DOCKER_DRIVER: overlay2
+  DOCKER_DRIVER: "overlay2"
   DOCKER_TLS_CERTDIR: ""
-  IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
-  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  IMAGE_TAG: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  IMAGE_LATEST: "$CI_REGISTRY_IMAGE:latest"
 
 # =========================================================================
 # GIAI ĐOẠN 1: QUALITY GATE (KIỂM TRA CÚ PHÁP & BẢO MẬT)
@@ -22,7 +21,7 @@ backend_syntax_and_audit:
   stage: quality_gate
   image: node:18-alpine
   cache:
-    key: ${CI_COMMIT_REF_SLUG}-backend
+    key: "${CI_COMMIT_REF_SLUG}-backend"
     paths:
       - node_modules/
   script:
@@ -49,10 +48,10 @@ backend_docker_build:
     - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
   script:
     - echo "[CI DOCKER] Đang build Docker Image Multi-Stage..."
-    - docker build --pull -t $IMAGE_TAG -t $IMAGE_LATEST .
+    - docker build --pull -t "$IMAGE_TAG" -t "$IMAGE_LATEST" .
     - echo "[CI DOCKER] Đẩy Docker Image lên Registry..."
-    - docker push $IMAGE_TAG
-    - docker push $IMAGE_LATEST
+    - docker push "$IMAGE_TAG"
+    - docker push "$IMAGE_LATEST"
     - echo "[CI SUCCESS] Đã xuất bản thành công Image: $IMAGE_TAG"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -75,4 +74,5 @@ backend_deploy_production:
     - echo "[CD SUCCESS] Triển khai thành công với chữ ký Boot Guard múi giờ +07:00!"
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual # Bấm nút Play trên GitLab giao diện để kích hoạt deploy có kiểm soát
+      when: manual
+      allow_failure: true
