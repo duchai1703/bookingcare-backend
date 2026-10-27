@@ -1,0 +1,35 @@
+name: BookingCare Backend CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  quality_and_build:
+    name: Syntax & Build Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: Install Dependencies
+        run: npm ci --quiet
+
+      - name: Verify Node.js Syntax
+        run: npm run test:syntax
+
+      - name: Run Security Audit
+        run: npm audit --audit-level=critical || true
+
+      - name: Test Docker Multi-Stage Build
+        run: docker build -t bookingcare-backend:test .

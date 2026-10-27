@@ -1,0 +1,78 @@
+# =========================================================================
+# BOOKINGCARE BACKEND — PRODUCTION CI/CD PIPELINE (.gitlab-ci.yml)
+# Phục vụ: Kiểm thử tự động, đóng gói Docker Image và Triển khai Production
+# Tương thích: GitLab 15+, Docker-in-Docker, Node.js 18 LTS
+# =========================================================================
+
+stages:
+  - quality_gate
+  - package
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+  IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+
+# =========================================================================
+# GIAI ĐOẠN 1: QUALITY GATE (KIỂM TRA CÚ PHÁP & BẢO MẬT)
+# =========================================================================
+backend_syntax_and_audit:
+  stage: quality_gate
+  image: node:18-alpine
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-backend
+    paths:
+      - node_modules/
+  script:
+    - echo "[CI STEP 1] Cài đặt phụ thuộc sạch qua npm ci..."
+    - npm ci --quiet
+    - echo "[CI STEP 2] Kiểm tra cú pháp toàn vẹn Node.js..."
+    - npm run test:syntax
+    - echo "[CI STEP 3] Rà soát lỗ hổng bảo mật nghiêm trọng (CVE Audit)..."
+    - npm audit --audit-level=critical || true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+# =========================================================================
+# GIAI ĐOẠN 2: PACKAGE (BUILD MULTI-STAGE DOCKER IMAGE & PUSH REGISTRY)
+# =========================================================================
+backend_docker_build:
+  stage: package
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - echo "[CI DOCKER] Đăng nhập vào GitLab Container Registry..."
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+  script:
+    - echo "[CI DOCKER] Đang build Docker Image Multi-Stage..."
+    - docker build --pull -t $IMAGE_TAG -t $IMAGE_LATEST .
+    - echo "[CI DOCKER] Đẩy Docker Image lên Registry..."
+    - docker push $IMAGE_TAG
+    - docker push $IMAGE_LATEST
+    - echo "[CI SUCCESS] Đã xuất bản thành công Image: $IMAGE_TAG"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# =========================================================================
+# GIAI ĐOẠN 3: DEPLOY (KẾT NỐI SSH SERVER & THỰC THI DEPLOY.SH BỌC THÉP)
+# =========================================================================
+backend_deploy_production:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client bash
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts || true
+  script:
+    - echo "[CD DEPLOY] Đang kết nối SSH đến Production Server ($SERVER_IP)..."
+    - ssh $SERVER_USER@$SERVER_IP "cd /app/bookingcare-backend && git pull origin main && sudo bash deploy.sh"
+    - echo "[CD SUCCESS] Triển khai thành công với chữ ký Boot Guard múi giờ +07:00!"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual # Bấm nút Play trên GitLab giao diện để kích hoạt deploy có kiểm soát

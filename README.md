@@ -20,7 +20,7 @@
 
 Toàn bộ tài liệu chi tiết được lưu trữ trong thư mục [`DOCS/`](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS):
 
-* 🚀 **[Tài liệu Bàn giao Git Đa Nền tảng & Kế hoạch CI/CD](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/HANDOVER_DEVOPS_CICD_AND_SYNC_GUIDE.md)**: Hướng dẫn chi tiết dành cho người mới tiếp nhận dự án (Onboarding), cơ chế đồng bộ song song GitHub & GitLab, và kế hoạch triển khai CI/CD 4 phase.
+* 🚀 **[Trung tâm Tài liệu DevOps & CI/CD](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/CI/CD/README.md)**: Hướng dẫn chi tiết dành cho người mới tiếp nhận dự án (Onboarding), cơ chế đồng bộ song song GitHub & GitLab, đặc tả pipeline và sổ tay triển khai Production.
 * 📋 **[Đặc tả Yêu cầu Phần mềm (SRS)](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/SRS_Document.md)**: Phân tích nghiệp vụ, ca sử dụng và kiến trúc dữ liệu.
 * 🛠️ **[Hướng dẫn Phát triển & Vận hành Backend](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/Phase4_Backend_Development_Guide.md)**: Chi tiết cấu hình dịch vụ, API endpoints và luồng xử lý.
 * 💰 **[Sổ tay Quản lý Tài chính & Ngân quỹ](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/ADMIN_FINANCIAL_TREASURY_MANUAL.md)**: Nghiệp vụ ví, đối soát và giải ngân.
@@ -67,4 +67,4 @@ Repository được cấu hình để mỗi khi thực hiện `git push`, code s
 # Chỉ cần 1 lệnh duy nhất để đẩy lên cả 2 nơi:
 git push origin main
 ```
-*(Chi tiết cấu hình và xử lý sự cố xem tại [Tài liệu Bàn giao Kỹ thuật](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/HANDOVER_DEVOPS_CICD_AND_SYNC_GUIDE.md)).*
+*(Chi tiết cấu hình và xử lý sự cố xem tại [Trung tâm Tài liệu DevOps & CI/CD](file:///d:/2_Projects/2_1_Dai_Hoc/BookingCare/bookingcare-backend/DOCS/CI/CD/README.md)).*
