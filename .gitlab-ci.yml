@@ -20,6 +20,8 @@ variables:
 backend_syntax_and_audit:
   stage: quality_gate
   image: node:18-alpine
+  tags:
+    - dockerrunner
   cache:
     key: "${CI_COMMIT_REF_SLUG}-backend"
     paths:
@@ -43,6 +45,8 @@ backend_docker_build:
   image: docker:24.0.5
   services:
     - docker:24.0.5-dind
+  tags:
+    - dockerrunner
   before_script:
     - 'echo "[CI DOCKER] Đăng nhập vào GitLab Container Registry..."'
     - 'echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin'
@@ -62,6 +66,8 @@ backend_docker_build:
 backend_deploy_production:
   stage: deploy
   image: alpine:latest
+  tags:
+    - deploy
   before_script:
     - 'apk add --no-cache openssh-client bash'
     - 'eval $(ssh-agent -s)'
