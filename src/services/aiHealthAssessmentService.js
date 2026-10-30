@@ -137,7 +137,12 @@ Người dùng là Bệnh nhân (R3) đang cung cấp thông tin triệu chứng
   "suggestedSpecialties": [{"name": "Tên chuyên khoa", "reason": "Lý do gợi ý"}],
   "safetyNotice": "Đây là đánh giá sơ bộ mang tính tham khảo và không thay thế thăm khám trực tiếp.",
   "imageQuality": "GOOD" | "SUFFICIENT" | "INSUFFICIENT" | "NOT_APPLICABLE"
-}`;
+}
+
+9. NGUYÊN TẮC TOÀN VẸN DỮ KIỆN (FACTUAL INTEGRITY & PROVENANCE):
+   - Trường "observations" CHỈ ĐƯỢC CHỨA những triệu chứng hoặc thông tin mà người dùng ĐÃ TRỰC TIẾP KHẲNG ĐỊNH hoặc nhìn thấy rõ trong ảnh.
+   - TUYỆT ĐỐI KHÔNG tự suy diễn, không tự bịa thêm các triệu chứng mà người dùng CHƯA HỀ ĐỀ CẬP (như tự thêm "tự nhiên đau", "tê bì", "châm chích", "sưng nề", "đau sau chấn thương").
+   - Nếu thông tin chưa rõ (ví dụ người dùng chỉ nói "đau tay"), các yếu tố như vị trí cụ thể, thời gian khởi phát, tê bì, chấn thương... PHẢI ĐƯA VÀO "followUpQuestions" ĐỂ HỎI LẠI NGƯỜI DÙNG, TUYỆT ĐỐI KHÔNG ghi vào "observations" như dữ kiện đã có!`;
 
 /**
  * Trích xuất ngữ cảnh sức khỏe tích lũy từ lịch sử hội thoại
@@ -750,9 +755,34 @@ function validateAndSanitizeAssessment(rawData = {}, context = {}) {
     : 'Dựa trên thông tin được cung cấp, dưới đây là nhận định sơ bộ để bạn tham khảo.';
 
   // 2. Observations
-  let observations = Array.isArray(data.observations)
+  let rawObservations = Array.isArray(data.observations)
     ? data.observations.map((item) => sanitizeMedicalWording(String(item))).filter(Boolean)
     : [];
+
+  // Lọc bỏ các quan sát tự suy diễn (hallucination) mà người dùng chưa hề khẳng định
+  const userFullContext = [
+    ctx.rawMessage || '',
+    ctx.initialComplaint || '',
+    ...(Array.isArray(ctx.symptoms) ? ctx.symptoms : []),
+    ...(Array.isArray(ctx.history) ? ctx.history.map(h => (typeof h === 'string' ? h : (h.parts || h.text || ''))).join(' ') : []),
+  ].join(' ').toLowerCase();
+
+  let observations = rawObservations.filter((obs) => {
+    const obsLower = obs.toLowerCase();
+    // Nếu quan sát khẳng định có tê bì/châm chích nhưng ngữ cảnh người dùng chưa từng nhắc tới
+    if ((obsLower.includes('tê bì') || obsLower.includes('châm chích')) && !userFullContext.includes('tê') && !userFullContext.includes('châm chích')) {
+      return false;
+    }
+    // Nếu quan sát khẳng định hình thái khởi phát "tự nhiên đau" mà người dùng chưa đề cập
+    if ((obsLower.includes('tự nhiên đau') || obsLower.includes('khởi phát: tự nhiên') || obsLower.includes('khởi phát tự nhiên')) && !userFullContext.includes('tự nhiên')) {
+      return false;
+    }
+    // Nếu quan sát khẳng định chấn thương/té ngã mà người dùng chưa đề cập
+    if ((obsLower.includes('sau chấn thương') || obsLower.includes('do chấn thương') || obsLower.includes('sau té ngã')) && !userFullContext.includes('chấn thương') && !userFullContext.includes('ngã') && !userFullContext.includes('té') && !userFullContext.includes('va đập')) {
+      return false;
+    }
+    return true;
+  });
 
   if (observations.length === 0) {
     if (ctxSymptoms.length > 0) {
