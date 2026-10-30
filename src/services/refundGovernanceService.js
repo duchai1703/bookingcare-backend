@@ -4,6 +4,7 @@ const db = require('../models');
 const { Op } = require('sequelize');
 const moment = require('moment');
 const policyEngineService = require('./policyEngineService');
+const { getExactAppointmentTime } = require('./aiTimezoneUtils');
 
 /**
  * Phân loại lý do hủy và xác định quyền lợi hoàn tiền tối đa:
@@ -60,21 +61,26 @@ async function createRefundCase({
     }
 
     const now = new Date();
-    // Xác định thời điểm hẹn khám
+    // Xác định thời điểm hẹn khám kết hợp ngày và khung giờ khám (booking.date + booking.timeType)
     let appointmentTime = null;
     if (booking.date) {
-      const rawDate = Number(booking.date);
-      if (!isNaN(rawDate) && rawDate > 1000000000) {
-        appointmentTime = new Date(rawDate);
-      } else {
-        appointmentTime = new Date(booking.date);
+      if (booking.timeType) {
+        appointmentTime = getExactAppointmentTime(booking.date, booking.timeType);
+      }
+      if (!appointmentTime || isNaN(appointmentTime.getTime())) {
+        const rawDate = Number(booking.date);
+        if (!isNaN(rawDate) && rawDate > 1000000000) {
+          appointmentTime = new Date(rawDate);
+        } else {
+          appointmentTime = new Date(booking.date);
+        }
       }
     }
 
-    // Tính số giờ trước giờ hẹn khám
+    // Tính số giờ trước giờ hẹn khám (không ép min=0 để phân biệt ca khám đã qua)
     let hoursBefore = 999;
     if (appointmentTime && !isNaN(appointmentTime.getTime())) {
-      hoursBefore = Math.max(0, (appointmentTime.getTime() - now.getTime()) / (1000 * 60 * 60));
+      hoursBefore = (appointmentTime.getTime() - now.getTime()) / (1000 * 60 * 60);
     }
 
     // Xác định số tiền thực tế bệnh nhân đã trả (paidAmount)

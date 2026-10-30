@@ -3,6 +3,7 @@
 const db = require('../models');
 const { Op } = require('sequelize');
 const { convertBlobToBase64 } = require('../utils/convertBlobToBase64');
+const { getExactAppointmentTime } = require('./aiTimezoneUtils');
 
 /**
  * 1. Phân giải chính sách Active hợp lệ theo thời điểm và thứ bậc ưu tiên (DOCTOR -> CLINIC -> GLOBAL)
@@ -230,14 +231,19 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), o
   }
 
   const cancelDate = new Date(cancelledAt);
-  // Xác định thời điểm diễn ra lịch khám (booking.date thường là epoch ms dạng string/number)
+  // Xác định thời điểm diễn ra lịch khám kết hợp cả ngày và khung giờ khám (booking.date + booking.timeType)
   let appointmentTime = null;
   if (booking.date) {
-    const rawDate = Number(booking.date);
-    if (!isNaN(rawDate) && rawDate > 1000000000) {
-      appointmentTime = new Date(rawDate);
-    } else {
-      appointmentTime = new Date(booking.date);
+    if (booking.timeType) {
+      appointmentTime = getExactAppointmentTime(booking.date, booking.timeType);
+    }
+    if (!appointmentTime || isNaN(appointmentTime.getTime())) {
+      const rawDate = Number(booking.date);
+      if (!isNaN(rawDate) && rawDate > 1000000000) {
+        appointmentTime = new Date(rawDate);
+      } else {
+        appointmentTime = new Date(booking.date);
+      }
     }
   }
 
@@ -260,7 +266,11 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), o
     noShowAutoScanHours: 4,
   };
 
-  const isNoShow = options.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationReason === 'PATIENT_NO_SHOW';
+  const cancellationReason = options.cancellationReason || booking.cancellationReason;
+  const isNoShow = cancellationReason === 'PATIENT_NO_SHOW';
+  const isDoctorCancellation =
+    options.cancelledByRole === 'DOCTOR' ||
+    ['DOCTOR_CANCELLED', 'DOCTOR_UNAVAILABLE', 'CLINIC_FORCE_MAJEURE', 'SYSTEM_DUPLICATE_PAYMENT'].includes(cancellationReason);
 
   const tiers = Array.isArray(refundRules.tiers) ? [...refundRules.tiers] : [];
   // Sắp xếp các mốc thời gian từ cao xuống thấp (24h -> 12h -> 0h)
@@ -269,7 +279,13 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), o
   let appliedRefundPercent = refundRules.defaultRefundPercent ?? 0;
   let matchedTier = null;
 
-  if (isNoShow) {
+  if (isDoctorCancellation) {
+    appliedRefundPercent = 100;
+    matchedTier = {
+      label: 'Bác sĩ / Phòng khám hủy lịch khám - Hoàn tiền 100%',
+      refundPercent: 100,
+    };
+  } else if (isNoShow) {
     appliedRefundPercent = refundRules.noShowRefundPercent !== undefined
       ? Number(refundRules.noShowRefundPercent)
       : 75;
@@ -303,15 +319,17 @@ const calculateRefundFromBookingSnapshot = (booking, cancelledAt = new Date(), o
   const deductionAmount = originalAmount - refundAmount;
 
   const eligible = appliedRefundPercent > 0;
-  const timingExplanation = isNoShow
-    ? `Bệnh nhân vắng mặt (No-Show): hoàn ${appliedRefundPercent}% theo quy chế bảo vệ khách hàng.`
-    : (hoursBefore >= 24
-      ? 'Hủy trước giờ khám từ 24 giờ trở lên: hoàn 100%.'
-      : hoursBefore >= 12
-        ? 'Hủy trước giờ khám từ 12-24 giờ: hoàn 75%.'
-        : hoursBefore >= 0
-          ? 'Hủy trước giờ khám dưới 12 giờ: hoàn 50%.'
-          : 'Hủy sau thời điểm khám: không đủ điều kiện hoàn tiền.');
+  const timingExplanation = isDoctorCancellation
+    ? 'Bác sĩ / Phòng khám hủy ca khám: hoàn tiền 100%.'
+    : (isNoShow
+      ? `Bệnh nhân vắng mặt (No-Show): hoàn ${appliedRefundPercent}% theo quy chế bảo vệ khách hàng.`
+      : (hoursBefore >= 24
+        ? 'Hủy trước giờ khám từ 24 giờ trở lên: hoàn 100%.'
+        : hoursBefore >= 12
+          ? 'Hủy trước giờ khám từ 12-24 giờ: hoàn 75%.'
+          : hoursBefore >= 0
+            ? 'Hủy trước giờ khám dưới 12 giờ: hoàn 50%.'
+            : 'Hủy sau thời điểm khám: không đủ điều kiện hoàn tiền.'));
 
   return {
     success: true,

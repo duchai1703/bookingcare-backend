@@ -47,6 +47,12 @@ const postBookAppointment = async (data, patientId) => {
     return { errCode: 1, message: 'Số điện thoại không hợp lệ!' };
   }
 
+  // Kiểm tra slot khám đã qua giờ bắt đầu hôm nay hoặc trong quá khứ
+  const aiTimezoneUtils = require('./aiTimezoneUtils');
+  if (aiTimezoneUtils.isSlotInPast(data.date, data.timeType)) {
+    return { errCode: 7, message: 'Khung giờ khám này đã kết thúc hoặc đã qua giờ bắt đầu hôm nay. Vui lòng chọn khung giờ khám khác.' };
+  }
+
   // ═══════════════════════════════════════════════════════════
   // [Phase 9.3] Dual Mode — Xác định patientId
   // Ưu tiên 1: patientId từ JWT (user đã đăng nhập)
@@ -967,6 +973,7 @@ const getPatientBookings = async (patientId, query) => {
 const cancelBooking = async (data, patientId) => {
   try {
     const bookingId = data.bookingId;
+    const resolvedPatientId = patientId || data.patientId;
     if (!bookingId) {
       return { errCode: 1, message: 'Thiếu ID lịch hẹn!' };
     }
@@ -979,7 +986,7 @@ const cancelBooking = async (data, patientId) => {
       // lock: t.LOCK.UPDATE → FOR UPDATE → chặn concurrent cancel
       // ═══════════════════════════════════════════════════════════
       const booking = await db.Booking.findOne({
-        where: { id: bookingId, patientId },
+        where: { id: bookingId, patientId: resolvedPatientId },
         transaction: t,
         lock: t.LOCK.UPDATE,  // ✅ PESSIMISTIC LOCK — chặn race condition
         raw: false,
@@ -1091,7 +1098,7 @@ const cancelBooking = async (data, patientId) => {
           title: 'Lịch hẹn đã bị hủy',
           message: `Bệnh nhân đã hủy lịch hẹn #${booking.id}.`,
           entityType: 'BOOKING',
-          entityId: booking.id,
+          entityId: String(booking.id),
           data: {
             bookingId: booking.id,
             cancelledBy: 'PATIENT',
@@ -1099,6 +1106,26 @@ const cancelBooking = async (data, patientId) => {
         });
       } catch (notifErr) {
         console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hủy lịch cho bác sĩ:', notifErr.message);
+      }
+
+      // Gửi thông báo cho Bệnh nhân về việc hủy lịch hẹn thành công
+      try {
+        await notificationService.createAndSendNotification({
+          recipientId: booking.patientId,
+          type: 'BOOKING_CANCELLED',
+          title: 'Hủy lịch hẹn thành công',
+          message: `Lịch hẹn #${booking.id} của bạn đã được hủy thành công.`,
+          entityType: 'BOOKING',
+          entityId: String(booking.id),
+          data: {
+            bookingId: booking.id,
+            cancelledBy: 'PATIENT',
+            refundAmount: refundCalc.refundAmount,
+            refundRate: refundCalc.appliedRefundPercent,
+          },
+        });
+      } catch (notifErr) {
+        console.warn('>>> [NOTIFICATION_WARNING] Không gửi được thông báo hủy lịch cho bệnh nhân:', notifErr.message);
       }
 
       // Nếu có hoàn tiền vào ví, gửi thông báo cho Bệnh nhân

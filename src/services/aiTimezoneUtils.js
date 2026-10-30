@@ -203,8 +203,95 @@ function formatTimestampToVNDate(timestamp) {
   return formatDateLabel(new Date(num));
 }
 
+const TIME_SLOT_HOURS = {
+  T1: { start: 8, startMinute: 0, end: 9, endMinute: 0, label: '08:00 - 09:00' },
+  T2: { start: 9, startMinute: 0, end: 10, endMinute: 0, label: '09:00 - 10:00' },
+  T3: { start: 10, startMinute: 0, end: 11, endMinute: 0, label: '10:00 - 11:00' },
+  T4: { start: 11, startMinute: 0, end: 12, endMinute: 0, label: '11:00 - 12:00' },
+  T5: { start: 13, startMinute: 0, end: 14, endMinute: 0, label: '13:00 - 14:00' },
+  T6: { start: 14, startMinute: 0, end: 15, endMinute: 0, label: '14:00 - 15:00' },
+  T7: { start: 15, startMinute: 0, end: 16, endMinute: 0, label: '15:00 - 16:00' },
+  T8: { start: 16, startMinute: 0, end: 17, endMinute: 0, label: '16:00 - 17:00' },
+};
+
+/**
+ * Kiểm tra xem một khung giờ khám (slot) có thuộc về quá khứ so với thời điểm hiện tại (Asia/Ho_Chi_Minh) hay không
+ * @param {string|number} dateInput - Timestamp hoặc chuỗi ngày
+ * @param {string} timeType - Mã khung giờ ('T1'...'T8')
+ * @returns {boolean}
+ */
+function isSlotInPast(dateInput, timeType) {
+  if (!dateInput || !timeType) return false;
+  const nowVN = getNowVN();
+
+  let timestamp = dateInput;
+  if (typeof dateInput === 'string' && !/^\d+$/.test(dateInput.trim())) {
+    timestamp = normalizeDateToTimestamp(dateInput);
+  }
+  const dateNum = Number(timestamp);
+  if (isNaN(dateNum)) return false;
+
+  const apptDate = new Date(dateNum);
+  const targetYear = apptDate.getUTCFullYear();
+  const targetMonth = apptDate.getUTCMonth();
+  const targetDate = apptDate.getUTCDate();
+
+  const currentYear = nowVN.getFullYear();
+  const currentMonth = nowVN.getMonth();
+  const currentDate = nowVN.getDate();
+
+  const targetMidnight = Date.UTC(targetYear, targetMonth, targetDate);
+  const currentMidnight = Date.UTC(currentYear, currentMonth, currentDate);
+
+  if (targetMidnight < currentMidnight) {
+    return true; // Ngày trong quá khứ
+  }
+  if (targetMidnight > currentMidnight) {
+    return false; // Ngày trong tương lai
+  }
+
+  // Cùng ngày hôm nay -> kiểm tra giờ bắt đầu của slot
+  const slotInfo = TIME_SLOT_HOURS[timeType];
+  if (!slotInfo) return false;
+
+  const currentMinutes = nowVN.getHours() * 60 + nowVN.getMinutes();
+  const slotStartMinutes = slotInfo.start * 60 + (slotInfo.startMinute || 0);
+
+  return currentMinutes >= slotStartMinutes;
+}
+
+/**
+ * Lấy thời điểm chính xác của ca khám kết hợp ngày và khung giờ (Asia/Ho_Chi_Minh UTC+7)
+ * Trả về Date object theo chuẩn UTC
+ * @param {string|number} dateInput - Timestamp (thường là UTC midnight của ngày) hoặc chuỗi ngày
+ * @param {string} timeType - Mã khung giờ ('T1'...'T8')
+ * @returns {Date|null}
+ */
+function getExactAppointmentTime(dateInput, timeType) {
+  if (!dateInput) return null;
+  let timestamp = dateInput;
+  if (typeof dateInput === 'string' && !/^\d+$/.test(dateInput.trim())) {
+    timestamp = normalizeDateToTimestamp(dateInput);
+  }
+  const dateNum = Number(timestamp);
+  if (isNaN(dateNum)) return null;
+
+  const apptDate = new Date(dateNum);
+  const year = apptDate.getUTCFullYear();
+  const month = apptDate.getUTCMonth();
+  const day = apptDate.getUTCDate();
+
+  const slotInfo = timeType ? TIME_SLOT_HOURS[timeType] : null;
+  const hour = slotInfo ? slotInfo.start : 0;
+  const minute = slotInfo ? (slotInfo.startMinute || 0) : 0;
+
+  // Giờ Việt Nam là UTC+7, nên thời điểm UTC tương ứng là (hour - 7)
+  return new Date(Date.UTC(year, month, day, hour - 7, minute, 0));
+}
+
 module.exports = {
   TIMEZONE,
+  TIME_SLOT_HOURS,
   getNowVN,
   formatDateLabel,
   formatTimestampToVNDate,
@@ -215,4 +302,6 @@ module.exports = {
   extractDateTextFromQuery,
   extractPeriodFromText,
   getUpcomingDates,
+  isSlotInPast,
+  getExactAppointmentTime,
 };
