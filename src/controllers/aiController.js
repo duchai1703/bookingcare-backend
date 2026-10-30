@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const crypto = require('crypto');
+const db = require('../models');
 const { getGenerativeModel, isAiConfigured } = require('../services/aiConfig');
 const {
   executeFunctionCall,
@@ -127,7 +128,7 @@ async function uploadImage(req, res) {
  * - doctor:search (type: DOCTOR_SEARCH_RESULTS)
  * - slot:search (type: SLOT_SEARCH_RESULTS)
  */
-function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnected) {
+function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnected, toolContext = null) {
   if (!res || res.writableEnded || !isClientConnected || !fnResult) return;
 
   // 1. Doctor Discovery Event
@@ -441,16 +442,21 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
     }
   }
 
-  // 12B. Get Family Members Event (Phase 06E / Test D Parity)
+  // 12B. Get Family Members Event (Phase 06E / Test D Parity & BUG-11 Loop Prevention)
   if (toolName === 'getFamilyMembers') {
-    if (fnResult.status === 'success' || Array.isArray(fnResult.data) || Array.isArray(fnResult)) {
-      const list = fnResult.data || (Array.isArray(fnResult) ? fnResult : []);
+    // BUG-11: If a family member is ALREADY selected or active for booking,
+    // DO NOT emit 'family:list' SSE event to prevent frontend from re-rendering FamilyMemberListCard and looping!
+    if (toolContext && (toolContext.selectedFamilyMember || toolContext.activeFamilyMember || toolContext.action === 'BOOK_FOR_FAMILY_MEMBER')) {
+      return;
+    }
+    if (fnResult.status === 'success' || Array.isArray(fnResult.members) || Array.isArray(fnResult.data) || Array.isArray(fnResult)) {
+      const list = fnResult.members || fnResult.data || (Array.isArray(fnResult) ? fnResult : []);
       const payload = {
         event: 'family:list',
         type: 'FAMILY_LIST',
         data: {
           familyMembers: list,
-          count: list.length,
+          count: fnResult.total || fnResult.count || list.length,
         },
         timestamp: Date.now(),
       };
@@ -471,13 +477,28 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
     }
   }
 
-  // 14. Appointment List Event (Phase 06 / Test 5 Parity)
+  // 14. Appointment List Event (Phase 06 / Test 5 Parity & BUG-10 Family Parity)
   if (toolName === 'getMyBookings') {
-    if (fnResult.status === 'success') {
+    if (fnResult.status === 'success' || Array.isArray(fnResult.bookings) || Array.isArray(fnResult.data) || Array.isArray(fnResult)) {
+      const list = fnResult.bookings || fnResult.data || (Array.isArray(fnResult) ? fnResult : []);
+      const totalCount = fnResult.total || fnResult.count || list.length;
+      const famName = fnResult.familyMemberName || args?.familyMemberName || (list[0]?.bookingFor === 'FAMILY' ? (list[0]?.patientTarget || 'Người thân') : null);
+      const bFor = fnResult.bookingFor || args?.bookingFor || (famName ? 'FAMILY' : 'SELF');
       const payload = {
         event: 'appointment:list',
         type: 'APPOINTMENT_LIST',
-        data: fnResult,
+        appointmentList: {
+          bookings: list,
+          total: totalCount,
+          familyMemberName: famName,
+          bookingFor: bFor,
+        },
+        data: {
+          bookings: list,
+          total: totalCount,
+          familyMemberName: famName,
+          bookingFor: bFor,
+        },
         timestamp: Date.now(),
       };
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -490,7 +511,7 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
  * Enforces Single Response Contract: Structured Card = Source of Truth.
  * Prose must not duplicate doctor listings, slot times, or details already rendered by the card.
  */
-function sanitizeStructuredProse(text, toolName, fnResult) {
+function sanitizeStructuredProse(text, toolName, fnResult, toolContext = null) {
   if (!text || typeof text !== 'string') return '';
   let cleaned = text.trim();
 
@@ -540,15 +561,25 @@ function sanitizeStructuredProse(text, toolName, fnResult) {
 
   // 6. Nếu là tool tạo bản nháp hủy lịch (prepareCancellationDraft, cancelMyBooking)
   if (toolName === 'prepareCancellationDraft' || toolName === 'cancelMyBooking') {
-    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã lịch|Bác sĩ|Thời gian|Chính sách|Hoàn tiền|Số tiền).*$/gim, '').trim();
-    if (!cleaned) {
-      cleaned = 'Mình đã tạo bản nháp hủy lịch, bạn vui lòng kiểm tra thông tin hoàn tiền và bấm xác nhận trên thẻ.';
+    if (fnResult?.status === 'already_cancelled' || fnResult?.alreadyCancelled) {
+      cleaned = fnResult.message || 'Lịch hẹn này đã được hủy trước đó.';
+    } else if (fnResult?.status === 'error') {
+      cleaned = fnResult.message || 'Không thể tạo bản nháp hủy lịch hẹn.';
+    } else {
+      cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã lịch|Bác sĩ|Thời gian|Chính sách|Hoàn tiền|Số tiền).*$/gim, '').trim();
+      if (!cleaned) {
+        cleaned = 'Mình đã tạo bản nháp hủy lịch, bạn vui lòng kiểm tra thông tin hoàn tiền và bấm xác nhận trên thẻ.';
+      }
     }
   }
 
   // 7. Nếu là tool xác nhận hủy lịch (confirmCancelBooking)
   if (toolName === 'confirmCancelBooking') {
-    cleaned = 'Lịch hẹn đã được hủy thành công.';
+    if (fnResult?.alreadyCancelled) {
+      cleaned = fnResult.message || 'Lịch hẹn này đã được hủy trước đó.';
+    } else {
+      cleaned = 'Lịch hẹn đã được hủy thành công.';
+    }
   }
 
   // 8. Nếu là tool tạo bản nháp đổi lịch (prepareRescheduleDraft, rescheduleMyBooking, requestSmartReschedule)
@@ -596,15 +627,13 @@ function sanitizeStructuredProse(text, toolName, fnResult) {
   // 14. Nếu là tool danh sách lịch khám (getMyBookings)
   if (toolName === 'getMyBookings') {
     cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
-    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã|Lịch|Bác sĩ|Thời gian|Khung giờ|Trạng thái|Giá|Chuyên khoa|Phòng khám).*$/gim, '').trim();
-    const hasBookings = Array.isArray(fnResult?.bookings) && fnResult.bookings.length > 0;
+    cleaned = cleaned.replace(/^\s*(?:[-*•]|\d+\.)\s*(?:Mã|Lịch|Bác sĩ|Thời gian|Khung giờ|Trạng thái|Giá|Chuyên khoa|Phòng khám|BK-).*$/gim, '').trim();
+    const list = Array.isArray(fnResult?.bookings)
+      ? fnResult.bookings
+      : (Array.isArray(fnResult?.data) ? fnResult.data : (Array.isArray(fnResult) ? fnResult : []));
+    const hasBookings = list.length > 0;
     if (hasBookings) {
-      // Loại bỏ hoàn toàn các câu mâu thuẫn "Hiện tại, bạn không có lịch khám nào..."
-      cleaned = cleaned.replace(/^(?:Hiện\s*tại,?\s*)?(?:bạn\s*)?không\s*có\s*lịch\s*(?:khám|hẹn)?\s*(?:nào)?(?:.*hôm\s*nay)?(?:\.|\n)?/gim, '').trim();
-      cleaned = cleaned.replace(/bạn\s*không\s*có\s*lịch\s*(?:khám|hẹn)\s*nào/gi, '').trim();
-      if (!cleaned || /không có lịch/i.test(cleaned)) {
-        cleaned = 'Dưới đây là lịch khám của bạn:';
-      }
+      cleaned = 'Dưới đây là danh sách lịch khám của bạn. Bạn có thể xem chi tiết từng ca khám trên thẻ bên dưới:';
     } else {
       cleaned = 'Bạn hiện chưa có lịch khám nào trong hệ thống.';
     }
@@ -613,7 +642,13 @@ function sanitizeStructuredProse(text, toolName, fnResult) {
   // 15. Nếu là tool xem danh sách người thân (getFamilyMembers)
   if (toolName === 'getFamilyMembers') {
     cleaned = cleaned.replace(/```(?:json)?[\s\S]*?```/gi, '').trim();
-    const list = Array.isArray(fnResult?.data) ? fnResult.data : (Array.isArray(fnResult) ? fnResult : []);
+    if (toolContext && (toolContext.selectedFamilyMember || toolContext.activeFamilyMember || toolContext.action === 'BOOK_FOR_FAMILY_MEMBER')) {
+      const memName = toolContext.selectedFamilyMember?.fullName || toolContext.activeFamilyMember?.fullName || 'người thân';
+      return `Mình đã chọn hồ sơ của ${memName}. Bạn muốn đặt lịch khám cho ${memName} ở chuyên khoa nào hoặc với bác sĩ nào?`;
+    }
+    const list = Array.isArray(fnResult?.members)
+      ? fnResult.members
+      : (Array.isArray(fnResult?.data) ? fnResult.data : (Array.isArray(fnResult) ? fnResult : []));
     if (list.length > 0) {
       cleaned = 'Dưới đây là danh sách người thân trong sổ y bạ của bạn:';
     } else {
@@ -696,11 +731,17 @@ async function streamChat(req, res) {
     optionId,
     value,
     followUpPayload,
+    selectedFamilyMember,
+    familyMemberId,
+    bookingFor,
+    action,
+    relationship,
+    memberName,
   } = req.body;
   const rawText = typeof message === 'string' ? message.trim() : '';
 
   // Khi có ảnh, tin nhắn văn bản có thể để trống
-  if (!rawText && !imageId && !isFollowUp && !followUpPayload) {
+  if (!rawText && !imageId && !isFollowUp && !followUpPayload && !action) {
     return res.status(400).json({
       errCode: 'AI_INVALID_INPUT',
       message: 'Vui lòng nhập nội dung tin nhắn hoặc đính kèm hình ảnh.',
@@ -747,7 +788,7 @@ async function streamChat(req, res) {
   }
 
   // 8. DETERMINISTIC INTENT CLASSIFICATION
-  const intentInput = (isFollowUp || assessmentId || followUpPayload)
+  const intentInput = (isFollowUp || assessmentId || followUpPayload || action || selectedFamilyMember || familyMemberId)
     ? {
         text: cleanMessage,
         hasImage: Boolean(imageId),
@@ -757,6 +798,12 @@ async function streamChat(req, res) {
         optionId,
         value,
         followUpPayload,
+        action,
+        selectedFamilyMember,
+        familyMemberId,
+        bookingFor,
+        relationship,
+        memberName,
       }
     : cleanMessage;
 
@@ -838,6 +885,12 @@ async function streamChat(req, res) {
 
       if (updateResult.success) {
         const updatedData = updateResult.data;
+        const answerSummary = followUpMeta.label || followUpMeta.value || followUpMeta.answerText || '';
+        const followUpText = answerSummary
+          ? `Cảm ơn bạn đã cung cấp thêm thông tin: "${answerSummary}". Mình đã cập nhật đánh giá sức khỏe của bạn:`
+          : 'Mình đã ghi nhận câu trả lời và cập nhật đánh giá sức khỏe của bạn:';
+
+        res.write(`data: ${JSON.stringify({ text: followUpText })}\n\n`);
 
         res.write(`data: ${JSON.stringify({
           event: 'health:assessment',
@@ -1041,11 +1094,120 @@ async function streamChat(req, res) {
         }
       }
     }
+    // Active Family Member Resolution & Anti-IDOR Authorization (BUG-08, BUG-09, BUG-11)
+    let explicitFamId = familyMemberId || (selectedFamilyMember && typeof selectedFamilyMember === 'object' ? selectedFamilyMember.id : null) || intentResult.extractedEntities?.familyMemberId;
+    let activeFamilyMember = null;
+    let activeBookingFor = bookingFor || (explicitFamId ? 'FAMILY' : null);
+
+    // Switch to Self
+    if (intentResult.extractedEntities?.action === 'SWITCH_TO_SELF' || /(đặt\s*cho\s*(bản\s*thân|tôi|chính\s*tôi))/i.test(cleanMessage)) {
+      activeFamilyMember = null;
+      activeBookingFor = 'SELF';
+      explicitFamId = null;
+    }
+
+    // Explicit familyMemberId authorization validation (TC-11.09: Anti-IDOR)
+    if (explicitFamId && activeBookingFor !== 'SELF') {
+      const parsedFamId = parseInt(String(explicitFamId).replace(/[^\d]/g, ''), 10);
+      if (Number.isFinite(parsedFamId) && parsedFamId > 0) {
+        const verified = await db.Family_Member.findOne({
+          where: { id: parsedFamId, userId },
+          attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber'],
+          lock: false,
+        });
+        if (!verified) {
+          // Security violation: requested family member does not belong to authenticated user
+          aiLogger.warn(requestId, 'AI_IDOR_FAMILY_MEMBER_ATTEMPT', { userId, parsedFamId });
+          initSSEHeaders(res);
+          res.write(`data: ${JSON.stringify({
+            error: true,
+            code: 'FORBIDDEN_FAMILY_MEMBER',
+            text: 'Bạn không có quyền truy cập hoặc đặt lịch cho hồ sơ người thân này.',
+          })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+        activeFamilyMember = verified.toJSON ? verified.toJSON() : verified;
+        activeBookingFor = 'FAMILY';
+      }
+    }
+
+    // Recover from History if not explicit
+    if (!activeFamilyMember && activeBookingFor !== 'SELF' && Array.isArray(history)) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        if (item.selectedFamilyMember && item.selectedFamilyMember.id) {
+          const histFamId = parseInt(String(item.selectedFamilyMember.id).replace(/[^\d]/g, ''), 10);
+          if (histFamId) {
+            const verified = await db.Family_Member.findOne({
+              where: { id: histFamId, userId },
+              attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber'],
+              lock: false,
+            });
+            if (verified) {
+              activeFamilyMember = verified.toJSON ? verified.toJSON() : verified;
+              activeBookingFor = 'FAMILY';
+              break;
+            }
+          }
+        }
+        if (item.bookingDraft?.patientTarget && item.bookingDraft.bookingFor === 'FAMILY' && item.bookingDraft.familyMemberId) {
+          const histFamId = parseInt(String(item.bookingDraft.familyMemberId).replace(/[^\d]/g, ''), 10);
+          if (histFamId) {
+            const verified = await db.Family_Member.findOne({
+              where: { id: histFamId, userId },
+              attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber'],
+              lock: false,
+            });
+            if (verified) {
+              activeFamilyMember = verified.toJSON ? verified.toJSON() : verified;
+              activeBookingFor = 'FAMILY';
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Resolve if BOOKING_FOR_FAMILY with specific target
+    if (!activeFamilyMember && (intentResult.intent === INTENTS.BOOKING_FOR_FAMILY || (intentResult.intent === INTENTS.MY_BOOKING_QUERY && intentResult.extractedEntities?.bookingFor === 'FAMILY'))) {
+      const rel = intentResult.extractedEntities?.relationship;
+      const tName = (intentResult.extractedEntities?.familyMemberName || intentResult.extractedEntities?.targetName || '').trim().toLowerCase();
+      try {
+        const famList = await db.Family_Member.findAll({
+          where: { userId },
+          attributes: ['id', 'fullName', 'relationship', 'gender', 'birthday', 'phoneNumber'],
+          lock: false,
+        });
+
+        let matched = [];
+        if (tName) {
+          matched = famList.filter(f => f.fullName && f.fullName.toLowerCase().includes(tName));
+        }
+        if (matched.length === 0 && rel) {
+          matched = famList.filter(f => f.relationship === rel);
+        }
+
+        if (matched.length === 1) {
+          activeFamilyMember = matched[0].toJSON ? matched[0].toJSON() : matched[0];
+          activeBookingFor = 'FAMILY';
+        }
+      } catch (famErr) {
+        console.warn('[AI_FAMILY_LOOKUP_ERR]', famErr?.message);
+      }
+    }
+
     const toolContext = {
       userQuery: cleanMessage,
+      action: action || intentResult.extractedEntities?.action || null,
       lastDoctorId,
       lastDoctorName,
       history,
+      selectedFamilyMember: activeFamilyMember,
+      activeFamilyMember,
+      familyMemberId: activeFamilyMember?.id || null,
+      bookingFor: activeBookingFor || (activeFamilyMember ? 'FAMILY' : 'SELF'),
     };
 
     const contextBundle = await aiContextService.buildAIContext({
@@ -1133,7 +1295,8 @@ async function streamChat(req, res) {
               pendingFunctionCall.args,
               fnResult,
               res,
-              isClientConnected
+              isClientConnected,
+              toolContext
             );
 
             if (fnResult?.doctors && fnResult.doctors.length > 0) {
@@ -1239,7 +1402,8 @@ async function streamChat(req, res) {
               nextFCalls[0].args,
               fnResult,
               res,
-              isClientConnected
+              isClientConnected,
+              toolContext
             );
 
             if (fnResult?.doctors && fnResult.doctors.length > 0) {
@@ -1276,7 +1440,7 @@ async function streamChat(req, res) {
 
         const rawFinalText = response.text ? response.text() : '';
         const finalText = lastExecutedTool
-          ? sanitizeStructuredProse(rawFinalText, lastExecutedTool, lastFnResult)
+          ? sanitizeStructuredProse(rawFinalText, lastExecutedTool, lastFnResult, toolContext)
           : rawFinalText;
         if (finalText && !res.writableEnded && isClientConnected) {
           const safeText = finalText.replace(/\n\ndata:/g, '\n\n data:');

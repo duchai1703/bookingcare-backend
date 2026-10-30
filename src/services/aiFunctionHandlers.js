@@ -10,6 +10,8 @@ const {
   normalizeNaturalDateToTimestamp,
   formatTimestampToVNDate,
   extractPeriodFromText,
+  isSlotInPast,
+  getNowVN,
 } = require('./aiTimezoneUtils');
 const patientService = require('./patientService');
 const { resolveRealSpecialty, REAL_SPECIALTIES_CATALOG } = require('./aiHealthAssessmentService');
@@ -392,7 +394,7 @@ async function handleGetAvailableSchedules(args, signal, context = null) {
   });
 
   let available = schedules
-    .filter((s) => s.currentNumber < s.maxNumber)
+    .filter((s) => s.currentNumber < s.maxNumber && !isSlotInPast(date, s.timeType))
     .map((s) => {
       const isMorning = ['T1', 'T2', 'T3', 'T4'].includes(s.timeType);
       return {
@@ -534,7 +536,7 @@ async function handleGetDoctorDetail(args, signal) {
 }
 
 // Handler 5: getMyBookings (Authenticated — Patient IDOR protected)
-async function handleGetMyBookings(args, userId, signal) {
+async function handleGetMyBookings(args, userId, signal, context = null) {
   if (signal?.aborted) return { error: 'Đã hủy' };
 
   const safeUserId = parseInt(String(userId), 10);
@@ -572,12 +574,79 @@ async function handleGetMyBookings(args, userId, signal) {
     }
   }
 
-  // Filter by Family Member or Subject
-  if (args.familyMemberId) {
-    const rawFamId = parseInt(String(args.familyMemberId).replace(/[^\d]/g, ''), 10);
-    if (Number.isFinite(rawFamId) && rawFamId > 0) {
-      whereClause.familyMemberId = rawFamId;
+  // ═══════════════════════════════════════════════════════════════════════
+  // Filter by Family Member or Subject (BUG-10 & Anti-IDOR Authorization)
+  // ═══════════════════════════════════════════════════════════════════════
+  let resolvedFamilyMember = null;
+  const rawFamId = args.familyMemberId || args.family_member_id || (args.bookingFor === 'FAMILY' && context?.selectedFamilyMember?.id);
+
+  if (rawFamId) {
+    const parsedFamId = parseInt(String(rawFamId).replace(/[^\d]/g, ''), 10);
+    if (Number.isFinite(parsedFamId) && parsedFamId > 0) {
+      // Strict Anti-IDOR Authorization: verify that this familyMemberId belongs to safeUserId
+      const famRecord = await db.Family_Member.findOne({
+        where: { id: parsedFamId, userId: safeUserId },
+        attributes: ['id', 'fullName', 'relationship'],
+        lock: false,
+      });
+
+      if (!famRecord) {
+        // IDOR Attempt or Non-existent member -> Reject or return empty
+        return {
+          status: 'error',
+          error: 'family_member_unauthorized',
+          message: 'Bạn không có quyền truy cập hồ sơ người thân này hoặc hồ sơ không tồn tại.',
+          bookings: [],
+          total: 0,
+        };
+      }
+
+      resolvedFamilyMember = famRecord;
+      whereClause.familyMemberId = famRecord.id;
       whereClause.bookingFor = 'FAMILY';
+    }
+  } else if (args.familyMemberName || args.relationship || (context?.selectedFamilyMember && args.bookingFor !== 'SELF')) {
+    // Look up family member by name or relationship for safeUserId
+    const userFamilyMembers = await db.Family_Member.findAll({
+      where: { userId: safeUserId },
+      attributes: ['id', 'fullName', 'relationship'],
+      lock: false,
+    });
+
+    const targetName = (args.familyMemberName || context?.selectedFamilyMember?.fullName || '').trim().toLowerCase();
+    let targetRel = null;
+    if (args.relationship) {
+      const rUpper = String(args.relationship).trim().toUpperCase();
+      if (['CHILD', 'CON', 'CON GÁI', 'CON TRAI', 'BÉ'].includes(rUpper)) targetRel = 'CHILD';
+      else if (['PARENT', 'BỐ', 'MẸ', 'BO', 'ME', 'CHA', 'MẸ ĐẺ', 'BỐ ĐẺ'].includes(rUpper)) targetRel = 'PARENT';
+      else if (['SPOUSE', 'VỢ', 'CHỒNG', 'VO', 'CHONG'].includes(rUpper)) targetRel = 'SPOUSE';
+      else targetRel = 'OTHER';
+    } else if (context?.selectedFamilyMember?.relationship) {
+      targetRel = context.selectedFamilyMember.relationship;
+    }
+
+    let matched = [];
+    if (targetName) {
+      matched = userFamilyMembers.filter(m => m.fullName && m.fullName.toLowerCase().includes(targetName));
+    }
+    if (matched.length === 0 && targetRel) {
+      matched = userFamilyMembers.filter(m => m.relationship === targetRel);
+    }
+
+    if (matched.length >= 1) {
+      resolvedFamilyMember = matched[0];
+      whereClause.familyMemberId = matched[0].id;
+      whereClause.bookingFor = 'FAMILY';
+    } else if (args.familyMemberName || args.relationship) {
+      // Requested family history for specific member, but none found
+      return {
+        status: 'success',
+        bookings: [],
+        total: 0,
+        familyMemberName: args.familyMemberName || 'Người thân',
+        bookingFor: 'FAMILY',
+        message: 'Hồ sơ người thân hiện chưa có lịch khám nào trong hệ thống.',
+      };
     }
   } else if (args.bookingFor) {
     const bFor = String(args.bookingFor).toUpperCase();
@@ -662,6 +731,8 @@ async function handleGetMyBookings(args, userId, signal) {
   return {
     status: 'success',
     total: filtered.length,
+    familyMemberName: resolvedFamilyMember?.fullName || (whereClause.bookingFor === 'FAMILY' ? 'Người thân' : null),
+    bookingFor: whereClause.bookingFor || 'SELF',
     bookings: filtered.map((b) => {
       const j = b.toJSON();
       const parsedDate = new Date(parseInt(j.date, 10));
@@ -670,6 +741,8 @@ async function handleGetMyBookings(args, userId, signal) {
         : j.date;
 
       const isPaid = j.paymentStatus === 'paid' || j.statusId === 'S2' || j.statusId === 'S3';
+      const isRefunded = j.paymentStatus === 'refunded' || j.refundStatus === 'completed' || (j.statusId === 'S4' && Number(j.refundAmount) > 0);
+      const isProcessingRefund = j.refundStatus === 'processing' || j.refundStatus === 'pending';
       const paymentMethod = j.paymentMethod || 'WALLET';
       const isNoShow = j.cancellationReason === 'PATIENT_NO_SHOW' || j.cancellationType === 'SYSTEM_NO_SHOW' || j.cancellationType === 'NO_SHOW';
 
@@ -688,12 +761,14 @@ async function handleGetMyBookings(args, userId, signal) {
         cancellationReason: j.cancellationReason || null,
         cancellationType: j.cancellationType || null,
         isNoShow,
-        paymentStatus: j.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+        paymentStatus: isRefunded ? 'refunded' : (j.paymentStatus || (isPaid ? 'paid' : 'unpaid')),
         paymentMethod,
         isPaid,
+        isRefunded,
+        refundStatus: isRefunded ? 'completed' : (isProcessingRefund ? 'processing' : (j.refundStatus || null)),
         price: j.bookingPrice,
         priceFormatted: j.bookingPrice ? `${Number(j.bookingPrice).toLocaleString('vi-VN')} đ` : '',
-        refundRate: j.refundRate ? Number(j.refundRate) : (isNoShow ? 75 : null),
+        refundRate: j.refundRate ? Number(j.refundRate) : (isRefunded ? 100 : (isNoShow ? 75 : null)),
         refundAmount: j.refundAmount ? Number(j.refundAmount) : null,
         bookingFor: j.bookingFor || 'SELF',
         patientTarget: j.bookingFor === 'FAMILY' && j.familyMemberData
@@ -1056,23 +1131,28 @@ async function handleGetFamilyMembers(args, userId, signal) {
       return { status: 'empty', message: 'Bạn chưa có hồ sơ người thân nào được lưu trong sổ y bạ.' };
     }
 
+    const mappedMembers = res.data.map((m) => {
+      const j = typeof m.toJSON === 'function' ? m.toJSON() : m;
+      const displayName = j.fullName || j.name || 'Người thân';
+      return maskPII({
+        id: j.id,
+        memberId: j.id,
+        name: displayName,
+        fullName: displayName,
+        relationship: j.relationship,
+        gender: j.gender,
+        phoneNumber: j.phoneNumber || '',
+        birthday: j.birthday || '',
+        isPrimary: j.isPrimary,
+      });
+    });
+
     return {
       status: 'success',
       total: res.data.length,
-      members: res.data.map((m) => {
-        const j = typeof m.toJSON === 'function' ? m.toJSON() : m;
-        const displayName = j.fullName || j.name || 'Người thân';
-        return maskPII({
-          id: j.id,
-          name: displayName,
-          fullName: displayName,
-          relationship: j.relationship,
-          gender: j.gender,
-          phoneNumber: j.phoneNumber || '',
-          birthday: j.birthday || '',
-          isPrimary: j.isPrimary,
-        });
-      }),
+      count: res.data.length,
+      members: mappedMembers,
+      data: mappedMembers,
     };
   } catch (err) {
     console.error('[AI_FN] getFamilyMembers error:', err?.message || err);
@@ -1747,6 +1827,14 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
     };
   }
 
+  if (isSlotInPast(schedule.date, schedule.timeType)) {
+    return {
+      status: 'error',
+      error: 'slot_already_passed',
+      message: 'Khung giờ khám này đã kết thúc hoặc đã qua giờ bắt đầu hôm nay. Vui lòng chọn khung giờ khám khác.',
+    };
+  }
+
   // 6. Check Duplicate Booking for this Patient
   const existBooking = await db.Booking.findOne({
     where: {
@@ -1801,12 +1889,15 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
   const priceNumeric = parseInt(priceStr.replace(/[^0-9]/g, ''), 10) || 0;
   const priceFormatted = priceNumeric > 0 ? `${priceNumeric.toLocaleString('vi-VN')} VNĐ` : 'Miễn phí';
 
-  // 8. Resolve Family Member if booking for family
+  // 8. Resolve Family Member if booking for family (BUG-08 & BUG-09)
   let resolvedFamilyMember = null;
-  const bookingFor = (args.bookingFor === 'FAMILY' || args.familyMemberId || args.familyMemberName || args.relationship || args.newFamilyMember) ? 'FAMILY' : 'SELF';
+  const selectedFromContext = context?.selectedFamilyMember || context?.activeFamilyMember || (context?.familyMemberId ? { id: context.familyMemberId } : null);
+  const rawFamId = args.familyMemberId || (args.bookingFor !== 'SELF' && selectedFromContext?.id);
+  const bookingFor = (args.bookingFor === 'FAMILY' || rawFamId || args.familyMemberName || args.relationship || args.newFamilyMember || (selectedFromContext && args.bookingFor !== 'SELF')) ? 'FAMILY' : 'SELF';
+
   if (bookingFor === 'FAMILY') {
-    if (args.familyMemberId) {
-      const famId = parseInt(String(args.familyMemberId), 10);
+    if (rawFamId) {
+      const famId = parseInt(String(rawFamId).replace(/[^\d]/g, ''), 10);
       const fam = await db.Family_Member.findOne({
         where: { id: famId, userId: safeUserId },
         lock: false,
@@ -1848,9 +1939,9 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
       let targetRel = null;
       if (args.relationship) {
         const rUpper = String(args.relationship).trim().toUpperCase();
-        if (['CHILD', 'CON', 'CON GÁI', 'CON TRAI'].includes(rUpper)) targetRel = 'CHILD';
-        else if (['PARENT', 'BỐ', 'MẸ', 'BO', 'ME', 'CHA', 'MẸ ĐẺ', 'BỐ ĐẺ'].includes(rUpper)) targetRel = 'PARENT';
-        else if (['SPOUSE', 'VỢ', 'CHỒNG', 'VO', 'CHONG'].includes(rUpper)) targetRel = 'SPOUSE';
+        if (['CHILD', 'CON', 'CON GÁI', 'CON TRAI', 'BÉ', 'EM BÉ'].includes(rUpper)) targetRel = 'CHILD';
+        else if (['PARENT', 'BỐ', 'MẸ', 'BO', 'ME', 'CHA', 'MẸ ĐẺ', 'BỐ ĐẺ', 'BA', 'MÁ'].includes(rUpper)) targetRel = 'PARENT';
+        else if (['SPOUSE', 'VỢ', 'CHỒNG', 'VO', 'CHONG', 'BÀ XÃ', 'ÔNG XÃ'].includes(rUpper)) targetRel = 'SPOUSE';
         else targetRel = 'OTHER';
       }
 
@@ -1968,6 +2059,8 @@ async function handlePrepareBookingDraft(args, userId, signal, context) {
     },
     bookingFor,
     familyMember: resolvedFamilyMember,
+    familyMemberId: resolvedFamilyMember ? resolvedFamilyMember.id : null,
+    patientTarget: resolvedFamilyMember ? resolvedFamilyMember.fullName : 'Bản thân',
     reason: cleanReason,
     price: {
       amount: priceNumeric,
@@ -2104,6 +2197,15 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
       };
     }
 
+    if (isSlotInPast(schedule.date, schedule.timeType)) {
+      await idempotencyStore.delete(lockKey);
+      return {
+        status: 'error',
+        error: 'slot_already_passed',
+        message: 'Khung giờ khám này đã kết thúc hoặc đã qua giờ bắt đầu hôm nay. Vui lòng chọn khung giờ khám khác.',
+      };
+    }
+
     // 6. Execute Existing Domain Service (patientService.postBookAppointment)
     const isFamilyBooking = draft.bookingFor === 'FAMILY' && draft.familyMember;
     const bookingData = {
@@ -2198,11 +2300,14 @@ async function handlePrepareCancellationDraft(args, userId, signal) {
   // 1. Resolve Booking ID
   let bookingId = parseInt(String(args.bookingId || args.bookingCode || '').replace(/[^\d]/g, ''), 10);
   if (!bookingId || isNaN(bookingId)) {
-    // Nếu user không truyền bookingId, tìm lịch hẹn sắp tới gần nhất (S1, S1.5, S2)
+    // Nếu user không truyền bookingId, tìm lịch hẹn sắp tới gần nhất (S1, S1.5, S2) từ hôm nay trở đi
+    const nowVN = getNowVN();
+    const todayMidnight = Date.UTC(nowVN.getFullYear(), nowVN.getMonth(), nowVN.getDate()).toString();
     const latestActiveBooking = await db.Booking.findOne({
       where: {
         patientId: safeUserId,
         statusId: { [Op.in]: ['S1', 'S1.5', 'S2'] },
+        date: { [Op.gte]: todayMidnight },
       },
       order: [['date', 'ASC'], ['id', 'DESC']],
       lock: false,
@@ -2262,15 +2367,33 @@ async function handlePrepareCancellationDraft(args, userId, signal) {
 
   // 3. Status checks
   if (booking.statusId === 'S4') {
+    const isDoctorCancel = booking.cancellationType === 'DOCTOR_CANCELLED';
+    const isNoShow = booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW';
+    let cancelExplanation = `Lịch hẹn #${booking.id} này đã được hủy trước đó rồi.`;
+    if (isDoctorCancel) {
+      cancelExplanation = `Lịch hẹn #${booking.id} đã được hủy bởi bác sĩ (${booking.cancellationReason || 'Lý do chuyên môn'}). Tiền khám đã được hoàn ${booking.refundRate || 100}% (${booking.refundAmount ? Number(booking.refundAmount).toLocaleString('vi-VN') + ' đ' : ''}) vào ví BookingCare của bạn.`;
+    } else if (isNoShow) {
+      cancelExplanation = `Lịch hẹn #${booking.id} đã được ghi nhận vắng mặt (No-Show).`;
+    } else if (booking.refundAmount > 0) {
+      cancelExplanation = `Lịch hẹn #${booking.id} đã được hủy thành công và đã hoàn ${Number(booking.refundAmount).toLocaleString('vi-VN')} đ (${booking.refundRate}%).`;
+    }
+
     return {
       status: 'already_cancelled',
       alreadyCancelled: true,
       error: 'already_cancelled',
-      message: `Lịch hẹn #${booking.id} này đã được hủy trước đó rồi.`,
+      message: cancelExplanation,
       bookingId: booking.id,
       booking: {
         id: booking.id,
         statusId: 'S4',
+        cancellationType: booking.cancellationType,
+        cancellationReason: booking.cancellationReason,
+        refundRate: booking.refundRate,
+        refundAmount: booking.refundAmount,
+        refundStatus: booking.refundStatus,
+        paymentStatus: booking.paymentStatus,
+        paymentMethod: booking.paymentMethod,
         cancelledAt: booking.cancelledAt,
       },
       cancelledAt: booking.cancelledAt,
@@ -3382,7 +3505,7 @@ const aiToolRegistry = {
 
   // --- Authenticated Read-Only Tools (Enforces JWT User Identity) ---
   getMyBookings: {
-    description: 'Xem danh sách lịch hẹn của bệnh nhân đang đăng nhập.',
+    description: 'Xem danh sách lịch hẹn của bệnh nhân đang đăng nhập hoặc người thân trong sổ y bạ.',
     type: 'read_only',
     allowedRoles: ['R3'],
     requiresAuth: true,
@@ -3395,9 +3518,26 @@ const aiToolRegistry = {
           enum: ['S1,S2', 'S3', 'S4'],
           description: 'Lọc trạng thái: S1,S2 (sắp tới) | S3 (đã khám) | S4 (đã hủy)',
         },
+        familyMemberId: {
+          type: 'integer',
+          description: 'ID thành viên gia đình trong sổ y bạ nếu muốn xem lịch sử khám của người thân',
+        },
+        familyMemberName: {
+          type: 'string',
+          description: 'Họ tên người thân cần tra cứu lịch khám',
+        },
+        relationship: {
+          type: 'string',
+          description: 'Mối quan hệ gia đình (PARENT, CHILD, SPOUSE, OTHER) nếu muốn xem lịch khám của mẹ, bố, con,...',
+        },
+        bookingFor: {
+          type: 'string',
+          enum: ['SELF', 'FAMILY'],
+          description: 'SELF (bản thân) hoặc FAMILY (người thân)',
+        },
       },
     },
-    handler: (args, userId, signal) => handleGetMyBookings(args, userId, signal),
+    handler: (args, userId, signal, context) => handleGetMyBookings(args, userId, signal, context),
   },
 
   getMyPaymentStatus: {

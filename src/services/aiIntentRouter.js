@@ -14,6 +14,7 @@ const INTENTS = {
   WALLET_QUERY: 'WALLET_QUERY',
   WALLET_TRANSACTIONS_QUERY: 'WALLET_TRANSACTIONS_QUERY',
   FAMILY_QUERY: 'FAMILY_QUERY',
+  BOOKING_FOR_FAMILY: 'BOOKING_FOR_FAMILY',
   BOOKING_QUERY: 'BOOKING_QUERY',
   CANCEL_BOOKING_QUERY: 'CANCEL_BOOKING_QUERY',
   RESCHEDULE_QUERY: 'RESCHEDULE_QUERY',
@@ -53,6 +54,24 @@ function classifyIntent(input, hasImageArg = false) {
           optionId: payload.optionId || input.optionId,
           value: payload.value !== undefined ? payload.value : input.value,
           answerText: payload.text || payload.message || input.text || input.message || '',
+        },
+      };
+    }
+
+    // PRIORITY 0B: Structured Family Member Booking Action (BUG-11)
+    if (input.action === 'BOOK_FOR_FAMILY_MEMBER' || input.followUpPayload?.action === 'BOOK_FOR_FAMILY_MEMBER') {
+      const mem = input.selectedFamilyMember || input.followUpPayload?.selectedFamilyMember || {};
+      const targetName = input.memberName || mem.fullName || input.targetName || '';
+      return {
+        intent: INTENTS.BOOKING_FOR_FAMILY,
+        confidence: 1.0,
+        extractedEntities: {
+          action: 'BOOK_FOR_FAMILY_MEMBER',
+          bookingFor: 'FAMILY',
+          familyMemberId: input.familyMemberId || mem.id,
+          targetName,
+          familyMemberName: targetName,
+          relationship: input.relationship || mem.relationship,
         },
       };
     }
@@ -139,8 +158,66 @@ function classifyIntent(input, hasImageArg = false) {
     return { intent: INTENTS.WALLET_QUERY, confidence: 0.95, extractedEntities };
   }
 
-  // 4. Ý định Người thân / Hồ sơ gia đình (FAMILY_QUERY)
-  // Hỗ trợ nhận diện cả câu lệnh thêm/xem và payload nhập liệu đủ 9 trường
+  // --- Helper to extract family relationship ---
+  function extractFamilyRelationship(str = '', stripped = '') {
+    const l = ` ${str.toLowerCase()} `;
+    if (/(?:^|\s|[.,?!])(mẹ|mẹ\s*mình|mẹ\s*tôi|mẹ\s*đẻ|má|u|me)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'PARENT', role: 'Mẹ', raw: 'mẹ' };
+    if (/(?:^|\s|[.,?!])(bố|bố\s*mình|bố\s*tôi|bố\s*đẻ|ba|cha|tía|bo)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'PARENT', role: 'Bố', raw: 'bố' };
+    if (/(?:^|\s|[.,?!])(con|con\s*tôi|con\s*mình|con\s*gái|con\s*trai|bé|em\s*bé)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'CHILD', role: 'Con', raw: 'con' };
+    if (/(?:^|\s|[.,?!])(vợ|vợ\s*tôi|vợ\s*mình|bà\s*xã|vo)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'SPOUSE', role: 'Vợ', raw: 'vợ' };
+    if (/(?:^|\s|[.,?!])(chồng|chồng\s*tôi|chồng\s*mình|ông\s*xã|chong)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'SPOUSE', role: 'Chồng', raw: 'chồng' };
+    if (/(?:^|\s|[.,?!])(ông|ông\s*nội|ông\s*ngoại|ong)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'OTHER', role: 'Ông', raw: 'ông' };
+    if (/(?:^|\s|[.,?!])(bà|bà\s*nội|bà\s*ngoại)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'OTHER', role: 'Bà', raw: 'bà' };
+    if (/(?:^|\s|[.,?!])(anh|chị|anh\s*trai|chị\s*gái|em\s*gái|em\s*trai)(?:$|\s|[.,?!])/i.test(l)) return { relationship: 'SIBLING', role: 'Anh/Chị/Em', raw: 'anh/chị/em' };
+    return null;
+  }
+
+  // 3.4. Ý định Tra cứu lịch sử khám của người thân (BUG-10)
+  // "Xem lịch sử khám của mẹ tôi", "Lịch sử khám của bố tôi", "Cho tôi xem các lịch khám của Nguyễn Thị Bé", "Lịch sử khám của người thân này"
+  const isFamilyHistoryPattern = (
+    /(lịch\s*sử(\s*(đặt\s*)?khám|\s*(các\s*)?lịch\s*(hẹn|khám))?|các\s*lịch\s*khám|xem\s*lịch\s*sử|xem\s*(các\s*)?lịch\s*(khám|hẹn))\s*(của|cho)\s*(mẹ|bố|ba|cha|tía|má|con|vợ|chồng|bé|người\s*thân(\s*này)?|anh|chị|bà|ông)/i.test(lower) ||
+    /(lịch\s*(hẹn|khám)\s*của\s*(mẹ|bố|ba|cha|tía|má|con|vợ|chồng|bé|người\s*thân(\s*này)?|anh|chị|bà|ông))/i.test(lower) ||
+    /(cho\s*tôi\s*xem\s*(các\s*)?lịch\s*khám\s*của\s+(?!tôi|bản\s*thân|mình)[a-zà-ỹ\s]+)/i.test(lower) ||
+    /(lịch\s*sử\s*khám\s*của\s*người\s*thân(\s*này)?)/i.test(lower)
+  ) && !/(của\s*(tôi|bản\s*thân|chính\s*tôi)|cua\s*(toi|ban\s*than))/i.test(lower);
+
+  if (isFamilyHistoryPattern && !/(hủy\s*lịch|muốn\s*hủy|đổi\s*lịch)/i.test(lower)) {
+    const relInfo = extractFamilyRelationship(lower, stripped);
+    extractedEntities.bookingFor = 'FAMILY';
+    extractedEntities.isFamilyHistory = true;
+    if (relInfo) {
+      extractedEntities.relationship = relInfo.relationship;
+      extractedEntities.targetRaw = relInfo.raw;
+    }
+    const nameMatch = lower.match(/(?:lịch\s*(?:sử\s*)?(?:khám|hẹn)\s*của|các\s*lịch\s*khám\s*của)\s+([a-zà-ỹ\s]{2,40})/i);
+    if (nameMatch) {
+      const candidate = nameMatch[1].trim();
+      if (!/(mẹ|bố|con|vợ|chồng|tôi|mình|người\s*thân)/i.test(candidate)) {
+        extractedEntities.familyMemberName = candidate;
+      }
+    }
+    if (/người\s*thân\s*này/i.test(lower)) {
+      extractedEntities.useActiveFamilyMember = true;
+    }
+    return { intent: INTENTS.MY_BOOKING_QUERY, confidence: 0.95, extractedEntities };
+  }
+
+  // 3.5. Chuyển đổi đối tượng đặt lịch về Bản thân
+  if (/(đặt\s*cho\s*(bản\s*thân|tôi|chính\s*tôi)|đổi\s*sang\s*đặt\s*cho\s*(tôi|bản\s*thân))/i.test(lower)) {
+    extractedEntities.bookingFor = 'SELF';
+    extractedEntities.action = 'SWITCH_TO_SELF';
+    return { intent: INTENTS.BOOKING_QUERY, confidence: 0.95, extractedEntities };
+  }
+
+  // 3.6. Ý định Đặt lịch cho người thân có đối tượng cụ thể (BUG-08 & BUG-11)
+  // "Mình muốn đặt lịch cho mẹ mình", "đặt cho bố", "đặt lịch cho con tôi", "đặt cho bé", "đặt lịch cho mẹ", "đặt lịch cho Nguyễn Thị Bé", "Đặt lịch khám cho nguyễn thị bé"
+  const isSpecificFamilyBooking = (
+    /(?:muốn\s*)?đặt\s*(?:lịch\s*)?(?:khám\s*)?(?:hẹn\s*)?(?:bác\s*sĩ\s*)?cho\s+(mẹ|bố|ba|cha|con|vợ|chồng|bé|anh|chị|em|bà|ông|[a-zà-ỹ\s]+)/i.test(lower) ||
+    /(?:dat|muon\s*dat)\s*(?:lich\s*)?(?:kham\s*)?(?:hen\s*)?(?:bac\s*si\s*)?cho\s+(me|bo|ba|cha|con|vo|chong|be|[a-z\s]+)/i.test(stripped) ||
+    /(?:đổi|chuyển)\s*(?:sang\s*)?đặt\s*(?:lịch\s*)?(?:khám\s*)?cho\s+(mẹ|bố|ba|cha|con|vợ|chồng|bé|[a-zà-ỹ\s]+)/i.test(lower)
+  );
+
+  // 4. Ý định Người thân / Hồ sơ gia đình (FAMILY_QUERY — Chung chung hoặc Thêm/Sửa/Xem sổ y bạ)
   const isFamilyProfileInput = (
     /(ngày\s*sinh|ngay\s*sinh|\b(19\d\d|20\d\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b)/i.test(lower) &&
     /(con|bố|mẹ|vợ|chồng|cha|mẹ\s*đẻ|bố\s*đẻ|anh|chị|em|ông|bà|bo|me|vo|chong)/i.test(lower) &&
@@ -150,11 +227,34 @@ function classifyIntent(input, hasImageArg = false) {
     /(ngày\s*sinh|con|bố|mẹ|vợ|chồng|0\d{9})/i.test(lower)
   );
 
-  if (
-    /(người\s*thân|hồ\s*sơ\s*gia\s*đình|đặt\s*cho\s*(con|bố|mẹ|vợ|chồng)|danh\s*sách\s*người\s*thân|sổ\s*y\s*bạ|thêm\s*người\s*thân|tạo\s*hồ\s*sơ\s*người\s*thân|đăng\s*ký\s*người\s*thân)/i.test(lower) ||
-    /(nguoi\s*than|ho\s*so\s*gia\s*dinh|dat\s*cho\s*(con|bo|me|vo|chong)|danh\s*sach\s*nguoi\s*than|so\s*y\s*ba|them\s*nguoi\s*than|tao\s*ho\s*so\s*nguoi\s*than|dang\s*ky\s*nguoi\s*than)/i.test(stripped) ||
+  const isGenericFamilyQuery = (
+    /(đặt\s*(?:lịch\s*)?(?:khám\s*)?cho\s*(?:người\s*thân|người\s*nhà|gia\s*đình)|hồ\s*sơ\s*gia\s*đình|danh\s*sách\s*người\s*thân|sổ\s*y\s*bạ|xem\s*sổ\s*y\s*bạ|thêm\s*người\s*thân|tạo\s*hồ\s*sơ\s*người\s*thân|đăng\s*ký\s*người\s*thân)/i.test(lower) ||
+    /(dat\s*(?:lich\s*)?(?:kham\s*)?cho\s*(?:nguoi\s*than|nguoi\s*nha|gia\s*dinh)|ho\s*so\s*gia\s*dinh|danh\s*sach\s*nguoi\s*than|so\s*y\s*ba|them\s*nguoi\s*than|tao\s*ho\s*so\s*nguoi\s*than|dang\s*ky\s*nguoi\s*than)/i.test(stripped) ||
     isFamilyProfileInput
-  ) {
+  );
+
+  if (isSpecificFamilyBooking && !isGenericFamilyQuery) {
+    const relInfo = extractFamilyRelationship(lower, stripped);
+    extractedEntities.bookingFor = 'FAMILY';
+    if (relInfo) {
+      extractedEntities.relationship = relInfo.relationship;
+      extractedEntities.targetRaw = relInfo.raw;
+    }
+    const forNameMatch = lower.match(/(?:đặt|dat)\s*(?:lịch\s*)?(?:khám\s*)?(?:hẹn\s*)?(?:bác\s*sĩ\s*)?cho\s+([a-zà-ỹ\s]{2,40})/i);
+    if (forNameMatch) {
+      const candidate = forNameMatch[1].trim();
+      if (!/(mẹ|bố|con|vợ|chồng|người\s*thân|người\s*nhà|gia\s*đình|tôi|bản\s*thân|mình)/i.test(candidate)) {
+        extractedEntities.targetName = candidate;
+        extractedEntities.familyMemberName = candidate;
+      }
+    }
+    if (/(đổi|chuyển)\s*(?:sang\s*)?đặt\s*cho/i.test(lower)) {
+      extractedEntities.action = 'SWITCH_TARGET';
+    }
+    return { intent: INTENTS.BOOKING_FOR_FAMILY, confidence: 0.95, extractedEntities };
+  }
+
+  if (isGenericFamilyQuery) {
     return { intent: INTENTS.FAMILY_QUERY, confidence: 0.95, extractedEntities };
   }
 
@@ -193,8 +293,8 @@ function classifyIntent(input, hasImageArg = false) {
   // 6. Ý định Tra cứu lịch hẹn cá nhân (MY_BOOKING_QUERY)
   // Ưu tiên tra cứu lịch khi người dùng hỏi danh sách, trạng thái các lịch khám (kể cả lịch No-Show)
   const isMyBookingQuery = (
-    /(lịch\s*(hẹn|khám)?\s*của\s*tôi|xem\s*lịch\s*(hẹn|khám)?(\s*của\s*tôi|\s*hôm\s*nay)?|tôi\s*đã\s*đặt\s*lịch\s*nào|trạng\s*thái\s*lịch|thanh\s*toán\s*lịch\s*hẹn\s*của\s*tôi|lịch\s*sắp\s*tới(\s*của\s*tôi)?|lịch\s*(khám|hẹn)?\s*(hôm\s*nay|ngày\s*mai)|lịch\s*đã\s*khám|đã\s*khám\s*bác\s*sĩ\s*nào|khám\s*chuyên\s*khoa.*mấy\s*lần|có\s*lịch\s*(nào|gì)(\s*(đã|bị)?\s*(no-?show|vắng\s*mặt|hủy))?|kiểm\s*tra\s*lịch\s*(khám|hẹn)?(\s*của\s*tôi)?)/i.test(lower) ||
-    /(lich\s*(hen|kham)?\s*cua\s*toi|xem\s*lich\s*(hen|kham)?(\s*cua\s*toi|\s*hom\s*nay)?|toi\s*da\s*dat\s*lich\s*nao|trang\s*thai\s*lich|thanh\s*toan\s*lich\s*hen\s*cua\s*toi|lich\s*sap\s*toi(\s*cua\s*toi)?|lich\s*(kham|hen)?\s*(hom\s*nay|ngay\s*mai)|lich\s*da\s*kham|da\s*kham\s*bac\s*si\s*nao|kham\s*chuyen\s*khoa.*may\s*lan|co\s*lich\s*(nao|gi)|kiem\s*tra\s*lich)/i.test(stripped)
+    /(lịch\s*sử(\s*(đặt\s*)?khám|\s*(các\s*)?cuộc\s*hẹn|\s*(các\s*)?lịch\s*(hẹn|khám))?(\s*của\s*tôi)?|xem\s*lịch\s*sử(\s*(đặt\s*)?(khám|lịch))?|lịch\s*(hẹn|khám)?\s*của\s*tôi|xem\s*lịch\s*(hẹn|khám)?(\s*của\s*tôi|\s*hôm\s*nay)?|tôi\s*đã\s*(đặt|khám)(\s*những)?\s*(lịch|lần|ca)?(\s*khám)?\s*nào|trạng\s*thái\s*lịch|thanh\s*toán\s*lịch\s*hẹn\s*của\s*tôi|lịch\s*sắp\s*tới(\s*của\s*tôi)?|lịch\s*(khám|hẹn)?\s*(hôm\s*nay|ngày\s*mai)|(các\s*)?lịch\s*(hẹn|khám)\s*trước\s*đây(\s*của\s*tôi)?|lịch\s*đã\s*khám|đã\s*khám\s*bác\s*sĩ\s*nào|khám\s*chuyên\s*khoa.*mấy\s*lần|có\s*lịch\s*(nào|gì)(\s*(đã|bị)?\s*(no-?show|vắng\s*mặt|hủy))?|kiểm\s*tra\s*lịch\s*(khám|hẹn)?(\s*của\s*tôi)?)/i.test(lower) ||
+    /(lich\s*su(\s*(dat\s*)?kham|\s*(cac\s*)?cuoc\s*hen|\s*(cac\s*)?lich\s*(hen|kham))?(\s*cua\s*toi)?|xem\s*lich\s*su(\s*(dat\s*)?(kham|lich))?|lich\s*(hen|kham)?\s*cua\s*toi|xem\s*lich\s*(hen|kham)?(\s*cua\s*toi|\s*hom\s*nay)?|toi\s*da\s*(dat|kham)(\s*nhung)?\s*(lich|lan|ca)?(\s*kham)?\s*nao|trang\s*thai\s*lich|thanh\s*toan\s*lich\s*hen\s*cua\s*toi|lich\s*sap\s*toi(\s*cua\s*toi)?|lich\s*(kham|hen)?\s*(hom\s*nay|ngay\s*mai)|(cac\s*)?lich\s*(hen|kham)\s*truoc\s*day(\s*cua\s*toi)?|lich\s*da\s*kham|da\s*kham\s*bac\s*si\s*nao|kham\s*chuyen\s*khoa.*may\s*lan|co\s*lich\s*(nao|gi)|kiem\s*tra\s*lich)/i.test(stripped)
   );
 
   if (isMyBookingQuery && !/(hủy\s*lịch|muốn\s*hủy|đổi\s*lịch)/i.test(lower)) {

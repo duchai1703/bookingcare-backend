@@ -197,6 +197,18 @@ async function buildAIContext({
     );
   }
 
+  // Active Booking Subject / Family Member Context (BUG-08, BUG-09, BUG-11)
+  if (toolContext.selectedFamilyMember || toolContext.activeFamilyMember) {
+    const mem = toolContext.selectedFamilyMember || toolContext.activeFamilyMember;
+    contextParts.push(
+      `[ĐỐI TƯỢNG ĐẶT LỊCH HIỆN TẠI]: Người thân: ${mem.fullName || ''} (Mối quan hệ: ${mem.relationship || ''}, ID: ${mem.id || ''}).\n- NGƯỜI THÂN ĐÃ ĐƯỢC CHỌN RỒI: TUYỆT ĐỐI KHÔNG gọi lại tool getFamilyMembers! Hãy hỏi hoặc hướng dẫn người dùng tiếp tục bước đặt lịch: hỏi chuyên khoa hoặc bác sĩ muốn khám cho ${mem.fullName || 'người thân'}.\n- Khi gọi prepareBookingDraft, BẮT BUỘC truyền bookingFor: 'FAMILY' và familyMemberId: ${mem.id}.\n- Khi tra cứu lịch sử khám của người này, BẮT BUỘC gọi getMyBookings với familyMemberId: ${mem.id}.\n- TUYỆT ĐỐI duy trì đối tượng này xuyên suốt các bước tìm chuyên khoa, bác sĩ, slot và draft, không yêu cầu người dùng chọn lại.`
+    );
+  } else if (toolContext.bookingFor === 'SELF') {
+    contextParts.push(
+      `[ĐỐI TƯỢNG ĐẶT LỊCH HIỆN TẠI]: Bản thân bệnh nhân (bookingFor: 'SELF').`
+    );
+  }
+
   const systemInstructionAugmentation = contextParts.join('\n\n');
 
   return {
