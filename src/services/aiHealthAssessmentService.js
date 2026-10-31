@@ -180,13 +180,16 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
         context.historicalVision = item.visionAnalysis;
       }
 
-      // Nhận diện câu hỏi AI đã hỏi trước đó
+      // Nhận diện câu hỏi AI đã hỏi trước đó (CHỈ tính câu hỏi lâm sàng/y tế, KHÔNG tính câu chào hỏi hệ thống)
       if (item.role === 'model') {
         const questionMatches = text.match(/[^?.\n]+[?]/g);
         if (questionMatches) {
           questionMatches.forEach((q) => {
             const cleanQ = q.trim();
-            if (cleanQ.length > 10 && cleanQ.length < 150) {
+            if (
+              cleanQ.length > 10 && cleanQ.length < 150 &&
+              /(triệu\s*chứng|đau|sốt|ngứa|bao\s*lâu|khi\s*nào|mức\s*độ|vị\s*trí|bị|sưng|tê|thuốc|khó\s*chịu|mẩn|nôn)/i.test(cleanQ)
+            ) {
               context.askedQuestions.push(cleanQ);
             }
           });
@@ -210,7 +213,7 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
   // 3. Nhận diện các red flags cấp cứu hoặc nguy cơ cao deterministically
   checkDeterministicRedFlags(lowerCurrent, context);
 
-  // 4. Nhận diện các ý định phi y tế / thao tác hệ thống (hủy lịch, tìm bác sĩ, xem lịch hẹn, ví...)
+  // 4. Nhận diện các ý định phi y tế / thao tác hệ thống / hỏi chức năng chatbot
   const strippedCurrent = lowerCurrent
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -218,12 +221,12 @@ function extractHealthContext(currentMessage = '', history = [], currentVisionDa
     .replace(/Đ/g, 'D');
 
   const isOperationalIntent =
-    /(hủy\s*(lịch|bỏ|hẹn)?|đổi\s*(lịch|ngày|giờ)?|dời\s*lịch|bác\s*sĩ|phòng\s*khám|chuyên\s*khoa|lịch\s*hẹn|ví|tiền|thanh\s*toán|đặt\s*(lịch|hẹn|giúp|hộ)?|book|người\s*thân|hồ\s*sơ|sổ\s*y\s*bạ|gia\s*đình|thêm\s*người\s*thân)/i.test(lowerCurrent) ||
-    /(huy\s*(lich|bo|hen)?|doi\s*(lich|ngay|gio)?|doi\s*sang\s*ngay\s*mai|bac\s*si|phong\s*kham|chuyen\s*khoa|lich\s*hen|vi|tien|thanh\s*toan|dat\s*(lich|hen|giup|ho)?|book|nguoi\s*than|ho\s*so|so\s*y\s*ba|gia\s*dinh|them\s*nguoi\s*than)/i.test(strippedCurrent);
+    /(hủy\s*(lịch|bỏ|hẹn)?|đổi\s*(lịch|ngày|giờ)?|dời\s*lịch|bác\s*sĩ|phòng\s*khám|chuyên\s*khoa|lịch\s*hẹn|ví|tiền|thanh\s*toán|đặt\s*(lịch|hẹn|giúp|hộ)?|book|người\s*thân|hồ\s*sơ|sổ\s*y\s*bạ|gia\s*đình|thêm\s*người\s*thân|làm\s*được\s*gì|chức\s*năng|tính\s*năng|chatbot|giúp\s*gì|hỗ\s*trợ\s*gì|hướng\s*dẫn|tra\s*cứu)/i.test(lowerCurrent) ||
+    /(huy\s*(lich|bo|hen)?|doi\s*(lich|ngay|gio)?|doi\s*sang\s*ngay\s*mai|bac\s*si|phong\s*kham|chuyen\s*khoa|lich\s*hen|vi|tien|thanh\s*toan|dat\s*(lich|hen|giup|ho)?|book|nguoi\s*than|ho\s*so|so\s*y\s*ba|gia\s*dinh|them\s*nguoi\s*than|lam\s*duoc\s*gi|chuc\s*nang|tinh\s*nang|chatbot|huong\s*dan|tra\s*cuu)/i.test(strippedCurrent);
 
   // 5. CHỈ coi là follow-up nếu KHÔNG PHẢI thao tác hệ thống và có nội dung sức khỏe ở lượt hiện tại
   const isPlausibleHealthAnswer = context.askedQuestions.length > 0 &&
-    /(hôm|ngày|tuần|tháng|bị|đỡ|nặng|sốt|đau|ngứa|rát|sưng|có|không|chưa|vẫn)/i.test(lowerCurrent);
+    /(hôm|ngày|tuần|tháng|bị\s*đau|bị\s*sốt|bị\s*ngứa|đỡ\s*hơn|nặng\s*hơn|sốt|đau|ngứa|rát|sưng|tê|mẩn|có\s*(bị|đau|sốt|ngứa|tê|sưng|dấu\s*hiệu)|không\s*(bị|đau|sốt|ngứa|tê|sưng|dấu\s*hiệu)|chưa\s*đỡ|vẫn\s*đau)/i.test(lowerCurrent);
 
   if (
     !isOperationalIntent &&
@@ -664,6 +667,10 @@ function updateActiveAssessment({ assessmentId, questionId, optionId, value, ans
     record.painSeverity = value;
   } else if (cleanQId === 'swelling') {
     record.swelling = value;
+  } else if (cleanQId === 'mobility') {
+    record.mobility = value;
+  } else if (cleanQId === 'weakness') {
+    record.weakness = value;
   }
 
   record.updatedAt = Date.now();
@@ -692,8 +699,32 @@ function updateActiveAssessment({ assessmentId, questionId, optionId, value, ans
     answerDesc = value === true || String(value).toLowerCase() === 'true'
       ? 'Ghi nhận vùng đau có biểu hiện sưng nề hoặc tấy đỏ.'
       : 'Không có biểu hiện sưng nề rõ rệt.';
+  } else if (cleanQId === 'mobility') {
+    answerDesc = value === true || String(value).toLowerCase() === 'true'
+      ? 'Ghi nhận có hạn chế vận động hoặc khó cử động.'
+      : 'Không có dấu hiệu hạn chế vận động rõ rệt.';
+  } else if (cleanQId === 'weakness') {
+    answerDesc = value === true || String(value).toLowerCase() === 'true'
+      ? 'Ghi nhận có dấu hiệu yếu cơ hoặc giảm sức cầm nắm.'
+      : 'Không có biểu hiện yếu cơ hoặc giảm sức cầm nắm.';
   } else {
-    answerDesc = `Thông tin bổ sung (${cleanQId}): ${answerText || value}.`;
+    // Dynamic / fallback question: DO NOT expose internal bin_ or open_ ID to user
+    const questionsList = Array.isArray(data.followUpQuestions) ? data.followUpQuestions : [];
+    const matchedQ = questionsList.find((q) => (q.questionId || q.id) === cleanQId);
+    const qTitle = matchedQ ? (matchedQ.question || matchedQ.canonicalText || matchedQ.text) : null;
+
+    let cleanValue = answerText || String(value);
+    if (value === true || cleanValue.toLowerCase() === 'true') {
+      cleanValue = 'Có';
+    } else if (value === false || cleanValue.toLowerCase() === 'false') {
+      cleanValue = 'Không';
+    }
+
+    if (qTitle) {
+      answerDesc = `Ghi nhận thêm cho câu hỏi "${qTitle}": ${cleanValue}.`;
+    } else {
+      answerDesc = `Ghi nhận thông tin bổ sung: ${cleanValue}.`;
+    }
   }
 
   if (answerDesc && !updatedObs.includes(answerDesc)) {
