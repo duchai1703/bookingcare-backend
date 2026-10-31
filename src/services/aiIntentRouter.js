@@ -127,6 +127,20 @@ function classifyIntent(input, hasImageArg = false) {
   const lower = str.toLowerCase();
   const stripped = stripVietnameseDiacritics(lower);
 
+  // 3.0. Ý định Chào hỏi / Hỏi chức năng hệ thống / Năng lực của chatbot (GENERAL_QUERY — BUG-MANUAL-01)
+  const isCapabilityInquiry = (
+    /^(xin\s*chào|chào|hello|hi|bạn\s*là\s*ai|giúp\s*gì|cảm\s*ơn|tạm\s*biệt)$/i.test(lower) ||
+    /^(xin\s*chao|chao|hello|hi|ban\s*la\s*ai|giup\s*gi|cam\s*on|tam\s*biet)$/i.test(stripped) ||
+    /(làm\s*được\s*(gì|những\s*gì)|có\s*thể\s*(làm|giúp|hỗ\s*trợ)\s*(được\s*)?(gì|những\s*gì)|hỗ\s*trợ\s*(những\s*)?gì|chức\s*năng\s*(gì|của\s*bạn|của\s*chatbot)|tính\s*năng\s*(gì|của\s*bạn|của\s*chatbot)|sử\s*dụng\s*chatbot\s*(để\s*làm\s*gì|như\s*thế\s*nào)|hướng\s*dẫn\s*sử\s*dụng(\s*chatbot)?|giới\s*thiệu\s*(về\s*)?(bookingcare|chatbot)|bạn\s*biết\s*làm\s*gì)/i.test(lower) ||
+    /(lam\s*duoc\s*(gi|nhung\s*gi)|co\s*the\s*(lam|giup|ho\s*tro)\s*(duoc\s*)?(gi|nhung\s*gi)|ho\s*tro\s*(nhung\s*)?gi|chuc\s*nang|tinh\s*nang|su\s*dung\s*chatbot|huong\s*dan\s*su\s*dung|gioi\s*thieu.*(bookingcare|chatbot)|ban\s*biet\s*lam\s*gi)/i.test(stripped) ||
+    /^(chatbot|bạn|hệ\s*thống)\s*(có\s*hỗ\s*trợ|hỗ\s*trợ\s*được|có\s*thể)\s*.*(không|không\s*ạ)\??$/i.test(lower) ||
+    /^(tôi|mình|người\s*dùng)\s*có\s*thể\s*(tra\s*cứu|sử\s*dụng\s*chatbot|làm\s*gì).*không\??$/i.test(lower)
+  );
+
+  if (isCapabilityInquiry) {
+    return { intent: INTENTS.GENERAL_QUERY, confidence: 0.95, extractedEntities };
+  }
+
   // 3.1. Ý định Phân tích / Đọc hình ảnh theo từ khóa (VISION_QUERY)
   // CHỈ kích hoạt khi người dùng hỏi về ảnh (Case A/C) và KHÔNG PHẢI operational intent đơn thuần (Case B)
   const isImageAnalysisPhrase = (
@@ -298,6 +312,11 @@ function classifyIntent(input, hasImageArg = false) {
   );
 
   if (isMyBookingQuery && !/(hủy\s*lịch|muốn\s*hủy|đổi\s*lịch)/i.test(lower)) {
+    // Explicitly detect request for Self's history (BUG-MANUAL-05)
+    if (/(của\s*(bản\s*thân|tôi|chính\s*tôi|mình)|chỉ\s*xem.*(bản\s*thân|tôi)|lịch\s*sử\s*(của\s*)?bản\s*thân)/i.test(lower) && !isFamilyHistoryPattern) {
+      extractedEntities.bookingFor = 'SELF';
+      extractedEntities.action = 'SWITCH_TO_SELF';
+    }
     return { intent: INTENTS.MY_BOOKING_QUERY, confidence: 0.9, extractedEntities };
   }
 
@@ -416,11 +435,17 @@ function classifyIntent(input, hasImageArg = false) {
     return { intent: INTENTS.VISION_QUERY, confidence: 0.95, extractedEntities };
   }
 
-  // 15. Chào hỏi / Tổng quan (GENERAL_QUERY)
-  if (
+  // 15. Chào hỏi / Hỏi chức năng hệ thống / Tổng quan (GENERAL_QUERY — BUG-MANUAL-01)
+  const isGeneralCapabilityOrGreeting = (
     /^(xin\s*chào|chào|hello|hi|bạn\s*là\s*ai|giúp\s*gì|cảm\s*ơn|tạm\s*biệt)$/i.test(lower) ||
-    /^(xin\s*chao|chao|hello|hi|ban\s*la\s*ai|giup\s*gi|cam\s*on|tam\s*biet)$/i.test(stripped)
-  ) {
+    /^(xin\s*chao|chao|hello|hi|ban\s*la\s*ai|giup\s*gi|cam\s*on|tam\s*biet)$/i.test(stripped) ||
+    /(làm\s*được\s*(gì|những\s*gì)|có\s*thể\s*(làm|giúp|hỗ\s*trợ)\s*(được\s*)?(gì|những\s*gì)|hỗ\s*trợ\s*(những\s*)?gì|chức\s*năng\s*(gì|của\s*bạn|của\s*chatbot)|tính\s*năng\s*(gì|của\s*bạn|của\s*chatbot)|sử\s*dụng\s*chatbot\s*(để\s*làm\s*gì|như\s*thế\s*nào)|hướng\s*dẫn\s*sử\s*dụng(\s*chatbot)?|giới\s*thiệu\s*(về\s*)?(bookingcare|chatbot)|bạn\s*biết\s*làm\s*gì)/i.test(lower) ||
+    /(lam\s*duoc\s*(gi|nhung\s*gi)|co\s*the\s*(lam|giup|ho\s*tro)\s*(duoc\s*)?(gi|nhung\s*gi)|ho\s*tro\s*(nhung\s*)?gi|chuc\s*nang|tinh\s*nang|su\s*dung\s*chatbot|huong\s*dan\s*su\s*dung|gioi\s*thieu.*(bookingcare|chatbot)|ban\s*biet\s*lam\s*gi)/i.test(stripped) ||
+    /^(chatbot|bạn|hệ\s*thống)\s*(có\s*hỗ\s*trợ|hỗ\s*trợ\s*được|có\s*thể)\s*(đặt\s*lịch|tra\s*cứu|xem\s*lịch)\s*(không|không\s*ạ)\??$/i.test(lower) ||
+    /^(tôi|mình)\s*có\s*thể\s*sử\s*dụng\s*chatbot\s*(để\s*làm\s*gì|như\s*thế\s*nào)\??$/i.test(lower)
+  );
+
+  if (isGeneralCapabilityOrGreeting) {
     return { intent: INTENTS.GENERAL_QUERY, confidence: 0.95, extractedEntities };
   }
 
