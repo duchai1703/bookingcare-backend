@@ -71,16 +71,16 @@ const PLATFORM_POLICIES = Object.freeze([
     title: 'Chính sách đổi lịch khám (Reschedule) BookingCare',
     category: 'POLICY',
     source: 'BOOKINGCARE_POLICY_ENGINE',
-    version: '1.0.0',
-    content: 'Quy định đổi lịch khám tại BookingCare: Bệnh nhân có thể đổi lịch cho các cuộc hẹn còn hiệu lực ở trạng thái S1 (Chưa thanh toán), S1.5 (Đang chờ VNPay), hoặc S2 (Đã xác nhận). Lịch đã hoàn thành (S3) không thể đổi. Lịch hẹn cũ chuyển sang S4 với lý do RESCHEDULED, tiền đã thanh toán được bảo lưu 100% sang lịch hẹn mới. Lịch đổi yêu cầu tạo bản nháp và xác nhận qua mã bảo mật HMAC duy nhất.',
+    version: '1.2.0',
+    content: 'Quy định đổi lịch khám tại BookingCare: Bệnh nhân CHỈ có thể đổi lịch cho các cuộc hẹn CÒN HIỆU LỰC TRONG TƯƠNG LAI (chưa đến giờ hẹn khám theo giờ Việt Nam Asia/Ho_Chi_Minh) ở trạng thái S1 (Chưa thanh toán), S1.5 (Đang chờ VNPay), hoặc S2 (Đã xác nhận). Lịch khám đã qua ngày hoặc đã qua giờ hẹn khám (dù ở trạng thái S2) hoặc đã hoàn thành (S3) tuyệt đối KHÔNG thể đổi lịch. Lịch hẹn cũ chuyển sang S4 với lý do RESCHEDULED, tiền đã thanh toán được bảo lưu 100% sang lịch hẹn mới. Lịch đổi yêu cầu tạo bản nháp và xác nhận qua mã bảo mật HMAC duy nhất.',
   },
   {
     documentId: 'doc_pol_payment',
     title: 'Hướng dẫn thanh toán trực tuyến qua cổng VNPay và Ví BookingCare',
     category: 'POLICY',
     source: 'BOOKINGCARE_PAYMENT_GATEWAY',
-    version: '1.0.0',
-    content: 'Phương thức thanh toán BookingCare: Hệ thống hỗ trợ thanh toán qua cổng VNPay (hỗ trợ QR Pay, thẻ ATM nội địa, thẻ tín dụng Visa/MasterCard) và Ví điện tử BookingCare. Khi đặt lịch S1, liên kết thanh toán có chữ ký bảo mật SHA-512 được cung cấp. Trạng thái chỉ chuyển sang Đã thanh toán (S2) sau khi hệ thống nhận webhook IPN xác thực từ cổng thanh toán.',
+    version: '1.2.0',
+    content: 'Phương thức thanh toán và nạp tiền BookingCare: Hệ thống hỗ trợ thanh toán và nạp tiền ví qua CỔNG THANH TOÁN VNPAY DUY NHẤT (cổng VNPay hỗ trợ quét mã VNPAY-QR, thẻ ATM nội địa các ngân hàng Việt Nam, và thẻ quốc tế Visa/MasterCard/JCB) và Ví điện tử BookingCare (thanh toán nội bộ bằng số dư khả dụng). Nạp tiền vào Ví BookingCare chỉ thực hiện qua cổng VNPay, số dư cập nhật sau khi nhận IPN xác thực từ cổng thanh toán. Hệ thống KHÔNG tích hợp ví điện tử ngoài như MoMo hay ZaloPay. Khi đặt lịch S1, liên kết thanh toán có chữ ký bảo mật SHA-512 được cung cấp. Trạng thái chỉ chuyển sang Đã thanh toán (S2) sau khi hệ thống nhận webhook IPN xác thực từ cổng thanh toán.',
   },
   {
     documentId: 'doc_pol_booking_steps',
@@ -213,6 +213,27 @@ async function retrieveRelevantKnowledge(query, options = {}) {
 
     for (const doc of corpus) {
       if (categoryFilter && doc.category !== categoryFilter) continue;
+
+      // Category Guard (BUG-MANUAL-02): POLICY docs must ONLY match if query contains explicit policy keywords
+      if (doc.category === 'POLICY') {
+        const hasPolicyKw = /(chính\s*sách|quy\s*định|điều\s*khoản|quy\s*chế|hủy|hoàn\s*tiền|đổi\s*lịch|reschedule|vắng\s*mặt|no-?show|thanh\s*toán|vnpay|nạp\s*tiền|chi\s*phí)/i.test(query);
+        if (!hasPolicyKw) continue;
+
+        // When user asks about doctor cancelling, do not return No-Show as primary citation
+        if (/(bác\s*sĩ\s*(bận|hủy|nghỉ)|hủy\s*từ\s*phía\s*bác\s*sĩ)/i.test(query) && doc.documentId === 'doc_pol_noshow') {
+          continue;
+        }
+      }
+
+      // Specialty Guard (BUG-MANUAL-02): Specific specialty must not match generic "chuyên khoa nào" without specialty name or symptoms
+      if (doc.category === 'SPECIALTY') {
+        const specName = doc.title.replace(/^Chuyên\s*khoa\s*/i, '').trim();
+        const normSpecName = normalizeSearchText(specName);
+        const isGenericSpecialtyQuestion = /(chưa\s*biết\s*(nên\s*)?khám\s*chuyên\s*khoa|khám\s*khoa\s*nào|tư\s*vấn\s*chuyên\s*khoa|chuyên\s*khoa\s*nào)/i.test(query);
+        if (isGenericSpecialtyQuestion && !normQuery.includes(normSpecName)) {
+          continue;
+        }
+      }
 
       const normTitle = normalizeSearchText(doc.title);
       const docWords = new Set(doc.normalizedText.split(/[\s,.-]+/));
