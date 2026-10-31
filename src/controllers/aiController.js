@@ -196,7 +196,17 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
         doctor: {
           doctorId: fnResult.doctorId || args?.doctorId || null,
           name: fnResult.doctorName || args?.doctorName || 'Bác sĩ',
+          clinic: fnResult.clinic || fnResult.clinicName || null,
+          clinicAddress: fnResult.clinicAddress || null,
+          price: fnResult.price || null,
+          priceFormatted: fnResult.priceFormatted || null,
+          specialty: fnResult.specialty || null,
         },
+        clinic: fnResult.clinic || fnResult.clinicName || null,
+        clinicAddress: fnResult.clinicAddress || null,
+        price: fnResult.price || null,
+        priceFormatted: fnResult.priceFormatted || null,
+        specialty: fnResult.specialty || null,
         date: fnResult.date || args?.date,
         dateLabel: fnResult.dateLabel || undefined,
         timezone: fnResult.timezone || 'Asia/Ho_Chi_Minh',
@@ -416,13 +426,16 @@ function emitToolStructuredEvent(toolName, args, fnResult, res, isClientConnecte
     }
   }
 
-  // 11. Wallet Transactions Event
-  if (toolName === 'getWalletTransactions') {
+  // 11. Wallet Transactions Event (BUG-07 Fix: Emit on getWalletTransactions or getWalletBalance with recent transactions)
+  if (toolName === 'getWalletTransactions' || (toolName === 'getWalletBalance' && fnResult.recentTransactions?.length > 0)) {
     if (fnResult.status === 'success') {
       const payload = {
         event: 'wallet:transactions',
         type: 'WALLET_TRANSACTIONS',
-        data: fnResult,
+        data: {
+          ...fnResult,
+          transactions: fnResult.transactions || fnResult.recentTransactions || [],
+        },
         timestamp: Date.now(),
       };
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -885,10 +898,18 @@ async function streamChat(req, res) {
 
       if (updateResult.success) {
         const updatedData = updateResult.data;
-        const answerSummary = followUpMeta.label || followUpMeta.value || followUpMeta.answerText || '';
+        let answerSummary = followUpMeta.label || followUpMeta.answerText || '';
+        if (!answerSummary && typeof followUpMeta.value === 'boolean') {
+          answerSummary = followUpMeta.value ? 'Có' : 'Không';
+        } else if (followUpMeta.value !== undefined && !answerSummary) {
+          answerSummary = String(followUpMeta.value);
+        }
+        if (answerSummary === 'true') answerSummary = 'Có';
+        if (answerSummary === 'false') answerSummary = 'Không';
+
         const followUpText = answerSummary
-          ? `Cảm ơn bạn đã cung cấp thêm thông tin: "${answerSummary}". Mình đã cập nhật đánh giá sức khỏe của bạn:`
-          : 'Mình đã ghi nhận câu trả lời và cập nhật đánh giá sức khỏe của bạn:';
+          ? `Cảm ơn bạn đã cung cấp thêm thông tin: "${answerSummary}". Mình đã cập nhật đánh giá sức khỏe của bạn bên dưới.`
+          : 'Mình đã ghi nhận câu trả lời và cập nhật đánh giá sức khỏe của bạn bên dưới.';
 
         res.write(`data: ${JSON.stringify({ text: followUpText })}\n\n`);
 
@@ -943,9 +964,10 @@ async function streamChat(req, res) {
       INTENTS.POLICY_QUERY,
       INTENTS.GENERAL_QUERY,
     ];
-    const isNonHealthIntent = nonHealthIntents.includes(intentResult.intent);
-    // Operational intent MUST WIN over image and health context
-    const isHealthAssessmentFlow = !isNonHealthIntent && (Boolean(imageId) || intentResult.intent === INTENTS.HEALTH_QUERY || initialHealthContext.isFollowUp);
+    const isNonHealthIntent = nonHealthIntents.includes(intentResult.intent) || intentResult.intent === INTENTS.UNKNOWN;
+    const hasConfirmedSymptoms = (initialHealthContext.symptoms && initialHealthContext.symptoms.length > 0) || (initialHealthContext.detectedRedFlags && initialHealthContext.detectedRedFlags.length > 0);
+    // Operational and capability intent MUST WIN over image and health context
+    const isHealthAssessmentFlow = !isNonHealthIntent && (Boolean(imageId) || intentResult.intent === INTENTS.HEALTH_QUERY || (initialHealthContext.isFollowUp && hasConfirmedSymptoms));
 
     if (isHealthAssessmentFlow) {
       let tempImageData = null;
@@ -1099,8 +1121,12 @@ async function streamChat(req, res) {
     let activeFamilyMember = null;
     let activeBookingFor = bookingFor || (explicitFamId ? 'FAMILY' : null);
 
-    // Switch to Self
-    if (intentResult.extractedEntities?.action === 'SWITCH_TO_SELF' || /(đặt\s*cho\s*(bản\s*thân|tôi|chính\s*tôi))/i.test(cleanMessage)) {
+    // Switch to Self (BUG-08 & BUG-MANUAL-05)
+    if (
+      intentResult.extractedEntities?.action === 'SWITCH_TO_SELF' ||
+      intentResult.extractedEntities?.bookingFor === 'SELF' ||
+      /(đặt\s*cho\s*(bản\s*thân|tôi|chính\s*tôi)|(lịch\s*sử|xem\s*lịch)\s*(của\s*)?(bản\s*thân|tôi|chính\s*tôi)|chỉ\s*xem.*(bản\s*thân|tôi))/i.test(cleanMessage)
+    ) {
       activeFamilyMember = null;
       activeBookingFor = 'SELF';
       explicitFamId = null;

@@ -212,7 +212,7 @@ async function handleSearchDoctorsBySpecialty(args, signal) {
     }
   }
 
-  const result = doctorInfos.map((di) => {
+  let result = doctorInfos.map((di) => {
     const d = di.toJSON();
     const docId = d.doctorData?.id;
     const rev = docId ? reviewMap[docId] : null;
@@ -232,6 +232,28 @@ async function handleSearchDoctorsBySpecialty(args, signal) {
       description: d.description ? Array.from(d.description).slice(0, 200).join('') : '',
     };
   });
+
+  // BUG-15 Fix: Filter by clinic/hospital name or exclude specific clinic
+  const targetClinic = (args.clinicName || args.hospitalName || '').toLowerCase().trim();
+  const excludeClinic = (args.excludeClinicName || args.excludeHospitalName || '').toLowerCase().trim();
+
+  if (targetClinic) {
+    result = result.filter((d) => d.clinicName && d.clinicName.toLowerCase().includes(targetClinic));
+  }
+  if (excludeClinic) {
+    result = result.filter((d) => !d.clinicName || !d.clinicName.toLowerCase().includes(excludeClinic));
+  }
+
+  if (result.length === 0 && (targetClinic || excludeClinic)) {
+    return {
+      status: 'empty',
+      specialtyId: specialty.id,
+      specialty: specialty.name,
+      specialtyName: specialty.name,
+      doctors: [],
+      message: `Không tìm thấy bác sĩ chuyên khoa ${specialty.name} phù hợp với cơ sở khám yêu cầu.`,
+    };
+  }
 
   return {
     status: 'success',
@@ -414,6 +436,34 @@ async function handleGetAvailableSchedules(args, signal, context = null) {
     available = available.filter((s) => s.period === 'afternoon');
   }
 
+  // BUG-16 Fix: Fetch Doctor_Info metadata (clinic, address, price, specialty) so slot card displays them
+  let price = null;
+  let priceFormatted = null;
+  let clinic = null;
+  let clinicAddress = null;
+  let specialty = null;
+
+  try {
+    const docInfo = await db.Doctor_Info.findOne({
+      where: { doctorId },
+      include: [
+        { model: db.Allcode, as: 'priceData', attributes: ['valueVi', 'valueEn'] },
+        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+        { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+      ],
+      lock: false,
+    });
+    if (docInfo) {
+      price = docInfo.priceData?.valueVi || null;
+      priceFormatted = price ? (price.includes('VNĐ') || price.includes('đ') ? price : `${price} VNĐ`) : null;
+      clinic = docInfo.clinicData?.name || null;
+      clinicAddress = docInfo.clinicData?.address || null;
+      specialty = docInfo.specialtyData?.name || null;
+    }
+  } catch (docErr) {
+    // Non-blocking
+  }
+
   if (available.length === 0) {
     const periodLabel = period === 'morning' ? ' vào buổi sáng' : period === 'afternoon' ? ' vào buổi chiều' : '';
     return {
@@ -424,6 +474,11 @@ async function handleGetAvailableSchedules(args, signal, context = null) {
       date,
       dateLabel,
       period,
+      price,
+      priceFormatted,
+      clinic,
+      clinicAddress,
+      specialty,
       availableSlots: [],
       schedules: [],
     };
@@ -437,6 +492,11 @@ async function handleGetAvailableSchedules(args, signal, context = null) {
     dateLabel,
     timezone: 'Asia/Ho_Chi_Minh',
     period,
+    price,
+    priceFormatted,
+    clinic,
+    clinicAddress,
+    specialty,
     availableSlots: available,
   };
 }
@@ -575,10 +635,11 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // Filter by Family Member or Subject (BUG-10 & Anti-IDOR Authorization)
+  // Filter by Family Member or Subject (BUG-05 & Anti-IDOR Authorization)
   // ═══════════════════════════════════════════════════════════════════════
+  const isExplicitSelf = args.bookingFor === 'SELF';
   let resolvedFamilyMember = null;
-  const rawFamId = args.familyMemberId || args.family_member_id || (args.bookingFor === 'FAMILY' && context?.selectedFamilyMember?.id);
+  const rawFamId = !isExplicitSelf ? (args.familyMemberId || args.family_member_id || (args.bookingFor === 'FAMILY' && context?.selectedFamilyMember?.id)) : null;
 
   if (rawFamId) {
     const parsedFamId = parseInt(String(rawFamId).replace(/[^\d]/g, ''), 10);
@@ -605,7 +666,7 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
       whereClause.familyMemberId = famRecord.id;
       whereClause.bookingFor = 'FAMILY';
     }
-  } else if (args.familyMemberName || args.relationship || (context?.selectedFamilyMember && args.bookingFor !== 'SELF')) {
+  } else if (!isExplicitSelf && (args.familyMemberName || args.relationship || (context?.selectedFamilyMember && args.bookingFor !== 'SELF'))) {
     // Look up family member by name or relationship for safeUserId
     const userFamilyMembers = await db.Family_Member.findAll({
       where: { userId: safeUserId },
@@ -648,6 +709,10 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
         message: 'Hồ sơ người thân hiện chưa có lịch khám nào trong hệ thống.',
       };
     }
+  } else if (isExplicitSelf) {
+    // BUG-05 Fix: When user requests history for SELF, strictly exclude family records
+    whereClause.familyMemberId = null;
+    whereClause[Op.or] = [{ bookingFor: 'SELF' }, { bookingFor: null }];
   } else if (args.bookingFor) {
     const bFor = String(args.bookingFor).toUpperCase();
     if (['SELF', 'FAMILY'].includes(bFor)) {
@@ -655,7 +720,7 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
     }
   }
 
-  const safeLimit = Math.min(parseInt(String(args.limit || 5), 10) || 5, 20);
+  const safeLimit = Math.min(parseInt(String(args.limit || 10), 10) || 10, 50);
 
   const bookings = await db.Booking.findAll({
     where: whereClause,
@@ -703,6 +768,28 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
   });
 
   let filtered = bookings;
+  if (isExplicitSelf) {
+    // BUG-05 Fix: Ensure no family member leaked through
+    filtered = filtered.filter(b => !b.familyMemberId && (b.bookingFor === 'SELF' || !b.bookingFor));
+  }
+
+  // BUG-04 Fix: Check upcoming vs past slots using Asia/Ho_Chi_Minh timezone
+  const isUpcomingFilter = args.timeFilter === 'upcoming' || (args.status && args.status.includes('S1') && args.status.includes('S2') && !args.status.includes('S3') && !args.status.includes('S4'));
+  const isHistoryFilter = args.timeFilter === 'history' || (args.status && (args.status.includes('S3') || args.status.includes('S4')));
+
+  if (isUpcomingFilter) {
+    // Exclude past slots from upcoming appointments
+    filtered = filtered.filter(b => !isSlotInPast(b.date, b.timeType));
+    // Sort upcoming ascending (nearest first)
+    filtered.sort((a, b) => {
+      const dateA = parseInt(a.date, 10) || 0;
+      const dateB = parseInt(b.date, 10) || 0;
+      if (dateA !== dateB) return dateA - dateB;
+      return String(a.timeType || '').localeCompare(String(b.timeType || ''));
+    });
+  } else if (isHistoryFilter && !args.status?.includes('S3') && !args.status?.includes('S4')) {
+    filtered = filtered.filter(b => ['S3', 'S4'].includes(b.statusId) || isSlotInPast(b.date, b.timeType));
+  }
   if (args.doctorName && typeof args.doctorName === 'string') {
     const docQuery = args.doctorName.toLowerCase().replace(/^(bác\s*sĩ|bs|dr\.?)\s*/gi, '').trim();
     filtered = filtered.filter(b => {
@@ -1098,12 +1185,43 @@ async function handleGetWalletBalance(args, userId, signal) {
       return { status: 'empty', message: res.errMessage || 'Không thể tra cứu thông tin ví.' };
     }
 
+    // BUG-07 Fix: Pre-fetch recent transactions so initial query returns both balance & history
+    let recentTransactions = [];
+    try {
+      const txRes = await walletService.getWalletTransactions(safeUserId, { page: 1, limit: 5 });
+      if (txRes && txRes.errCode === 0 && txRes.data?.transactions) {
+        recentTransactions = txRes.data.transactions.map((tx) => {
+          const j = typeof tx.toJSON === 'function' ? tx.toJSON() : tx;
+          const amt = Number(j.amount) || 0;
+          const bal = Number(j.balanceAfter) || 0;
+          return {
+            id: j.id,
+            direction: j.direction,
+            amount: amt,
+            amountFormatted: `${amt.toLocaleString('vi-VN')} đ`,
+            balanceAfter: bal,
+            balanceAfterFormatted: `${bal.toLocaleString('vi-VN')} đ`,
+            type: j.transactionType,
+            referenceType: j.referenceType,
+            referenceId: j.referenceId,
+            description: j.description,
+            status: j.status,
+            date: j.createdAt,
+          };
+        });
+      }
+    } catch {
+      // Non-blocking
+    }
+
     return {
       status: 'success',
       availableBalance: res.data.availableBalance,
       currency: res.data.currency || 'VND',
       reservedBalance: res.data.reservedBalance,
       walletStatus: res.data.status,
+      recentTransactions,
+      transactions: recentTransactions,
     };
   } catch (err) {
     console.error('[AI_FN] getWalletBalance error:', err?.message || err);
@@ -1294,6 +1412,112 @@ async function handleGetWalletTransactions(args, userId, signal) {
 
   try {
     const walletService = require('./walletService');
+    const targetBookingId = String(args.bookingId || args.bookingCode || args.referenceId || '').replace(/[^\d]/g, '');
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // BUG-09, BUG-10, BUG-14 Fix: Scoped Query by Booking ID & Multi-Provider Lookup
+    // ═══════════════════════════════════════════════════════════════════════
+    if (targetBookingId) {
+      const bookingNumId = parseInt(targetBookingId, 10);
+
+      // 1. Fetch wallet ledger transactions for this booking (fast indexed query < 5ms)
+      const userWallet = await walletService.getOrCreateWallet(safeUserId, 'PATIENT');
+      const walletTxs = await db.Wallet_Transaction.findAll({
+        where: {
+          walletId: userWallet.id,
+          referenceId: targetBookingId,
+        },
+        order: [['createdAt', 'DESC']],
+        limit: 10,
+        lock: false,
+      });
+
+      let txList = walletTxs.map((tx) => {
+        const j = typeof tx.toJSON === 'function' ? tx.toJSON() : tx;
+        const amt = Number(j.amount) || 0;
+        const bal = Number(j.balanceAfter) || 0;
+        return {
+          id: j.id,
+          direction: j.direction,
+          amount: amt,
+          amountFormatted: `${amt.toLocaleString('vi-VN')} đ`,
+          balanceAfter: bal,
+          balanceAfterFormatted: `${bal.toLocaleString('vi-VN')} đ`,
+          type: j.transactionType,
+          referenceType: j.referenceType,
+          referenceId: j.referenceId,
+          description: j.description,
+          status: j.status,
+          provider: 'WALLET',
+          date: j.createdAt,
+        };
+      });
+
+      // 2. BUG-14 Fix: Check db.Booking for payment gateway (VNPay) records if paid
+      const booking = await db.Booking.findOne({
+        where: { id: bookingNumId, patientId: safeUserId },
+        attributes: ['id', 'bookingPrice', 'paymentStatus', 'paymentMethod', 'statusId', 'vnpayTransactionNo', 'paymentToken', 'vnp_PayDate', 'createdAt', 'updatedAt'],
+        lock: false,
+      });
+
+      if (booking) {
+        const isPaid = booking.paymentStatus === 'paid' || ['S2', 'S3'].includes(booking.statusId);
+        const isVnpay = String(booking.paymentMethod || '').toUpperCase() === 'VNPAY' || !booking.paymentMethod;
+        // Strictly only include if booking was actually paid via VNPay Gateway and not recorded in wallet ledger
+        if (txList.length === 0 && isPaid && isVnpay) {
+          const txId = booking.vnpayTransactionNo || booking.paymentToken || `VNPAY-BK${booking.id}`;
+          const isRealGatewayReceipt = Boolean(booking.vnpayTransactionNo);
+          txList.push({
+            id: txId,
+            direction: 'OUT',
+            amount: Number(booking.bookingPrice) || 0,
+            amountFormatted: `${(Number(booking.bookingPrice) || 0).toLocaleString('vi-VN')} đ`,
+            balanceAfter: 0,
+            balanceAfterFormatted: '—',
+            type: 'PAYMENT_GATEWAY',
+            referenceType: 'BOOKING',
+            referenceId: String(booking.id),
+            gatewayTransactionNo: booking.vnpayTransactionNo || null,
+            isRealGatewayReceipt,
+            description: isRealGatewayReceipt
+              ? `Thanh toán ca khám #${booking.id} qua Cổng VNPay (Mã GD: ${booking.vnpayTransactionNo})`
+              : `Thanh toán ca khám #${booking.id} qua Cổng VNPay (Ghi nhận trạng thái Booking)`,
+            status: 'COMPLETED',
+            provider: 'VNPAY',
+            date: booking.vnp_PayDate || booking.updatedAt || booking.createdAt,
+          });
+        }
+      }
+
+      if (txList.length === 0) {
+        return {
+          status: 'empty',
+          bookingId: targetBookingId,
+          message: `Không tìm thấy bản ghi giao dịch nào gắn với lịch khám #${targetBookingId}.`,
+        };
+      }
+
+      let availableBalance = 0;
+      try {
+        const overviewRes = await walletService.getWalletOverview(safeUserId);
+        if (overviewRes && overviewRes.errCode === 0 && overviewRes.data) {
+          availableBalance = Number(overviewRes.data.availableBalance) || 0;
+        }
+      } catch {
+        // Non-blocking
+      }
+
+      return {
+        status: 'success',
+        bookingId: targetBookingId,
+        balance: availableBalance,
+        balanceFormatted: `${availableBalance.toLocaleString('vi-VN')} đ`,
+        total: txList.length,
+        transactions: txList,
+      };
+    }
+
+    // Standard general wallet history query
     const safeLimit = Math.min(parseInt(String(args.limit || 5), 10) || 5, 20);
     const res = await walletService.getWalletTransactions(safeUserId, {
       page: 1,
@@ -1341,6 +1565,7 @@ async function handleGetWalletTransactions(args, userId, signal) {
           referenceId: j.referenceId,
           description: j.description,
           status: j.status,
+          provider: 'WALLET',
           date: j.createdAt,
         };
       }),
@@ -1521,7 +1746,9 @@ async function handleGetAppointmentDetail(args, userId, signal) {
       isPaid,
       paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
       paymentMethod,
-      refundRate: booking.refundRate ? Number(booking.refundRate) : ((booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW') ? 75 : null),
+      refundRate: booking.refundRate !== null && booking.refundRate !== undefined
+        ? Number(booking.refundRate)
+        : ((booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW') ? 75 : null),
       refundAmount: booking.refundAmount || null,
       refundMethod: booking.refundMethod || null,
       refundStatus: booking.refundStatus || null,
@@ -2769,6 +2996,16 @@ async function handlePrepareRescheduleDraft(args, userId, signal) {
     };
   }
 
+  // BUG-18 Fix: Check if old booking is already in the past
+  if (!isDoctorCancelledS4 && isSlotInPast(oldBooking.date, oldBooking.timeType)) {
+    return {
+      status: 'error',
+      error: 'appointment_in_past',
+      message: `Lịch hẹn #${oldBooking.id} đã qua thời gian diễn ra (ngày ${formatTimestampToVNDate(oldBooking.date) || oldBooking.date}), không đủ điều kiện đổi lịch khám.`,
+      bookingId: oldBooking.id,
+    };
+  }
+
   // 4. Resolve Target Doctor & Schedule
   const targetDoctorId = args.newDoctorId ? Number(args.newDoctorId) : oldBooking.doctorId;
   let targetDate = args.newDate ? String(args.newDate) : null;
@@ -3175,8 +3412,11 @@ async function handleGetPaymentStatus(args, userId, signal) {
     ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
     : booking.date;
 
-  const isPaid = booking.paymentStatus === 'paid' || booking.statusId === 'S2';
+  // BUG-13 Fix: S2 and S3 (completed) are confirmed paid bookings; unify with handleGetAppointmentDetail
+  const isPaid = booking.paymentStatus === 'paid' || ['S2', 'S3'].includes(booking.statusId);
+  const paymentStatus = isPaid ? 'paid' : (booking.paymentStatus || 'unpaid');
   const bookingPrice = Number(booking.bookingPrice) || 0;
+  const paymentMethod = booking.paymentMethod || 'VNPay Gateway';
 
   return {
     status: 'success',
@@ -3188,15 +3428,15 @@ async function handleGetPaymentStatus(args, userId, signal) {
     timeLabel: booking.timeTypeBooking?.valueVi || booking.timeType,
     bookingPrice,
     formattedPrice: `${bookingPrice.toLocaleString('vi-VN')} VNĐ`,
-    paymentStatus: booking.paymentStatus || 'unpaid',
+    paymentStatus,
     isPaid,
-    paymentMethod: booking.paymentMethod || 'Chưa xác định',
+    paymentMethod,
     refundStatus: booking.refundStatus || 'none',
     refundAmount: Number(booking.refundAmount) || 0,
     statusId: booking.statusId,
     statusLabel: booking.statusData?.valueVi || booking.statusId,
     message: isPaid
-      ? `Lịch hẹn #${booking.id} đã được thanh toán thành công (${bookingPrice.toLocaleString('vi-VN')} VNĐ qua ${booking.paymentMethod || 'VNPay'}).`
+      ? `Lịch hẹn #${booking.id} đã được thanh toán thành công (${bookingPrice.toLocaleString('vi-VN')} VNĐ qua ${paymentMethod}).`
       : `Lịch hẹn #${booking.id} hiện chưa thanh toán. Số tiền cần thanh toán: ${bookingPrice.toLocaleString('vi-VN')} VNĐ.`,
   };
 }
@@ -3381,7 +3621,7 @@ async function handleSaveUserPreference(args, userId, signal) {
 const aiToolRegistry = {
   // --- Public Read-Only Tools ---
   searchDoctorsBySpecialty: {
-    description: 'Tìm danh sách bác sĩ theo tên chuyên khoa. Trả về tên, vị trí, phòng khám, giá khám.',
+    description: 'Tìm danh sách bác sĩ theo tên chuyên khoa. Trả về tên, vị trí, phòng khám, giá khám. Hỗ trợ lọc hoặc loại trừ theo tên bệnh viện/cơ sở y tế.',
     type: 'read_only',
     allowedRoles: ['R3'],
     requiresAuth: false,
@@ -3390,6 +3630,8 @@ const aiToolRegistry = {
       type: 'object',
       properties: {
         specialtyName: { type: 'string', description: 'Tên chuyên khoa (VD: "Cơ xương khớp", "Tim mạch")' },
+        clinicName: { type: 'string', description: 'Tên bệnh viện hoặc phòng khám cần tìm bác sĩ (VD: "Bệnh viện Đại học Y Dược TP.HCM")' },
+        excludeClinicName: { type: 'string', description: 'Tên bệnh viện hoặc phòng khám cần loại bỏ khỏi danh sách (VD: "Bệnh viện Từ Dũ")' },
         language: { type: 'string', enum: ['vi', 'en'], description: 'Ngôn ngữ hiển thị giá' },
       },
       required: ['specialtyName'],
@@ -3518,6 +3760,11 @@ const aiToolRegistry = {
           enum: ['S1,S2', 'S3', 'S4'],
           description: 'Lọc trạng thái: S1,S2 (sắp tới) | S3 (đã khám) | S4 (đã hủy)',
         },
+        timeFilter: {
+          type: 'string',
+          enum: ['upcoming', 'history', 'all'],
+          description: 'Lọc theo thời gian: upcoming (lịch sắp tới trong tương lai), history (lịch sử đã qua), all (tất cả)',
+        },
         familyMemberId: {
           type: 'integer',
           description: 'ID thành viên gia đình trong sổ y bạ nếu muốn xem lịch sử khám của người thân',
@@ -3567,7 +3814,7 @@ const aiToolRegistry = {
   },
 
   getWalletTransactions: {
-    description: 'Xem lịch sử giao dịch và biến động số dư ví BookingCare của bệnh nhân đang đăng nhập (giao dịch thanh toán lịch hẹn, nạp tiền, hoàn tiền).',
+    description: 'Xem lịch sử giao dịch và biến động số dư ví BookingCare của bệnh nhân đang đăng nhập (giao dịch thanh toán lịch hẹn, nạp tiền, hoàn tiền, hoặc tra cứu theo mã lịch hẹn).',
     type: 'read_only',
     allowedRoles: ['R3'],
     requiresAuth: true,
@@ -3575,6 +3822,10 @@ const aiToolRegistry = {
     parameters: {
       type: 'object',
       properties: {
+        bookingId: {
+          type: 'string',
+          description: 'Mã lịch hẹn (VD: "991", "BK-991") nếu muốn tra cứu các giao dịch gắn với ca khám cụ thể',
+        },
         limit: {
           type: 'integer',
           description: 'Số lượng giao dịch gần nhất cần lấy (mặc định 5, tối đa 20)',
