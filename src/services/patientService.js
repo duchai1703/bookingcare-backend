@@ -12,6 +12,7 @@ const policyEngineService = require('./policyEngineService');
 const { sanitizeContent } = require('../utils/sanitizeHtml');
 const notificationService = require('./notificationService');
 const refundGovernanceService = require('./refundGovernanceService');
+const aiTimezoneUtils = require('./aiTimezoneUtils');
 
 // Chuẩn hóa gender sang Allcode keyMap: 'G1' (Nam), 'G2' (Nữ), 'G3' (Khác) hoặc null (tránh vi phạm Foreign Key PostgreSQL)
 const normalizeGender = (gender) => {
@@ -1681,6 +1682,11 @@ const getRescheduleOptions = async (bookingId, patientId) => {
       return { errCode: 4, message: 'Chỉ có thể đổi lịch cho ca khám đang hoạt động hoặc ca đã bị Bác sĩ/Cơ sở y tế hủy!' };
     }
 
+    // BUG-18 Fix: Check if appointment has already passed
+    if (!isDoctorCancelledS4 && aiTimezoneUtils.isSlotInPast(booking.date, booking.timeType)) {
+      return { errCode: 6, message: 'Lịch khám đã qua thời gian diễn ra, không đủ điều kiện đổi lịch khám!' };
+    }
+
     const doctorId = booking.doctorId;
     const specialtyId = booking.doctorBookingData?.doctorInfoData?.specialtyId;
     const clinicId = booking.clinicId || booking.doctorBookingData?.doctorInfoData?.clinicId;
@@ -1848,6 +1854,15 @@ const rescheduleBooking = async (bookingId, patientId, payload = {}) => {
       return {
         errCode: 5,
         message: 'Chỉ có thể đổi lịch cho ca khám đang hoạt động hoặc ca đã bị Bác sĩ/Cơ sở y tế hủy!',
+      };
+    }
+
+    // BUG-18 Fix: Check if old booking has already passed
+    if (!isDoctorCancelledS4 && aiTimezoneUtils.isSlotInPast(oldBooking.date, oldBooking.timeType)) {
+      await t.rollback();
+      return {
+        errCode: 7,
+        message: 'Lịch khám đã qua thời gian diễn ra, không đủ điều kiện đổi lịch!',
       };
     }
 
