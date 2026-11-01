@@ -534,6 +534,9 @@ const routes = (app) => {
   app.post('/api/v1/admin/financial/automation/run-cycle', verifyToken, checkAdminRole, financialAutomationController.handleRunAutomationCycle);
   app.get('/api/v1/admin/financial/master-overview', verifyToken, checkAdminRole, financialAutomationController.handleGetMasterOverview);
   app.post('/api/v1/admin/financial/master-automation-run', verifyToken, checkAdminRole, financialAutomationController.handleRunMasterAutomation);
+  // [Visual Cash Flow Architecture & Ramp FinTech Engine]
+  app.get('/api/v1/admin/financial/visual-cashflow', verifyToken, checkAdminRole, financialAutomationController.handleGetVisualCashflow);
+  app.post('/api/v1/admin/financial/withdraw-platform-profit', verifyToken, checkAdminRole, financialAutomationController.handleWithdrawPlatformProfit);
 
 
   // ═══════════════════════════════════════════════════════════════════════
