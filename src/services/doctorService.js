@@ -1020,7 +1020,62 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
     });
 
     if (!booking) {
-      return { errCode: 1, message: 'Không tìm thấy ca khám hoặc bạn không có quyền truy cập.' };
+      if (doctorId) {
+        const target = await db.Booking.findByPk(bookingId);
+        if (target) {
+          const hasRel = await db.Booking.findOne({
+            where: { patientId: target.patientId, doctorId },
+          });
+          if (hasRel || target.statusId === 'S3') {
+            booking = await db.Booking.findOne({
+              where: { id: bookingId },
+              include: [
+                {
+                  model: db.User,
+                  as: 'patientData',
+                  attributes: ['id', 'email', 'firstName', 'lastName', 'address', 'gender', 'birthday', 'phoneNumber', 'image'],
+                  include: [
+                    { model: db.Allcode, as: 'genderData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+                  ],
+                },
+                { model: db.Family_Member, as: 'familyMemberData' },
+                {
+                  model: db.User,
+                  as: 'doctorBookingData',
+                  attributes: ['id', 'firstName', 'lastName'],
+                  include: [
+                    {
+                      model: db.Doctor_Info,
+                      as: 'doctorInfoData',
+                      include: [
+                        { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+                        { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+                      ],
+                    },
+                  ],
+                },
+                { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+                { model: db.Allcode, as: 'statusData', attributes: ['keyMap', 'valueVi', 'valueEn'] },
+                {
+                  model: db.BookingMedicine,
+                  as: 'bookingMedicines',
+                  include: [
+                    { model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'activeIngredient', 'unit', 'concentration'] },
+                  ],
+                },
+                {
+                  model: db.BookingAttachment,
+                  as: 'attachments',
+                  attributes: ['id', 'fileName', 'fileType', 'fileSize', 'fileData', 'category', 'uploadedBy', 'examinationDate', 'note', 'createdAt'],
+                },
+              ],
+            });
+          }
+        }
+      }
+      if (!booking) {
+        return { errCode: 1, message: 'Không tìm thấy ca khám hoặc bạn không có quyền truy cập.' };
+      }
     }
 
     const plain = booking.toJSON ? booking.toJSON() : booking;
@@ -1061,9 +1116,30 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
         statusId: 'S3',
       },
       include: [
-        { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
+        {
+          model: db.User,
+          as: 'doctorBookingData',
+          attributes: ['id', 'firstName', 'lastName'],
+          include: [
+            {
+              model: db.Doctor_Info,
+              as: 'doctorInfoData',
+              include: [
+                { model: db.Specialty, as: 'specialtyData', attributes: ['id', 'name'] },
+                { model: db.Clinic, as: 'clinicData', attributes: ['id', 'name', 'address'] },
+              ],
+            },
+          ],
+        },
         { model: db.Allcode, as: 'timeTypeBooking', attributes: ['keyMap', 'valueVi', 'valueEn'] },
-        { model: db.BookingAttachment, as: 'attachments', attributes: ['id', 'fileName', 'category'] },
+        { model: db.BookingAttachment, as: 'attachments', attributes: ['id', 'fileName', 'fileType', 'fileSize', 'fileData', 'category', 'uploadedBy', 'examinationDate', 'note', 'createdAt'] },
+        {
+          model: db.BookingMedicine,
+          as: 'bookingMedicines',
+          include: [
+            { model: db.Medicine, as: 'medicineData', attributes: ['id', 'name', 'activeIngredient', 'unit', 'concentration'] },
+          ],
+        },
       ],
       order: [['date', 'DESC'], ['id', 'DESC']],
       limit: 10,
@@ -1077,6 +1153,19 @@ const getDoctorEncounter = async (bookingId, doctorId) => {
       symptoms: h.symptoms || '',
       clinicalNotes: h.clinicalNotes || '',
       doctorName: h.doctorBookingData ? `${h.doctorBookingData.lastName || ''} ${h.doctorBookingData.firstName || ''}`.trim() : 'Bác sĩ BookingCare',
+      specialtyName: h.doctorBookingData?.doctorInfoData?.specialtyData?.name || '',
+      clinicName: h.doctorBookingData?.doctorInfoData?.clinicData?.name || '',
+      bookingCode: `#BK-${h.id}`,
+      icd10Code: h.icd10Code || '',
+      icd10Name: h.icd10Name || '',
+      chiefComplaint: h.chiefComplaint || '',
+      historyOfPresentIllness: h.historyOfPresentIllness || '',
+      physicalExam: h.physicalExam || '',
+      doctorAdvice: h.doctorAdvice || '',
+      treatmentPlan: h.treatmentPlan || '',
+      followUpDate: h.followUpDate || '',
+      attachments: h.attachments || [],
+      bookingMedicines: h.bookingMedicines || [],
       attachmentsCount: h.attachments ? h.attachments.length : 0,
     }));
 
