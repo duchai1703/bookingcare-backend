@@ -508,6 +508,11 @@ const routes = (app) => {
   app.post('/api/v1/admin/financial/float-allocate', verifyToken, checkAdminRole, walletController.handleAllocateFloatCapital);
   app.post('/api/v1/admin/financial/float-reimburse', verifyToken, checkAdminRole, walletController.handleReimburseFloatCapital);
 
+  // [Phase 8] User-Scoped Wallet Management (Doctor & Patient Workspaces)
+  app.get('/api/v1/admin/users/:userId/wallet-detail', verifyToken, checkAdminRole, walletController.handleGetAdminUserWalletDetail);
+  app.get('/api/v1/admin/users/:userId/wallet/transactions', verifyToken, checkAdminRole, walletController.handleGetAdminUserWalletTransactions);
+  app.post('/api/v1/admin/users/:userId/wallet/toggle-lock', verifyToken, checkAdminRole, walletController.handleToggleAdminUserWalletLock);
+
   // ═══════════════════════════════════════════════════════════════════════
   // [Enterprise Refund Governance] Quản trị Hoàn tiền Bệnh nhân — Admin R1 & Patient R3
   // ═══════════════════════════════════════════════════════════════════════

@@ -596,6 +596,61 @@ async function handleGetPeriodicTreasuryCycles(req, res) {
   }
 }
 
+/**
+ * [PHASE 8] GET /api/v1/admin/users/:userId/wallet-detail
+ * Admin xem chi tiết Ví điện tử theo người dùng (Doctor hoặc Patient)
+ */
+async function handleGetAdminUserWalletDetail(req, res) {
+  try {
+    const { userId } = req.params;
+    const result = await walletService.getAdminUserWalletDetail(userId);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminUserWalletDetail:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 8] GET /api/v1/admin/users/:userId/wallet/transactions
+ * Admin xem sổ cái biến động số dư theo người dùng có phân trang & lọc
+ */
+async function handleGetAdminUserWalletTransactions(req, res) {
+  try {
+    const { userId } = req.params;
+    const { page, limit, type, direction, search, startDate, endDate } = req.query;
+    const result = await walletService.getAdminUserWalletTransactions(userId, {
+      page,
+      limit,
+      type,
+      direction,
+      search,
+      startDate,
+      endDate,
+    });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetAdminUserWalletTransactions:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
+/**
+ * [PHASE 8] POST /api/v1/admin/users/:userId/wallet/toggle-lock
+ * Admin khóa / mở khóa tài khoản ví
+ */
+async function handleToggleAdminUserWalletLock(req, res) {
+  try {
+    const { userId } = req.params;
+    const { reason, targetStatus } = req.body || {};
+    const result = await walletService.toggleAdminUserWalletLock(userId, { reason, targetStatus });
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleToggleAdminUserWalletLock:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetPeriodicTreasuryCycles,
   handleAllocateFloatCapital,
@@ -626,4 +681,8 @@ module.exports = {
   handleGetFinancialConfigs,
   handleUpdateFinancialConfigs,
   handleGetFinancialCashFlows,
+  // Phase 8 User-Scoped Wallet Handlers
+  handleGetAdminUserWalletDetail,
+  handleGetAdminUserWalletTransactions,
+  handleToggleAdminUserWalletLock,
 };
