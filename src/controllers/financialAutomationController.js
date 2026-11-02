@@ -99,6 +99,22 @@ async function handleWithdrawPlatformProfit(req, res) {
   }
 }
 
+/**
+ * [PHASE 2 - TRANSACTION LINEAGE & LIFECYCLE INSPECTOR]
+ * GET /api/v1/admin/financial/transaction-lineage/:id
+ * Truy vết vòng đời toàn vẹn của một giao dịch bất kỳ
+ */
+async function handleGetTransactionLineage(req, res) {
+  try {
+    const targetId = req.params.id;
+    const result = await financialAutomationService.getTransactionLineage(targetId);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in handleGetTransactionLineage:', error);
+    return res.status(500).json({ errCode: -1, errMessage: 'Lỗi máy chủ nội bộ' });
+  }
+}
+
 module.exports = {
   handleGetExceptionQueue,
   handleRunAutomationCycle,
@@ -106,4 +122,5 @@ module.exports = {
   handleRunMasterAutomation,
   handleGetVisualCashflow,
   handleWithdrawPlatformProfit,
+  handleGetTransactionLineage,
 };

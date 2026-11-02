@@ -537,6 +537,7 @@ const routes = (app) => {
   // [Visual Cash Flow Architecture & Ramp FinTech Engine]
   app.get('/api/v1/admin/financial/visual-cashflow', verifyToken, checkAdminRole, financialAutomationController.handleGetVisualCashflow);
   app.post('/api/v1/admin/financial/withdraw-platform-profit', verifyToken, checkAdminRole, financialAutomationController.handleWithdrawPlatformProfit);
+  app.get('/api/v1/admin/financial/transaction-lineage/:id', verifyToken, checkAdminRole, financialAutomationController.handleGetTransactionLineage);
 
 
   // ═══════════════════════════════════════════════════════════════════════
