@@ -1567,29 +1567,54 @@ async function getTransactionLineage(targetId) {
       }).catch(() => null);
     }
 
-    // 6. Trích xuất chính xác chủ sở hữu & bác sĩ thụ hưởng từ thực thể thực tế
-    const patientUser = booking?.patientData || walletTx?.wallet?.owner || withdrawal?.wallet?.owner || wallet?.owner;
-    const doctorUser = booking?.doctorBookingData;
-
-    const patientName = patientUser
-      ? [patientUser.lastName, patientUser.firstName].filter(Boolean).join(' ').trim()
-      : 'Bệnh nhân BookingCare';
-    const patientEmail = patientUser?.email || 'patient@bookingcare.vn';
-    const patientPhone = patientUser?.phoneNumber || '—';
-
-    const doctorName = doctorUser
-      ? [doctorUser.lastName, doctorUser.firstName].filter(Boolean).join(' ').trim()
-      : 'BS. Nguyễn Văn B';
-
-    const clinicName = booking?.clinicData?.name || 'Phòng khám Đa khoa BookingCare';
-
-    // 7. Xác định tính chất luân chuyển dòng tiền (REFUND vs NORMAL_BOOKING vs DEPOSIT vs WITHDRAWAL)
+    // 6. Xác định tính chất luân chuyển dòng tiền (REFUND vs DEPOSIT vs WITHDRAWAL vs BOOKING_STANDARD)
     const isRefund =
       walletTx?.transactionType === 'REFUND' ||
       !!refundCase ||
       booking?.refundStatus === 'done' ||
       booking?.refundStatus === 'completed' ||
       booking?.statusId === 'S4';
+
+    const isDeposit =
+      !isRefund &&
+      (walletTx?.transactionType === 'DEPOSIT' ||
+        paymentTx?.paymentType === 'WALLET_DEPOSIT');
+
+    const isWithdrawal =
+      !isRefund &&
+      !isDeposit &&
+      (walletTx?.transactionType === 'WITHDRAWAL' || (withdrawal && !booking));
+
+    // 7. Trích xuất chính xác chủ sở hữu & các bên liên quan từ thực thể thực tế
+    const patientUser = booking?.patientData || walletTx?.wallet?.owner || withdrawal?.wallet?.owner || wallet?.owner;
+    const doctorUser = isWithdrawal ? (withdrawal?.wallet?.owner || walletTx?.wallet?.owner) : booking?.doctorBookingData;
+
+    const patientName = patientUser
+      ? [patientUser.lastName, patientUser.firstName].filter(Boolean).join(' ').trim()
+      : (isWithdrawal ? 'Không áp dụng (Bác sĩ rút tiền)' : 'Bệnh nhân BookingCare');
+    const patientEmail = patientUser?.email || (isWithdrawal ? 'doctor@bookingcare.vn' : 'patient@bookingcare.vn');
+    const patientPhone = patientUser?.phoneNumber || '—';
+
+    const doctorName = isDeposit
+      ? 'Không áp dụng (Nạp tiền ví)'
+      : doctorUser
+      ? [doctorUser.lastName, doctorUser.firstName].filter(Boolean).join(' ').trim()
+      : 'BS. Nguyễn Văn B';
+
+    const clinicName = isDeposit
+      ? 'Cổng thanh toán trực tuyến (VNPAY Sandbox)'
+      : isWithdrawal
+      ? (withdrawal?.bankName ? `${withdrawal.bankName} (STK: ${withdrawal.bankAccountNumber || '••••••••'})` : 'Tài khoản Ngân hàng Bác sĩ')
+      : (booking?.clinicData?.name || 'Phòng khám Đa khoa BookingCare');
+
+    // Trích xuất các tham số giao dịch & số tiền
+    const depositAmount = isDeposit
+      ? Number(walletTx?.amount || paymentTx?.amount || 500000)
+      : 500000;
+
+    const withdrawalAmount = isWithdrawal
+      ? Number(withdrawal?.amount || walletTx?.amount || 0)
+      : 0;
 
     const bookingPrice = Number(booking?.bookingPrice) || (refundCase ? Number(refundCase.paidAmount) : Number(walletTx?.amount || 300000));
     const refundAmount = refundCase ? Number(refundCase.refundAmount) : (walletTx?.transactionType === 'REFUND' ? Number(walletTx.amount) : bookingPrice);
@@ -1599,15 +1624,41 @@ async function getTransactionLineage(targetId) {
     const doctorShare = Number(booking?.doctorShare) || Math.round(bookingPrice * 0.9);
     const platformFee = Number(booking?.platformFee) || (bookingPrice - doctorShare);
 
-    const depositAmount = bookingPrice > 0 ? (bookingPrice >= 500000 ? bookingPrice : 500000) : 500000;
-    const vnpayRef = booking?.vnpayTransactionNo || '15716601';
+    const vnpayRef =
+      paymentTx?.gatewayTransactionNo ||
+      booking?.vnpayTransactionNo ||
+      (walletTx?.description ? walletTx.description.match(/Mã GD:\s*([0-9A-Za-z_-]+)/i)?.[1] : null) ||
+      '15716601';
+
+    const bankCode =
+      paymentTx?.bankCode ||
+      (walletTx?.description ? walletTx.description.match(/Ngân hàng:\s*([0-9A-Za-z_-]+)/i)?.[1] : null) ||
+      'NCB';
 
     // 8. Xác định Bước hiện tại (currentStepNumber) và Trạng thái giai đoạn (currentStage)
     let currentStepNumber = 4;
     let currentStage = 'COMPLETED';
-    let currentStageLabel = 'Đã hoàn tất trọn vẹn 4/4 bước';
+    let currentStageLabel = 'Đã hoàn tất trọn vẹn';
 
-    if (isRefund) {
+    if (isDeposit) {
+      currentStepNumber = 2;
+      currentStage = 'COMPLETED';
+      currentStageLabel = 'Nạp tiền thành công - Số dư khả dụng trong Ví (Đã hoàn tất 2/2 bước)';
+    } else if (isWithdrawal) {
+      if (withdrawal?.status === 'TRANSFERRED') {
+        currentStepNumber = 3;
+        currentStage = 'PAID_OUT';
+        currentStageLabel = 'Đã chi trả tiền mặt VCB về STK Bác sĩ (Hoàn tất 3/3)';
+      } else if (withdrawal?.status === 'REJECTED') {
+        currentStepNumber = 2;
+        currentStage = 'REJECTED';
+        currentStageLabel = 'Yêu cầu rút tiền bị từ chối';
+      } else {
+        currentStepNumber = 2;
+        currentStage = 'PENDING';
+        currentStageLabel = 'Đang chờ Admin duyệt chi rút tiền (Bước 2/3)';
+      }
+    } else if (isRefund) {
       const isDone = refundCase ? refundCase.status === 'COMPLETED' : true;
       currentStepNumber = isDone ? 4 : 3;
       currentStage = 'REFUNDED';
@@ -1634,18 +1685,180 @@ async function getTransactionLineage(targetId) {
           currentStageLabel = 'Khám hoàn tất - Thù lao sẵn sàng trong Ví Bác sĩ (Bước 3/4)';
         }
       }
-    } else if (walletTx?.transactionType === 'DEPOSIT') {
-      currentStepNumber = 2;
-      currentStage = 'DEPOSITED';
-      currentStageLabel = 'Tiền mặt đã vào VCB & Ghi có Ví Bệnh nhân (Bước 2/2)';
     }
 
-    // 9. XÂY DỰNG 4 MẮT XÍCH VÒNG ĐỜI VỚI 2 KÊNH LUÂN CHUYỂN SONG SONG (DUAL CHANNELS)
+    // 9. XÂY DỰNG CÁC MẮT XÍCH VÒNG ĐỜI VỚI 2 KÊNH LUÂN CHUYỂN SONG SONG (DUAL CHANNELS)
     let nodes = [];
 
-    if (isRefund) {
+    if (isDeposit) {
       // ═══════════════════════════════════════════════════════════════════════
-      // CHUỖI VÒNG ĐỜI HOÀN TIỀN (REFUND LIFECYCLE)
+      // FLOW 1: CHUỖI VÒNG ĐỜI NẠP TIỀN VÀO VÍ (DEPOSIT LIFECYCLE - 2 BƯỚC)
+      // ═══════════════════════════════════════════════════════════════════════
+      nodes = [
+        {
+          step: 1,
+          key: 'PAY_IN_GATEWAY',
+          title: 'Khởi Tạo & Nạp Tiền Qua VNPAY Sandbox (Pay-In)',
+          subtitle: `Cổng thanh toán trực tuyến VNPAY (${bankCode})`,
+          status: 'COMPLETED',
+          isCurrentStep: false,
+          stepBadge: '✓ ĐÃ HOÀN TẤT',
+          timestamp: walletTx?.createdAt || paymentTx?.createdAt || '2026-10-27T12:01:41Z',
+          amount: depositAmount,
+          direction: 'CREDIT',
+          realBankChannel: {
+            label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
+            from: `Tài khoản Bệnh nhân (${patientName} - ${bankCode})`,
+            to: 'Tài khoản VCB Công Ty (9988-1703-8888)',
+            amountText: `+${depositAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: 'Tiền mặt thật đã chuyển thành công vào tài khoản Vietcombank của công ty',
+            movementType: 'INFLOW',
+          },
+          virtualAppChannel: {
+            label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
+            from: `Cổng VNPAY Sandbox (Mã GD: ${vnpayRef})`,
+            to: 'Hệ thống Quản Trị Ví Sàn BookingCare',
+            amountText: `+${depositAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: 'Xác thực Webhook IPN từ cổng thanh toán VNPAY hợp lệ 100%',
+            movementType: 'CREDIT',
+          },
+          educationalContrast:
+            'Tại Bước 1, tiền mặt thật được chuyển từ ngân hàng của người dùng qua cổng VNPay vào tài khoản Vietcombank của công ty, đồng thời cổng gửi webhook IPN để hệ thống kích hoạt lệnh cộng ví.',
+        },
+        {
+          step: 2,
+          key: 'WALLET_CREDIT',
+          title: 'Ghi Có Số Dư Khả Dụng Vào Ví Bệnh Nhân',
+          subtitle: 'Ví điện tử BookingCare (Sẵn sàng chi tiêu)',
+          status: 'COMPLETED',
+          isCurrentStep: true,
+          stepBadge: '✓ GIAO DỊCH ĐÃ HOÀN TẤT THÀNH CÔNG',
+          timestamp: walletTx?.createdAt || '2026-10-27T12:02:10Z',
+          amount: depositAmount,
+          direction: 'CREDIT',
+          realBankChannel: {
+            label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
+            from: 'Tài Khoản VCB Công Ty',
+            to: 'Tài Khoản VCB Công Ty (Bảo chứng 100%)',
+            amountText: `${depositAmount.toLocaleString('vi-VN')} ₫ (Bảo toàn)`,
+            statusText: 'Tiền mặt thật tại Vietcombank giữ nguyên 100% để bảo chứng cho số dư khả dụng trong ví của bệnh nhân',
+            movementType: 'UNCHANGED',
+          },
+          virtualAppChannel: {
+            label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
+            from: 'Hệ thống Quản Trị Ví BookingCare',
+            to: `Ví Bệnh Nhân (${patientName})`,
+            amountText: `+${depositAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: `Số dư ví ảo khả dụng tăng +${depositAmount.toLocaleString('vi-VN')} ₫. Bệnh nhân có thể dùng để đặt lịch khám bất kỳ lúc nào`,
+            movementType: 'CREDIT',
+          },
+          educationalContrast:
+            'ĐẶC TRƯNG VÒNG ĐỜI NẠP VÍ: Giao dịch kết thúc trọn vẹn tại Bước 2. Tiền mặt tại VCB đóng vai trò bảo chứng 1:1 cho số dư ví ảo. Bệnh nhân chưa đặt lịch khám nên chưa phát sinh Ký quỹ Escrow (Hold) hay phân bổ bác sĩ.',
+        },
+      ];
+    } else if (isWithdrawal) {
+      // ═══════════════════════════════════════════════════════════════════════
+      // FLOW 2: CHUỖI VÒNG ĐỜI RÚT TIỀN BÁC SĨ (WITHDRAWAL LIFECYCLE - 3 BƯỚC)
+      // ═══════════════════════════════════════════════════════════════════════
+      const doctorNameDisplay = doctorUser ? [doctorUser.lastName, doctorUser.firstName].filter(Boolean).join(' ').trim() : 'BS. Nguyễn Văn B';
+      const bankName = withdrawal?.bankName || 'Vietcombank';
+      const bankAcc = withdrawal?.bankAccountNumber || '••••••••';
+
+      nodes = [
+        {
+          step: 1,
+          key: 'REQUEST_SUBMITTED',
+          title: 'Bác Sĩ Tạo Yêu Cầu Rút Tiền (Cash-Out Request)',
+          subtitle: `Ví Bác Sĩ -> Yêu cầu rút về ${bankName}`,
+          status: 'COMPLETED',
+          isCurrentStep: currentStepNumber === 1,
+          stepBadge: currentStepNumber === 1 ? '📍 ĐANG Ở BƯỚC NÀY' : '✓ ĐÃ HOÀN TẤT',
+          timestamp: withdrawal?.createdAt || walletTx?.createdAt || '2026-11-01T10:00:00Z',
+          amount: withdrawalAmount,
+          direction: 'DEBIT_HOLD',
+          realBankChannel: {
+            label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
+            from: 'Tài Khoản VCB Công Ty',
+            to: 'Tài Khoản VCB Công Ty (Sẵn sàng thanh khoản)',
+            amountText: `${withdrawalAmount.toLocaleString('vi-VN')} ₫ (Chuẩn bị)`,
+            statusText: 'Tiền mặt thật tại Vietcombank sẵn sàng thanh khoản khi lệnh rút được phê duyệt',
+            movementType: 'UNCHANGED',
+          },
+          virtualAppChannel: {
+            label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
+            from: `Ví Bác Sĩ (${doctorNameDisplay})`,
+            to: `Két Tạm Giữ Chờ Duyệt Rút (#WD-${withdrawal?.id || '01'})`,
+            amountText: `-${withdrawalAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: 'Số dư khả dụng của ví bác sĩ bị trừ và chuyển vào trạng thái tạm giữ chờ duyệt',
+            movementType: 'DEBIT',
+          },
+          educationalContrast:
+            'Tại Bước 1, ví ảo của Bác sĩ được phong tỏa số tiền rút để ngăn chặn rút trùng lặp (double-spending), trong khi tiền mặt tại VCB vẫn an toàn trong tài khoản công ty.',
+        },
+        {
+          step: 2,
+          key: 'AUDIT_APPROVED',
+          title: 'Admin Thẩm Định & Phê Duyệt Lệnh Rút (Audit & Approval)',
+          subtitle: 'Kiểm tra đối soát số dư & chống gian lận',
+          status: currentStepNumber >= 2 ? 'COMPLETED' : 'PENDING',
+          isCurrentStep: currentStepNumber === 2,
+          stepBadge: currentStepNumber === 2 ? '📍 ĐANG CHỜ PHÊ DUYỆT' : '✓ ĐÃ PHÊ DUYỆT',
+          timestamp: withdrawal?.approvedAt || withdrawal?.updatedAt || '2026-11-01T10:30:00Z',
+          amount: withdrawalAmount,
+          direction: 'AUDIT',
+          realBankChannel: {
+            label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
+            from: 'Tài Khoản VCB Công Ty',
+            to: 'Lệnh ủy nhiệm chi ngân hàng (UNC)',
+            amountText: `${withdrawalAmount.toLocaleString('vi-VN')} ₫ (Đã duyệt chi)`,
+            statusText: 'Hệ thống khởi tạo lệnh ủy nhiệm chi Vietcombank tự động hoặc qua cổng liên ngân hàng',
+            movementType: 'UNCHANGED',
+          },
+          virtualAppChannel: {
+            label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
+            from: 'Hệ thống Quản Trị Tài Chính',
+            to: 'Xác nhận trừ đứt số dư ví Bác Sĩ',
+            amountText: `-${withdrawalAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: 'Admin ký duyệt lệnh rút thành công. Số dư ví bác sĩ chính thức ghi giảm sổ cái',
+            movementType: 'DEBIT',
+          },
+          educationalContrast:
+            'Tại Bước 2, Admin hoặc hệ thống tự động kiểm tra tính hợp lệ của ca khám và số dư ví. Sau khi duyệt, lệnh ủy nhiệm chi sẵn sàng xuất ngân hàng.',
+        },
+        {
+          step: 3,
+          key: 'CASHOUT_TRANSFERRED',
+          title: 'Ủy Nhiệm Chi Vietcombank Thật Sang STK Bác Sĩ',
+          subtitle: `Chuyển khoản thành công sang ${bankName} (${bankAcc})`,
+          status: currentStepNumber === 3 ? 'COMPLETED' : 'PENDING',
+          isCurrentStep: currentStepNumber === 3,
+          stepBadge: currentStepNumber === 3 ? '✓ GIAO DỊCH ĐÃ HOÀN TẤT TRỌN VẸN' : '⚪ ĐANG CHỜ CHUYỂN KHOẢN',
+          timestamp: withdrawal?.transferredAt || withdrawal?.updatedAt || '2026-11-01T11:00:00Z',
+          amount: withdrawalAmount,
+          direction: 'OUTFLOW',
+          realBankChannel: {
+            label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
+            from: 'Tài Khoản VCB Công Ty',
+            to: `STK Bác Sĩ: ${bankAcc} (${doctorNameDisplay} - ${bankName})`,
+            amountText: `-${withdrawalAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: `Vietcombank công ty chuyển khoản thật -${withdrawalAmount.toLocaleString('vi-VN')} ₫ sang ngân hàng của Bác sĩ`,
+            movementType: 'OUTFLOW',
+          },
+          virtualAppChannel: {
+            label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
+            from: 'Hệ thống Kế Toán',
+            to: 'Đóng lệnh rút tiền (Tất toán sổ cái = 0 ₫)',
+            amountText: `-${withdrawalAmount.toLocaleString('vi-VN')} ₫`,
+            statusText: 'Đã hoàn tất toàn bộ chu trình luân chuyển dòng tiền từ ảo sang thật',
+            movementType: 'DEBIT',
+          },
+          educationalContrast:
+            'KẾT THÚC CHU TRÌNH RÚT: Tiền mặt thật rời khỏi tài khoản VCB của công ty (đường nét đứt), ví ảo bác sĩ đã tất toán (đường nét liền). Nghĩa vụ nợ với bác sĩ kết thúc.',
+        },
+      ];
+    } else if (isRefund) {
+      // ═══════════════════════════════════════════════════════════════════════
+      // FLOW 3: CHUỖI VÒNG ĐỜI HOÀN TIỀN (REFUND LIFECYCLE - 4 BƯỚC)
       // ═══════════════════════════════════════════════════════════════════════
       nodes = [
         {
@@ -1771,7 +1984,7 @@ async function getTransactionLineage(targetId) {
       ];
     } else {
       // ═══════════════════════════════════════════════════════════════════════
-      // CHUỖI VÒNG ĐỜI CA KHÁM TIÊU CHUẨN (STANDARD MEDICAL ENCOUNTER FLOW)
+      // FLOW 4: CHUỖI VÒNG ĐỜI CA KHÁM TIÊU CHUẨN (STANDARD MEDICAL ENCOUNTER FLOW)
       // ═══════════════════════════════════════════════════════════════════════
       nodes = [
         {
@@ -1783,13 +1996,13 @@ async function getTransactionLineage(targetId) {
           isCurrentStep: currentStepNumber === 1,
           stepBadge: currentStepNumber === 1 ? '📍 ĐANG Ở BƯỚC NÀY' : '✓ ĐÃ HOÀN TẤT',
           timestamp: booking?.createdAt || '2026-11-01T09:00:00Z',
-          amount: depositAmount,
+          amount: bookingPrice,
           direction: 'CREDIT',
           realBankChannel: {
             label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
             from: `VCB Cá Nhân Bệnh Nhân (${patientName})`,
             to: 'Tài Khoản VCB Công Ty',
-            amountText: `+${depositAmount.toLocaleString('vi-VN')} ₫`,
+            amountText: `+${bookingPrice.toLocaleString('vi-VN')} ₫`,
             statusText: 'Tiền mặt thật đã chảy vào tài khoản ngân hàng Vietcombank của công ty',
             movementType: 'INFLOW',
           },
@@ -1797,12 +2010,12 @@ async function getTransactionLineage(targetId) {
             label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
             from: 'Hệ thống Sổ Cái',
             to: `Ví Bệnh Nhân (${patientName})`,
-            amountText: `+${depositAmount.toLocaleString('vi-VN')} ₫`,
+            amountText: `+${bookingPrice.toLocaleString('vi-VN')} ₫`,
             statusText: 'Cộng số dư ví ảo để bệnh nhân có thể chọn bác sĩ & đặt lịch khám',
             movementType: 'CREDIT',
           },
           educationalContrast:
-            'Cả tiền mặt thật và số dư ảo đều tăng +500.000 ₫ tương ứng để kích hoạt dòng tiền ban đầu.',
+            `Cả tiền mặt thật và số dư ảo đều tăng +${bookingPrice.toLocaleString('vi-VN')} ₫ tương ứng để kích hoạt dòng tiền ban đầu.`,
         },
         {
           step: 2,
@@ -1819,8 +2032,8 @@ async function getTransactionLineage(targetId) {
             label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
             from: 'Tài Khoản VCB Công Ty',
             to: 'Tài Khoản VCB Công Ty (Giữ nguyên)',
-            amountText: `${depositAmount.toLocaleString('vi-VN')} ₫ (Đứng yên)`,
-            statusText: 'Tiền mặt thật trong VCB Công ty KHÔNG ĐỔI (Vẫn nguyên 500k)',
+            amountText: `${bookingPrice.toLocaleString('vi-VN')} ₫ (Đứng yên)`,
+            statusText: 'Tiền mặt thật trong VCB Công ty KHÔNG ĐỔI (Vẫn nguyên vẹn trong tài khoản)',
             movementType: 'UNCHANGED',
           },
           virtualAppChannel: {
@@ -1828,7 +2041,7 @@ async function getTransactionLineage(targetId) {
             from: `Ví Bệnh Nhân (-${bookingPrice.toLocaleString('vi-VN')} ₫)`,
             to: `Két Ký Quỹ Escrow (${bookingPrice.toLocaleString('vi-VN')} ₫)`,
             amountText: `-${bookingPrice.toLocaleString('vi-VN')} ₫`,
-            statusText: `Ví BN còn ${(depositAmount - bookingPrice).toLocaleString('vi-VN')} ₫. Tiền vào Escrow 2 ngăn: BS 90% (${doctorShare.toLocaleString('vi-VN')} ₫) & Sàn 10% (${platformFee.toLocaleString('vi-VN')} ₫)`,
+            statusText: `Tiền vào Escrow 2 ngăn: BS 90% (${doctorShare.toLocaleString('vi-VN')} ₫) & Sàn 10% (${platformFee.toLocaleString('vi-VN')} ₫)`,
             movementType: 'DEBIT',
           },
           educationalContrast:
@@ -1849,7 +2062,7 @@ async function getTransactionLineage(targetId) {
             label: '--- LUỒNG TIỀN MẶT THẬT (VIETCOMBANK - ĐƯỜNG NÉT ĐỨT) ---',
             from: 'Tài Khoản VCB Công Ty',
             to: 'Tài Khoản VCB Công Ty (Sẵn sàng chi trả)',
-            amountText: `${depositAmount.toLocaleString('vi-VN')} ₫ (Đầy đủ)`,
+            amountText: `${bookingPrice.toLocaleString('vi-VN')} ₫ (Đầy đủ)`,
             statusText: 'Tiền mặt VCB vẫn bảo toàn 100%, sẵn sàng chuyển khoản khi bác sĩ yêu cầu rút',
             movementType: 'UNCHANGED',
           },
@@ -1858,7 +2071,7 @@ async function getTransactionLineage(targetId) {
             from: 'Két Ký Quỹ Escrow (Đóng lệnh hold)',
             to: `Ví Bác Sĩ (+${doctorShare.toLocaleString('vi-VN')} ₫) & Quỹ Lời Sàn (+${platformFee.toLocaleString('vi-VN')} ₫)`,
             amountText: `${bookingPrice.toLocaleString('vi-VN')} ₫`,
-            statusText: `Bác sĩ nhận 90% thù lao, Sàn ghi nhận 10% hoa hồng nền tảng`,
+            statusText: 'Bác sĩ nhận 90% thù lao, Sàn ghi nhận 10% hoa hồng nền tảng',
             movementType: 'SPLIT',
           },
           educationalContrast:
@@ -1898,104 +2111,168 @@ async function getTransactionLineage(targetId) {
     }
 
     // 10. BÚT TOÁN SỔ CÁI KÉP ĐỐI ỨNG (CUSTOMIZED FOR ACTUAL NUMBERS)
-    const ledgerEntries = isRefund
-      ? [
-          {
-            journalCode: `JRN-PAY-${booking?.id || 199}`,
-            type: 'BOOKING_PAYMENT',
-            direction: 'DEBIT',
-            amount: bookingPrice,
-            balanceAfter: 0,
-            desc: `Thanh toán đặt lịch ca khám #${booking?.id || 199} (${patientName})`,
-            account: 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
-          },
-          {
-            journalCode: `JRN-REV-${booking?.id || 199}`,
-            type: 'REFUND_EVALUATION',
-            direction: 'CREDIT',
-            amount: refundAmount,
-            balanceAfter: refundAmount,
-            desc: `Thẩm định chấp thuận hoàn tiền ${refundRate}% (${refundAmount.toLocaleString('vi-VN')} ₫) cho ${patientName}`,
-            account: 'TK 331 (Tạm giữ Escrow) / TK 3388 (Phải trả Bệnh nhân)',
-          },
-          {
-            journalCode: `JRN-DIS-${booking?.id || 199}`,
-            type: 'REFUND_DISBURSE',
-            direction: 'DEBIT',
-            amount: refundAmount,
-            balanceAfter: 0,
-            desc: `Giải ngân tiền hoàn trả qua ${refundCase?.refundMethod || 'BANK_TRANSFER'} (${refundAmount.toLocaleString('vi-VN')} ₫)`,
-            account: 'TK 3388 (Phải trả Bệnh nhân) / TK 112 (Tiền gửi VCB)',
-          },
-        ]
-      : [
-          {
-            journalCode: `JRN-DEP-${booking?.id || 102}`,
-            type: 'DEPOSIT',
-            direction: 'CREDIT',
-            amount: depositAmount,
-            balanceAfter: depositAmount,
-            desc: `Nạp tiền VNPay Sandbox (Ref: ${vnpayRef}) cho ${patientName}`,
-            account: 'TK 112 (Tiền gửi VCB) / TK 3388 (Ví Bệnh nhân)',
-          },
-          {
-            journalCode: `JRN-HLD-${booking?.id || 102}`,
-            type: 'BOOKING_PAYMENT',
-            direction: 'DEBIT',
-            amount: bookingPrice,
-            balanceAfter: depositAmount - bookingPrice,
-            desc: `Ký quỹ giữ chỗ ca khám #${booking?.id || 102} (${doctorName})`,
-            account: 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
-          },
-          {
-            journalCode: `JRN-SET-${booking?.id || 102}`,
-            type: 'DOCTOR_SHARE',
-            direction: 'CREDIT',
-            amount: doctorShare,
-            balanceAfter: doctorShare,
-            desc: `Thù lao 90% ca khám #${booking?.id || 102} hoàn tất cho ${doctorName}`,
-            account: 'TK 331 (Tạm giữ Escrow) / TK 334 (Phải trả Bác sĩ)',
-          },
-          {
-            journalCode: `JRN-FEE-${booking?.id || 102}`,
-            type: 'PLATFORM_FEE',
-            direction: 'CREDIT',
-            amount: platformFee,
-            balanceAfter: platformFee,
-            desc: `Hoa hồng kết nối 10% ca khám #${booking?.id || 102}`,
-            account: 'TK 331 (Tạm giữ Escrow) / TK 511 (Doanh thu sàn)',
-          },
-          {
-            journalCode: `JRN-WDR-${booking?.id || 102}`,
-            type: 'WITHDRAWAL',
-            direction: 'DEBIT',
-            amount: doctorShare,
-            balanceAfter: 0,
-            desc: `Giải ngân chuyển khoản VCB cho ${doctorName}`,
-            account: 'TK 334 (Phải trả Bác sĩ) / TK 112 (Tiền gửi VCB)',
-          },
-        ];
+    let ledgerEntries = [];
+    if (isDeposit) {
+      ledgerEntries = [
+        {
+          journalCode: `JRN-DEP-${walletTx ? walletTx.id.slice(0, 8) : '001'}`,
+          type: 'DEPOSIT',
+          direction: 'CREDIT',
+          amount: depositAmount,
+          balanceAfter: depositAmount,
+          desc: `Nạp tiền thành công qua VNPAY Sandbox (Mã GD: ${vnpayRef}, Ngân hàng: ${bankCode}) cho ${patientName}`,
+          account: 'TK 112 (Tiền gửi ngân hàng Vietcombank) / TK 3388 (Ví Bệnh nhân - Phải trả người gửi)',
+        },
+      ];
+    } else if (isWithdrawal) {
+      ledgerEntries = [
+        {
+          journalCode: `JRN-WDR-${withdrawal?.id || (walletTx ? walletTx.id.slice(0, 8) : '001')}`,
+          type: 'WITHDRAWAL',
+          direction: 'DEBIT',
+          amount: withdrawalAmount,
+          balanceAfter: 0,
+          desc: `Rút tiền thù lao về tài khoản ngân hàng ${withdrawal?.bankName || 'VCB'} (${withdrawal?.bankAccountNumber || ''}) cho ${doctorName}`,
+          account: 'TK 334 (Phải trả Bác sĩ) / TK 112 (Tiền gửi ngân hàng Vietcombank)',
+        },
+      ];
+    } else if (isRefund) {
+      ledgerEntries = [
+        {
+          journalCode: `JRN-PAY-${booking?.id || 199}`,
+          type: 'BOOKING_PAYMENT',
+          direction: 'DEBIT',
+          amount: bookingPrice,
+          balanceAfter: 0,
+          desc: `Thanh toán đặt lịch ca khám #${booking?.id || 199} (${patientName})`,
+          account: 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
+        },
+        {
+          journalCode: `JRN-REV-${booking?.id || 199}`,
+          type: 'REFUND_EVALUATION',
+          direction: 'CREDIT',
+          amount: refundAmount,
+          balanceAfter: refundAmount,
+          desc: `Thẩm định chấp thuận hoàn tiền ${refundRate}% (${refundAmount.toLocaleString('vi-VN')} ₫) cho ${patientName}`,
+          account: 'TK 331 (Tạm giữ Escrow) / TK 3388 (Phải trả Bệnh nhân)',
+        },
+        {
+          journalCode: `JRN-DIS-${booking?.id || 199}`,
+          type: 'REFUND_DISBURSE',
+          direction: 'DEBIT',
+          amount: refundAmount,
+          balanceAfter: 0,
+          desc: `Giải ngân tiền hoàn trả qua ${refundCase?.refundMethod || 'BANK_TRANSFER'} (${refundAmount.toLocaleString('vi-VN')} ₫)`,
+          account: 'TK 3388 (Phải trả Bệnh nhân) / TK 112 (Tiền gửi VCB)',
+        },
+      ];
+    } else {
+      ledgerEntries = [
+        {
+          journalCode: `JRN-DEP-${booking?.id || 102}`,
+          type: 'DEPOSIT',
+          direction: 'CREDIT',
+          amount: bookingPrice,
+          balanceAfter: bookingPrice,
+          desc: `Nguồn tiền thanh toán ca khám #${booking?.id || 102} (${patientName})`,
+          account: 'TK 112 (Tiền gửi VCB) / TK 3388 (Ví Bệnh nhân)',
+        },
+        {
+          journalCode: `JRN-HLD-${booking?.id || 102}`,
+          type: 'BOOKING_PAYMENT',
+          direction: 'DEBIT',
+          amount: bookingPrice,
+          balanceAfter: 0,
+          desc: `Ký quỹ giữ chỗ ca khám #${booking?.id || 102} (${doctorName})`,
+          account: 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
+        },
+        {
+          journalCode: `JRN-SET-${booking?.id || 102}`,
+          type: 'DOCTOR_SHARE',
+          direction: 'CREDIT',
+          amount: doctorShare,
+          balanceAfter: doctorShare,
+          desc: `Thù lao 90% ca khám #${booking?.id || 102} hoàn tất cho ${doctorName}`,
+          account: 'TK 331 (Tạm giữ Escrow) / TK 334 (Phải trả Bác sĩ)',
+        },
+        {
+          journalCode: `JRN-FEE-${booking?.id || 102}`,
+          type: 'PLATFORM_FEE',
+          direction: 'CREDIT',
+          amount: platformFee,
+          balanceAfter: platformFee,
+          desc: `Hoa hồng kết nối 10% ca khám #${booking?.id || 102}`,
+          account: 'TK 331 (Tạm giữ Escrow) / TK 511 (Doanh thu sàn)',
+        },
+        {
+          journalCode: `JRN-WDR-${booking?.id || 102}`,
+          type: 'WITHDRAWAL',
+          direction: 'DEBIT',
+          amount: doctorShare,
+          balanceAfter: 0,
+          desc: `Giải ngân chuyển khoản VCB cho ${doctorName}`,
+          account: 'TK 334 (Phải trả Bác sĩ) / TK 112 (Tiền gửi VCB)',
+        },
+      ];
+    }
 
     // 11. ĐỐI SOÁT BẢO CHỨNG CÂN BẰNG THỰC TẾ
-    const residualCash = depositAmount - (isRefund ? refundAmount : doctorShare);
-    const residualObligation = isRefund ? 0 : ((depositAmount - bookingPrice) + platformFee);
+    let residualCash = 0;
+    let residualObligation = 0;
+    let formula = '';
+
+    if (isDeposit) {
+      residualCash = depositAmount;
+      residualObligation = depositAmount;
+      formula = `VCB Thật (+${depositAmount.toLocaleString('vi-VN')} ₫) = Số dư Ví Bệnh nhân (+${depositAmount.toLocaleString('vi-VN')} ₫)`;
+    } else if (isWithdrawal) {
+      residualCash = 0;
+      residualObligation = 0;
+      formula = `VCB Thật chi trả (-${withdrawalAmount.toLocaleString('vi-VN')} ₫) = Giải phóng nghĩa vụ nợ Bác sĩ (-${withdrawalAmount.toLocaleString('vi-VN')} ₫)`;
+    } else if (isRefund) {
+      residualCash = bookingPrice - refundAmount;
+      residualObligation = 0;
+      formula = `VCB Thật = Tiền mặt ban đầu (${bookingPrice.toLocaleString('vi-VN')} ₫) - Đã hoàn trả (${refundAmount.toLocaleString('vi-VN')} ₫)`;
+    } else {
+      residualCash = bookingPrice - doctorShare;
+      residualObligation = platformFee;
+      formula = `VCB Thật (${residualCash.toLocaleString('vi-VN')} ₫) = Lời Sàn (${platformFee.toLocaleString('vi-VN')} ₫)`;
+    }
+
+    const flowType = isDeposit
+      ? 'DEPOSIT'
+      : isWithdrawal
+      ? 'WITHDRAWAL'
+      : isRefund
+      ? 'REFUND'
+      : 'BOOKING_STANDARD';
+
+    const lineageId = `LIN-${isDeposit ? 'DEP' : isWithdrawal ? 'WDR' : isRefund ? 'REF' : 'APT'}-${
+      isDeposit
+        ? (walletTx ? walletTx.id.slice(0, 8) : '001')
+        : isWithdrawal
+        ? (withdrawal?.id || (walletTx ? walletTx.id.slice(0, 8) : '001'))
+        : (booking?.id || (refundCase ? refundCase.bookingId : (walletTx ? walletTx.id.slice(0, 8) : '001')))
+    }`;
 
     return {
       errCode: 0,
       errMessage: 'OK',
       data: {
-        lineageId: `LIN-${isRefund ? 'REF' : 'APT'}-${booking?.id || (walletTx ? walletTx.id.slice(0, 8) : 102)}`,
+        lineageId,
         targetId: strId,
-        flowType: isRefund ? 'REFUND' : 'BOOKING_STANDARD',
+        flowType,
         currentStepNumber,
         currentStage,
         currentStageLabel,
         summary: {
-          bookingId: booking?.id || (refundCase ? refundCase.bookingId : 102),
+          bookingId: isDeposit || isWithdrawal ? null : (booking?.id || (refundCase ? refundCase.bookingId : null)),
           currentStage,
           currentStageLabel,
           currentStepNumber,
-          totalAmount: bookingPrice,
+          totalAmount: isDeposit ? depositAmount : isWithdrawal ? withdrawalAmount : bookingPrice,
+          depositAmount: isDeposit ? depositAmount : 0,
+          withdrawalAmount: isWithdrawal ? withdrawalAmount : 0,
           refundAmount: isRefund ? refundAmount : 0,
           currency: 'VND',
           patientName,
@@ -2003,10 +2280,14 @@ async function getTransactionLineage(targetId) {
           patientPhone,
           doctorName,
           clinic: clinicName,
-          specialty: 'Khám Đa Khoa & Chuyên Khoa',
-          bookingDate: booking?.date || '2026-11-01',
-          initiatedAt: booking?.createdAt || walletTx?.createdAt || '2026-11-01T09:00:15Z',
-          completedAt: booking?.updatedAt || walletTx?.createdAt || '2026-11-01T10:45:00Z',
+          specialty: isDeposit ? 'Nạp quỹ ví người dùng' : isWithdrawal ? 'Quyết toán thù lao y khoa' : 'Khám Đa Khoa & Chuyên Khoa',
+          gatewayName: isDeposit ? 'VNPAY Sandbox' : null,
+          bankName: isDeposit ? (bankCode || 'NCB') : isWithdrawal ? (withdrawal?.bankName || 'Vietcombank') : null,
+          bankAccountNumber: isWithdrawal ? (withdrawal?.bankAccountNumber || '••••••••') : null,
+          vnpayRef: isDeposit ? vnpayRef : null,
+          bookingDate: booking?.date || null,
+          initiatedAt: walletTx?.createdAt || paymentTx?.createdAt || booking?.createdAt || '2026-11-01T09:00:15Z',
+          completedAt: isDeposit ? (walletTx?.createdAt || paymentTx?.updatedAt) : (booking?.updatedAt || walletTx?.createdAt || '2026-11-01T10:45:00Z'),
         },
         nodes,
         ledgerEntries,
@@ -2014,9 +2295,7 @@ async function getTransactionLineage(targetId) {
           realCashBalance: residualCash,
           virtualLedgerBalance: residualObligation,
           isBalanced: true,
-          formula: isRefund
-            ? `VCB Thật = Tiền mặt ban đầu (${bookingPrice.toLocaleString('vi-VN')} ₫) - Đã hoàn trả (${refundAmount.toLocaleString('vi-VN')} ₫)`
-            : `VCB Thật (${residualCash.toLocaleString('vi-VN')} ₫) = Ví BN còn dư (${(depositAmount - bookingPrice).toLocaleString('vi-VN')} ₫) + Lời Sàn (${platformFee.toLocaleString('vi-VN')} ₫)`,
+          formula,
           invariantEquation: 'Số dư Ngân hàng thật = Tổng ví BN + Tạm giữ Escrow + Ví BS + Doanh thu sàn',
         },
       },
