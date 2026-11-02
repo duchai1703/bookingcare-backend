@@ -81,7 +81,7 @@ async function handleGetVisualCashflow(req, res) {
 /**
  * [PHASE 1 - CASH FLOW ARCHITECTURE]
  * POST /api/v1/admin/financial/withdraw-platform-profit
- * Admin rút tiền lời công ty ("-30k xài") ra chi dùng cá nhân
+ * Admin rút / kết chuyển lợi nhuận nền tảng ra tài khoản ngân hàng
  */
 async function handleWithdrawPlatformProfit(req, res) {
   try {
