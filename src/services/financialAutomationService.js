@@ -8,6 +8,7 @@ const moment = require('moment');
 const doctorSettlementService = require('./doctorSettlementService');
 const refundGovernanceService = require('./refundGovernanceService');
 const walletService = require('./walletService');
+const { getExactAppointmentTime } = require('./aiTimezoneUtils');
 
 const HIGH_VALUE_WITHDRAWAL_THRESHOLD = 5000000; // 5.000.000 đ
 const CRITICAL_SLA_HOURS_LEFT = 4; // Dưới 4h là khẩn cấp
@@ -626,11 +627,16 @@ async function runMasterAutomationCycle({ adminId = 1 } = {}) {
       for (const b of expiredBookings) {
         let appTime = null;
         if (b.date) {
-          const rawDate = Number(b.date);
-          if (!isNaN(rawDate) && rawDate > 1000000000) {
-            appTime = new Date(rawDate);
-          } else {
-            appTime = new Date(b.date);
+          if (b.timeType) {
+            appTime = getExactAppointmentTime(b.date, b.timeType);
+          }
+          if (!appTime || isNaN(appTime.getTime())) {
+            const rawDate = Number(b.date);
+            if (!isNaN(rawDate) && rawDate > 1000000000) {
+              appTime = new Date(rawDate);
+            } else {
+              appTime = new Date(b.date);
+            }
           }
         }
         if (appTime && appTime < cutoffTime) {
@@ -639,6 +645,20 @@ async function runMasterAutomationCycle({ adminId = 1 } = {}) {
           b.cancellationReason = 'PATIENT_NO_SHOW';
           b.cancelledAt = now;
           await b.save();
+
+          try {
+            await db.Schedule.decrement('currentNumber', {
+              by: 1,
+              where: {
+                doctorId: b.doctorId,
+                date: b.date,
+                timeType: b.timeType,
+                currentNumber: { [db.Sequelize.Op.gt]: 0 },
+              },
+            });
+          } catch (scErr) {
+            console.warn('Lỗi decrement schedule khi chốt No-Show tự động:', scErr.message);
+          }
 
           await refundGovernanceService.createRefundCase({
             bookingId: b.id,

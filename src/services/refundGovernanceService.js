@@ -224,6 +224,31 @@ async function createRefundCase({
       await refundCase.save({ transaction: t });
     }
 
+    // Nếu là ca No-Show có khoản giữ lại (nonRefundableAmount > 0) -> Tạo khoản bồi thường thù lao cho Bác sĩ
+    if (refundCase.cancellationReason === 'PATIENT_NO_SHOW' && Number(refundCase.nonRefundableAmount) > 0) {
+      try {
+        const doctorSettlementService = require('./doctorSettlementService');
+        let docCompRate = 80;
+        let parsedSnap = null;
+        try {
+          parsedSnap = typeof refundCase.calculationSnapshot === 'string'
+            ? JSON.parse(refundCase.calculationSnapshot)
+            : refundCase.calculationSnapshot;
+        } catch (e) {}
+        if (parsedSnap?.policySnapshotUsed?.rules?.noShowDoctorCompensationPercent) {
+          docCompRate = Number(parsedSnap.policySnapshotUsed.rules.noShowDoctorCompensationPercent);
+        }
+        await doctorSettlementService.recordNoShowDoctorCompensation({
+          bookingId: refundCase.bookingId,
+          nonRefundableAmount: refundCase.nonRefundableAmount,
+          doctorCompensationPercent: docCompRate,
+          externalTransaction: t,
+        });
+      } catch (compErr) {
+        console.warn('Lỗi ghi nhận bồi thường thù lao bác sĩ No-show trong createRefundCase:', compErr.message);
+      }
+    }
+
     // Đồng bộ trạng thái trên bảng Bookings
     booking.refundAmount = refundAmount;
     booking.refundRate = refundRate;
