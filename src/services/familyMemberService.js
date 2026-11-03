@@ -3,6 +3,21 @@
 const db = require('../models');
 
 /**
+ * Chuẩn hóa giá trị giới tính về enum AllCode G1, G2, G3
+ * Đồng bộ hai chiều giữa Web Portal (MALE/FEMALE/OTHER) và DB/Chatbot (G1/G2/G3)
+ */
+const normalizeGender = (gender) => {
+  if (gender === null || gender === undefined) return null;
+  const str = String(gender).trim();
+  if (!str) return null;
+  const gUpper = str.toUpperCase();
+  if (['G1', 'MALE', 'M', 'NAM'].includes(gUpper)) return 'G1';
+  if (['G2', 'FEMALE', 'F', 'NỮ', 'NU'].includes(gUpper)) return 'G2';
+  if (['G3', 'OTHER', 'KHÁC', 'KHAC'].includes(gUpper)) return 'G3';
+  return null;
+};
+
+/**
  * Lấy danh sách hồ sơ người thân của một tài khoản bệnh nhân
  * @param {number} userId - ID người dùng hiện tại (req.user.id)
  */
@@ -81,11 +96,13 @@ const createFamilyMember = async (userId, data) => {
     const validRelationships = ['CHILD', 'PARENT', 'SPOUSE', 'OTHER'];
     const rel = validRelationships.includes(relationship) ? relationship : 'OTHER';
 
+    const normalizedGender = normalizeGender(gender);
+
     const newMember = await db.Family_Member.create({
       userId,
       fullName: fullName.trim(),
       relationship: rel,
-      gender: gender || 'G1',
+      gender: normalizedGender,
       birthday: birthday || null,
       phoneNumber: phoneNumber ? phoneNumber.trim() : null,
       address: address ? address.trim() : null,
@@ -129,8 +146,13 @@ const updateFamilyMember = async (userId, memberId, data) => {
     const { fullName, relationship, gender, birthday, phoneNumber, address, nationalId, medicalHistory, notes, isPrimary } = data;
 
     if (fullName !== undefined) member.fullName = fullName.trim();
-    if (relationship !== undefined) member.relationship = relationship;
-    if (gender !== undefined) member.gender = gender;
+    if (relationship !== undefined) {
+      const validRelationships = ['CHILD', 'PARENT', 'SPOUSE', 'OTHER'];
+      member.relationship = validRelationships.includes(relationship) ? relationship : 'OTHER';
+    }
+    if (gender !== undefined) {
+      member.gender = normalizeGender(gender);
+    }
     if (birthday !== undefined) member.birthday = birthday;
     if (phoneNumber !== undefined) member.phoneNumber = phoneNumber ? phoneNumber.trim() : null;
     if (address !== undefined) member.address = address ? address.trim() : null;
@@ -189,4 +211,5 @@ module.exports = {
   createFamilyMember,
   updateFamilyMember,
   deleteFamilyMember,
+  normalizeGender,
 };

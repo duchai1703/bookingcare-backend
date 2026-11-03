@@ -79,6 +79,7 @@ const { getGenerativeModel, GENERATION_CONFIG } = require('./aiConfig');
  */
 function getVisionModel(customOptions = {}) {
   return getGenerativeModel({
+    isVision: true,
     systemInstruction: VISION_SYSTEM_INSTRUCTION,
     generationConfig: GENERATION_CONFIG,
     ...customOptions,

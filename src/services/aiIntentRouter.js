@@ -233,17 +233,17 @@ function classifyIntent(input, hasImageArg = false) {
 
   // 4. Ý định Người thân / Hồ sơ gia đình (FAMILY_QUERY — Chung chung hoặc Thêm/Sửa/Xem sổ y bạ)
   const isFamilyProfileInput = (
-    /(ngày\s*sinh|ngay\s*sinh|\b(19\d\d|20\d\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b)/i.test(lower) &&
-    /(con|bố|mẹ|vợ|chồng|cha|mẹ\s*đẻ|bố\s*đẻ|anh|chị|em|ông|bà|bo|me|vo|chong)/i.test(lower) &&
-    /(0\d{9,10}|\b(nam|nữ|nu)\b)/i.test(lower)
+    /(ngày\s*sinh|ngay\s*sinh|\b(19\d\d|20\d\d)[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b|sinh\s*năm|\bsn\s*\d{4}|\b(19\d\d|20\d\d)\b)/i.test(lower) &&
+    /(con|bố|mẹ|vợ|chồng|cha|mẹ\s*đẻ|bố\s*đẻ|anh|chị|em|ông|bà|bo|me|vo|chong|bé|be)/i.test(lower) &&
+    /(tạo\s*hồ\s*sơ|thêm\s*hồ\s*sơ|hồ\s*sơ|sổ\s*y\s*bạ|thêm\s*cho|tạo\s*cho)/i.test(lower)
   ) || (
     /(tiền\s*sử|dị\s*ứng|ghi\s*chú)/i.test(lower) &&
-    /(ngày\s*sinh|con|bố|mẹ|vợ|chồng|0\d{9})/i.test(lower)
+    /(ngày\s*sinh|con|bố|mẹ|vợ|chồng|bé|be|0\d{9})/i.test(lower)
   );
 
   const isGenericFamilyQuery = (
-    /(đặt\s*(?:lịch\s*)?(?:khám\s*)?cho\s*(?:người\s*thân|người\s*nhà|gia\s*đình)|hồ\s*sơ\s*gia\s*đình|danh\s*sách\s*người\s*thân|sổ\s*y\s*bạ|xem\s*sổ\s*y\s*bạ|thêm\s*người\s*thân|tạo\s*hồ\s*sơ\s*người\s*thân|đăng\s*ký\s*người\s*thân)/i.test(lower) ||
-    /(dat\s*(?:lich\s*)?(?:kham\s*)?cho\s*(?:nguoi\s*than|nguoi\s*nha|gia\s*dinh)|ho\s*so\s*gia\s*dinh|danh\s*sach\s*nguoi\s*than|so\s*y\s*ba|them\s*nguoi\s*than|tao\s*ho\s*so\s*nguoi\s*than|dang\s*ky\s*nguoi\s*than)/i.test(stripped) ||
+    /(đặt\s*(?:lịch\s*)?(?:khám\s*)?cho\s*(?:người\s*thân|người\s*nhà|gia\s*đình)|hồ\s*sơ\s*gia\s*đình|danh\s*sách\s*người\s*thân|sổ\s*y\s*bạ|xem\s*sổ\s*y\s*bạ|thêm\s*(?:hồ\s*sơ\s*)?(?:người\s*thân|người\s*nhà|thành\s*viên)|tạo\s*hồ\s*sơ\s*(?:cho\s*)?(?:người\s*thân|người\s*nhà|mẹ|bố|con|bé|vợ|chồng)|đăng\s*ký\s*người\s*thân|thêm\s*(?:hồ\s*sơ\s*)?(?:cho\s*)?(?:mẹ|bố|con|bé|vợ|chồng)|thêm\s*người\s*thân\s*vào\s*sổ|quản\s*lý\s*người\s*thân|tạo\s*hồ\s*sơ\s*người\s*nhà|thêm\s*người\s*nhà)/i.test(lower) ||
+    /(dat\s*(?:lich\s*)?(?:kham\s*)?cho\s*(?:nguoi\s*than|nguoi\s*nha|gia\s*dinh)|ho\s*so\s*gia\s*dinh|danh\s*sach\s*nguoi\s*than|so\s*y\s*ba|xem\s*so\s*y\s*ba|them\s*(?:ho\s*so\s*)?(?:nguoi\s*than|nguoi\s*nha|thanh\s*vien)|tao\s*ho\s*so\s*(?:cho\s*)?(?:nguoi\s*than|nguoi\s*nha|me|bo|con|be|vo|chong)|dang\s*ky\s*nguoi\s*than|them\s*(?:ho\s*so\s*)?(?:cho\s*)?(?:me|bo|con|be|vo|chong)|them\s*nguoi\s*than\s*vao\s*so|quan\s*ly\s*nguoi\s*than|tao\s*ho\s*so\s*nguoi\s*nha|them\s*nguoi\s*nha)/i.test(stripped) ||
     isFamilyProfileInput
   );
 
@@ -269,6 +269,11 @@ function classifyIntent(input, hasImageArg = false) {
   }
 
   if (isGenericFamilyQuery) {
+    const relInfo = extractFamilyRelationship(lower, stripped);
+    if (relInfo) {
+      extractedEntities.relationship = relInfo.relationship;
+      extractedEntities.targetRaw = relInfo.raw;
+    }
     return { intent: INTENTS.FAMILY_QUERY, confidence: 0.95, extractedEntities };
   }
 
@@ -336,12 +341,13 @@ function classifyIntent(input, hasImageArg = false) {
     return { intent: INTENTS.CANCEL_BOOKING_QUERY, confidence: 0.95, extractedEntities };
   }
 
-  // 8. Ý định Đổi lịch hẹn (RESCHEDULE_QUERY)
+  // 8. Ý định Đổi lịch hẹn (RESCHEDULE_QUERY — Bệnh nhân hiện không được hỗ trợ đổi lịch trực tiếp)
   if (
     /(đổi\s*(lịch(\s*hẹn|\s*khám)?|ngày(\s*khám|\s*khác|\s*mai)?|giờ)|dời\s*(lịch|ngày)|chuyển\s*(ngày|lịch)\s*khám|đổi\s*sang\s*ngày\s*mai)/i.test(lower) ||
     /(doi\s*(lich(\s*hen|\s*kham)?|ngay(\s*kham|\s*khac|\s*mai)?|gio)|doi\s*sang\s*ngay\s*mai|doi\s*lich|doi\s*ngay|doi\s*gio|doi\s*ca|doi\s*khung\s*gio|chuyen\s*(ngay|lich)\s*kham)/i.test(stripped)
   ) {
-    return { intent: INTENTS.RESCHEDULE_QUERY, confidence: 0.9, extractedEntities };
+    extractedEntities.isUnsupported = true;
+    return { intent: INTENTS.RESCHEDULE_QUERY, confidence: 0.95, isUnsupported: true, extractedEntities };
   }
 
   // 8.1. Ý định Thanh toán / Trạng thái thanh toán (PAYMENT_QUERY)
@@ -407,16 +413,19 @@ function classifyIntent(input, hasImageArg = false) {
 
   // 13. Ý định Tư vấn Triệu chứng / Y tế (HEALTH_QUERY)
   // Loại bỏ các cụm phủ định như 'không có tiền sử bệnh', 'không dị ứng thuốc' trước khi kiểm tra triệu chứng
+  // ĐẶC BIỆT: Loại bỏ hoàn toàn 'hồ sơ' / 'ho so' để không bị nhận diện nhầm thành triệu chứng ho!
   const cleanedSymptomsText = lower
     .replace(/không\s*(có)?\s*(tiền\s*sử)?\s*bệnh\b/gi, '')
     .replace(/không\s*dị\s*ứng\b/gi, '')
     .replace(/không\s*(có)?\s*thuốc\b/gi, '')
-    .replace(/không\s*(có)?\s*triệu\s*chứng\b/gi, '');
+    .replace(/không\s*(có)?\s*triệu\s*chứng\b/gi, '')
+    .replace(/hồ\s*sơ(\s*(sức\s*khỏe|bệnh\s*án|gia\s*đình|y\s*bạ|cho|của))?/gi, '');
   const cleanedSymptomsStripped = stripped
     .replace(/khong\s*(co)?\s*(tien\s*su)?\s*benh\b/gi, '')
     .replace(/khong\s*di\s*ung\b/gi, '')
     .replace(/khong\s*(co)?\s*thuoc\b/gi, '')
-    .replace(/khong\s*(co)?\s*trieu\s*chung\b/gi, '');
+    .replace(/khong\s*(co)?\s*trieu\s*chung\b/gi, '')
+    .replace(/ho\s*so(\s*(suc\s*khoe|benh\s*an|gia\s*dinh|y\s*ba|cho|cua))?/gi, '');
 
   const hoRegex = /(?:^|[^a-zA-Z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ])ho(?:$|[^a-zA-Z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ])/i;
   const hoStrippedRegex = /(?:^|[^a-zA-Z0-9])ho(?:$|[^a-zA-Z0-9])/i;

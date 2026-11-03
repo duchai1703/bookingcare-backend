@@ -827,11 +827,16 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
         ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
         : j.date;
 
-      const isPaid = j.paymentStatus === 'paid' || j.statusId === 'S2' || j.statusId === 'S3';
+      const isPaid = j.paymentStatus === 'paid';
       const isRefunded = j.paymentStatus === 'refunded' || j.refundStatus === 'completed' || (j.statusId === 'S4' && Number(j.refundAmount) > 0);
       const isProcessingRefund = j.refundStatus === 'processing' || j.refundStatus === 'pending';
       const paymentMethod = j.paymentMethod || 'WALLET';
       const isNoShow = j.cancellationReason === 'PATIENT_NO_SHOW' || j.cancellationType === 'SYSTEM_NO_SHOW' || j.cancellationType === 'NO_SHOW';
+
+      const validPaymentStatuses = ['paid', 'unpaid', 'pending', 'failed', 'refunded'];
+      const canonicalPaymentStatus = isRefunded
+        ? 'refunded'
+        : (validPaymentStatuses.includes(j.paymentStatus) ? j.paymentStatus : 'unverified');
 
       return maskPII({
         bookingId: j.id,
@@ -848,7 +853,7 @@ async function handleGetMyBookings(args, userId, signal, context = null) {
         cancellationReason: j.cancellationReason || null,
         cancellationType: j.cancellationType || null,
         isNoShow,
-        paymentStatus: isRefunded ? 'refunded' : (j.paymentStatus || (isPaid ? 'paid' : 'unpaid')),
+        paymentStatus: canonicalPaymentStatus,
         paymentMethod,
         isPaid,
         isRefunded,
@@ -1332,17 +1337,18 @@ async function handleCreateFamilyMember(args, userId, signal) {
     else rel = 'OTHER';
   }
 
-  // Normalize gender
-  let g = 'G1';
-  if (gender) {
-    const gUpper = String(gender).trim().toUpperCase();
-    if (['G1', 'M', 'MALE', 'NAM'].includes(gUpper)) g = 'G1';
-    else if (['G2', 'F', 'FEMALE', 'NỮ', 'NU'].includes(gUpper)) g = 'G2';
-    else g = 'G3';
-  }
+  // Normalize gender via SSOT familyMemberService
+  const familyMemberService = require('./familyMemberService');
+  const g = familyMemberService.normalizeGender(gender);
 
-  // Format birthday from birthday or dateOfBirth
-  const finalBirthday = birthday || dateOfBirth || null;
+  // Format birthday from birthday or dateOfBirth; preserve year if only year is provided
+  let finalBirthday = null;
+  const rawBirth = birthday || dateOfBirth;
+  if (rawBirth && typeof rawBirth === 'string') {
+    finalBirthday = rawBirth.trim() || null;
+  } else if (rawBirth) {
+    finalBirthday = String(rawBirth).trim() || null;
+  }
 
   // Merge drugAllergies into medicalHistory
   let finalMedicalHistory = medicalHistory ? String(medicalHistory).trim() : '';
@@ -1461,7 +1467,7 @@ async function handleGetWalletTransactions(args, userId, signal) {
       });
 
       if (booking) {
-        const isPaid = booking.paymentStatus === 'paid' || ['S2', 'S3'].includes(booking.statusId);
+        const isPaid = booking.paymentStatus === 'paid';
         const isVnpay = String(booking.paymentMethod || '').toUpperCase() === 'VNPAY' || !booking.paymentMethod;
         // Strictly only include if booking was actually paid via VNPay Gateway and not recorded in wallet ledger
         if (txList.length === 0 && isPaid && isVnpay) {
@@ -1675,7 +1681,11 @@ async function handleGetAppointmentDetail(args, userId, signal) {
     fileSize: att.fileSize,
   }));
 
-  const isPaid = booking.paymentStatus === 'paid' || booking.statusId === 'S2' || booking.statusId === 'S3';
+  const isPaid = booking.paymentStatus === 'paid';
+  const validPaymentStatuses = ['paid', 'unpaid', 'pending', 'failed', 'refunded'];
+  const canonicalPaymentStatus = validPaymentStatuses.includes(booking.paymentStatus)
+    ? booking.paymentStatus
+    : 'unverified';
   const paymentMethod = booking.paymentMethod || (booking.vnpayTransactionNo ? 'VNPAY' : 'WALLET');
 
   return {
@@ -1715,7 +1725,7 @@ async function handleGetAppointmentDetail(args, userId, signal) {
         ? 'Vắng mặt (No-Show)'
         : (booking.statusData?.valueVi || booking.statusId),
       isPaid,
-      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentStatus: canonicalPaymentStatus,
       paymentMethod,
       isNoShow: booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW',
     },
@@ -1725,7 +1735,7 @@ async function handleGetAppointmentDetail(args, userId, signal) {
         ? 'Vắng mặt (No-Show)'
         : (booking.statusData?.valueVi || booking.statusId),
       isPaid,
-      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentStatus: canonicalPaymentStatus,
       paymentMethod,
       isNoShow: booking.cancellationReason === 'PATIENT_NO_SHOW' || booking.cancellationType === 'SYSTEM_NO_SHOW' || booking.cancellationType === 'NO_SHOW',
     },
@@ -1744,7 +1754,7 @@ async function handleGetAppointmentDetail(args, userId, signal) {
       price: bookingPrice,
       priceFormatted: bookingPriceFormatted,
       isPaid,
-      paymentStatus: booking.paymentStatus || (isPaid ? 'paid' : 'unpaid'),
+      paymentStatus: canonicalPaymentStatus,
       paymentMethod,
       refundRate: booking.refundRate !== null && booking.refundRate !== undefined
         ? Number(booking.refundRate)
@@ -2491,7 +2501,7 @@ async function handleConfirmCreateBooking(args, userId, signal, context) {
       price: draft.price,
       createdAt: new Date().toISOString(),
       message: domainResult.message || 'Đặt lịch khám và thanh toán bằng Ví BookingCare thành công! Lịch hẹn của bạn đã được xác nhận.',
-      nextStep: 'Lịch khám của bạn đã được thanh toán và xác nhận thành công (S2). Vui lòng đến đúng giờ hẹn tại cơ sở y tế.',
+      nextStep: 'Lịch khám của bạn đã được thanh toán và xác nhận thành công. Vui lòng đến đúng giờ hẹn tại cơ sở y tế.',
     };
 
     await idempotencyStore.setDone(lockKey, successPayload);
@@ -2650,7 +2660,7 @@ async function handlePrepareCancellationDraft(args, userId, signal) {
   const now = new Date();
   const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
 
-  const isPaid = booking.statusId === 'S2' || booking.paymentStatus === 'paid';
+  const isPaid = booking.paymentStatus === 'paid';
   const refundPreview = {
     isPaid,
     refundable: isPaid && refundCalc.refundAmount > 0,
@@ -3099,7 +3109,7 @@ async function handlePrepareRescheduleDraft(args, userId, signal) {
     }
   }
 
-  const isPaid = oldBooking.statusId === 'S2' || oldBooking.paymentStatus === 'paid';
+  const isPaid = oldBooking.paymentStatus === 'paid';
   const priceDiff = newBookingPrice - (Number(oldBooking.bookingPrice) || 0);
 
   let policyExplanation = '';
@@ -3412,11 +3422,26 @@ async function handleGetPaymentStatus(args, userId, signal) {
     ? `${parsedDate.getDate().toString().padStart(2, '0')}/${(parsedDate.getMonth() + 1).toString().padStart(2, '0')}/${parsedDate.getFullYear()}`
     : booking.date;
 
-  // BUG-13 Fix: S2 and S3 (completed) are confirmed paid bookings; unify with handleGetAppointmentDetail
-  const isPaid = booking.paymentStatus === 'paid' || ['S2', 'S3'].includes(booking.statusId);
-  const paymentStatus = isPaid ? 'paid' : (booking.paymentStatus || 'unpaid');
+  const isPaid = booking.paymentStatus === 'paid';
+  const validPaymentStatuses = ['paid', 'unpaid', 'pending', 'failed', 'refunded'];
+  const paymentStatus = validPaymentStatuses.includes(booking.paymentStatus)
+    ? booking.paymentStatus
+    : 'unverified';
   const bookingPrice = Number(booking.bookingPrice) || 0;
   const paymentMethod = booking.paymentMethod || 'VNPay Gateway';
+
+  let paymentMessage = '';
+  if (isPaid) {
+    paymentMessage = `Lịch hẹn #${booking.id} đã được thanh toán thành công (${bookingPrice.toLocaleString('vi-VN')} VNĐ qua ${paymentMethod}).`;
+  } else if (paymentStatus === 'refunded') {
+    paymentMessage = `Lịch hẹn #${booking.id} đã được hoàn tiền.`;
+  } else if (paymentStatus === 'pending') {
+    paymentMessage = `Lịch hẹn #${booking.id} đang chờ xử lý thanh toán (${bookingPrice.toLocaleString('vi-VN')} VNĐ).`;
+  } else if (paymentStatus === 'unpaid') {
+    paymentMessage = `Lịch hẹn #${booking.id} hiện chưa thanh toán. Số tiền cần thanh toán: ${bookingPrice.toLocaleString('vi-VN')} VNĐ.`;
+  } else {
+    paymentMessage = `Lịch hẹn #${booking.id} có trạng thái thanh toán chưa được xác minh.`;
+  }
 
   return {
     status: 'success',
@@ -3435,9 +3460,7 @@ async function handleGetPaymentStatus(args, userId, signal) {
     refundAmount: Number(booking.refundAmount) || 0,
     statusId: booking.statusId,
     statusLabel: booking.statusData?.valueVi || booking.statusId,
-    message: isPaid
-      ? `Lịch hẹn #${booking.id} đã được thanh toán thành công (${bookingPrice.toLocaleString('vi-VN')} VNĐ qua ${paymentMethod}).`
-      : `Lịch hẹn #${booking.id} hiện chưa thanh toán. Số tiền cần thanh toán: ${bookingPrice.toLocaleString('vi-VN')} VNĐ.`,
+    message: paymentMessage,
   };
 }
 

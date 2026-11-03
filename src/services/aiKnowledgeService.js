@@ -71,8 +71,8 @@ const PLATFORM_POLICIES = Object.freeze([
     title: 'Chính sách đổi lịch khám (Reschedule) BookingCare',
     category: 'POLICY',
     source: 'BOOKINGCARE_POLICY_ENGINE',
-    version: '1.2.0',
-    content: 'Quy định đổi lịch khám tại BookingCare: Bệnh nhân CHỈ có thể đổi lịch cho các cuộc hẹn CÒN HIỆU LỰC TRONG TƯƠNG LAI (chưa đến giờ hẹn khám theo giờ Việt Nam Asia/Ho_Chi_Minh) ở trạng thái S1 (Chưa thanh toán), S1.5 (Đang chờ VNPay), hoặc S2 (Đã xác nhận). Lịch khám đã qua ngày hoặc đã qua giờ hẹn khám (dù ở trạng thái S2) hoặc đã hoàn thành (S3) tuyệt đối KHÔNG thể đổi lịch. Lịch hẹn cũ chuyển sang S4 với lý do RESCHEDULED, tiền đã thanh toán được bảo lưu 100% sang lịch hẹn mới. Lịch đổi yêu cầu tạo bản nháp và xác nhận qua mã bảo mật HMAC duy nhất.',
+    version: '2.0.0',
+    content: 'Quy định đổi lịch khám tại BookingCare: Hệ thống BookingCare hiện tại KHÔNG hỗ trợ tính năng đổi lịch khám trực tiếp dành cho người dùng cuối (bệnh nhân). Bệnh nhân khi có nhu cầu thay đổi thời gian khám cần thực hiện Hủy lịch hẹn hiện tại (được áp dụng chính sách hoàn tiền tương ứng dựa trên thời điểm hủy) và tiến hành Đặt lịch khám mới, hoặc liên hệ Tổng đài Chăm sóc Khách hàng để được nhân viên hỗ trợ.',
   },
   {
     documentId: 'doc_pol_payment',
@@ -80,7 +80,7 @@ const PLATFORM_POLICIES = Object.freeze([
     category: 'POLICY',
     source: 'BOOKINGCARE_PAYMENT_GATEWAY',
     version: '1.2.0',
-    content: 'Phương thức thanh toán và nạp tiền BookingCare: Hệ thống hỗ trợ thanh toán và nạp tiền ví qua CỔNG THANH TOÁN VNPAY DUY NHẤT (cổng VNPay hỗ trợ quét mã VNPAY-QR, thẻ ATM nội địa các ngân hàng Việt Nam, và thẻ quốc tế Visa/MasterCard/JCB) và Ví điện tử BookingCare (thanh toán nội bộ bằng số dư khả dụng). Nạp tiền vào Ví BookingCare chỉ thực hiện qua cổng VNPay, số dư cập nhật sau khi nhận IPN xác thực từ cổng thanh toán. Hệ thống KHÔNG tích hợp ví điện tử ngoài như MoMo hay ZaloPay. Khi đặt lịch S1, liên kết thanh toán có chữ ký bảo mật SHA-512 được cung cấp. Trạng thái chỉ chuyển sang Đã thanh toán (S2) sau khi hệ thống nhận webhook IPN xác thực từ cổng thanh toán.',
+    content: 'Phương thức thanh toán và nạp tiền BookingCare: Hệ thống hỗ trợ thanh toán và nạp tiền ví qua CỔNG THANH TOÁN VNPAY DUY NHẤT (cổng VNPay hỗ trợ quét mã VNPAY-QR, thẻ ATM nội địa các ngân hàng Việt Nam, và thẻ quốc tế Visa/MasterCard/JCB) và Ví điện tử BookingCare (thanh toán nội bộ bằng số dư khả dụng). Nạp tiền vào Ví BookingCare chỉ thực hiện qua cổng VNPay, số dư cập nhật sau khi nhận IPN xác thực từ cổng thanh toán. Hệ thống KHÔNG tích hợp ví điện tử ngoài như MoMo hay ZaloPay. Khi đặt lịch, liên kết thanh toán có chữ ký bảo mật SHA-512 được cung cấp. Trạng thái lịch khám chỉ chuyển sang Đã thanh toán và Đã xác nhận sau khi hệ thống nhận webhook IPN xác thực từ cổng thanh toán.',
   },
   {
     documentId: 'doc_pol_booking_steps',
@@ -335,7 +335,7 @@ async function retrieveRelevantKnowledge(query, options = {}) {
 }
 
 module.exports = {
-  loadKnowledgeCorpus,
   retrieveRelevantKnowledge,
   PLATFORM_POLICIES,
 };
+

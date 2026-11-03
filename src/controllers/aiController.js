@@ -53,6 +53,20 @@ const {
   updateActiveAssessment,
 } = require('../services/aiHealthAssessmentService');
 
+/**
+ * Chuẩn hóa và làm sạch các mã trạng thái nội bộ (S1, S1.5, S2, S3, S4) khỏi văn bản phản hồi người dùng
+ * Tuân thủ nguyên tắc: Không hiển thị mã trạng thái nội bộ ra giao diện người dùng
+ */
+function stripInternalStatusCodes(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/\s*\((?:S1\.5|S1|S2|S3|S4)\)/gi, '')
+    .replace(/\btrạng thái S2\b/gi, 'trạng thái Đã xác nhận')
+    .replace(/\btrạng thái S1\.5\b/gi, 'trạng thái Chờ thanh toán')
+    .replace(/\btrạng thái S1\b/gi, 'trạng thái Chờ xác nhận')
+    .replace(/\btrạng thái S3\b/gi, 'trạng thái Đã khám xong')
+    .replace(/\btrạng thái S4\b/gi, 'trạng thái Đã hủy');
+}
 // Global Active Stream Counter
 let activeStreams = 0;
 const MAX_STREAMS = 15;
@@ -939,6 +953,19 @@ async function streamChat(req, res) {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // CASE 0: UNSUPPORTED RESCHEDULE FOR PATIENTS (Product Scope Update)
+    // ═══════════════════════════════════════════════════════════════════
+    if (intentResult.intent === INTENTS.RESCHEDULE_QUERY) {
+      initSSEHeaders(res);
+      const unsupportedRescheduleNotice = 'Dạ, hiện tại BookingCare không hỗ trợ tính năng đổi lịch khám trực tiếp dành cho bệnh nhân. Nếu cần thay đổi thời gian khám, bạn vui lòng hủy lịch hẹn hiện tại (theo chính sách hủy lịch và hoàn tiền của hệ thống) và tiến hành đặt một lịch khám mới phù hợp, hoặc liên hệ Tổng đài Chăm sóc Khách hàng để được hỗ trợ viên tư vấn chi tiết.';
+      res.write(`data: ${JSON.stringify({ text: unsupportedRescheduleNotice })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      aiLogger.info(requestId, 'AI_RESCHEDULE_UNSUPPORTED_EXPLAINED', { userId });
+      return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // CASE A: HEALTH ASSESSMENT ORCHESTRATOR (Phase 03 Flow)
     // Kích hoạt khi:
     // 1. Có imageId đính kèm
@@ -1003,6 +1030,8 @@ async function streamChat(req, res) {
       const healthSystemCombined = `${HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION}\n\n${SYSTEM_PROMPT}\n\nThời gian hiện tại (UTC): ${nowUTC}\nNgôn ngữ người dùng: ${language}`;
 
       const assessmentModel = getHealthAssessmentModel({
+        hasImage: Boolean(imageId),
+        isVision: Boolean(imageId),
         systemInstruction: healthSystemCombined,
       });
 
@@ -1013,9 +1042,25 @@ async function streamChat(req, res) {
         symptomsCount: healthContext.symptoms.length,
       });
 
-      // Gọi generateContentStream với multimodal (ảnh + prompt) hoặc đơn modal (prompt)
+      // Gọi generateContentStream với multimodal (ảnh + prompt) hoặc đơn modal (prompt) kèm retry backoff
       const modelContent = imagePart ? [imagePart, assessmentPrompt] : assessmentPrompt;
-      const streamResult = await assessmentModel.generateContentStream(modelContent);
+      let streamResult;
+      let streamRetry = 0;
+      while (streamRetry < 3) {
+        try {
+          streamResult = await assessmentModel.generateContentStream(modelContent);
+          break;
+        } catch (streamErr) {
+          if ((streamErr?.status === 503 || streamErr?.message?.includes('503') || streamErr?.message?.includes('429')) && streamRetry < 2) {
+            streamRetry++;
+            aiLogger.warn(requestId, 'AI_VISION_STREAM_RETRY', { streamRetry, error: streamErr.message });
+            await new Promise((r) => setTimeout(r, streamRetry * 1500));
+          } else {
+            throw streamErr;
+          }
+        }
+      }
+
       let fullResponseText = '';
       let streamedProse = '';
 
@@ -1051,14 +1096,35 @@ async function streamChat(req, res) {
           sanitizedAssessment.data.answers = activeRecord.answers;
           sanitizedAssessment.data.answeredQuestionIds = activeRecord.answeredQuestionIds;
 
-          // Backward compatibility: gửi visionAnalysis nếu có ảnh
+          // Gửi text tóm tắt hội thoại cho người dùng nếu có
+          const textToSend = rawJson.summary || sanitizedAssessment?.data?.summary;
+          if (textToSend) {
+            const sanitizedSummary = stripInternalStatusCodes(textToSend);
+            res.write(`data: ${JSON.stringify({ text: sanitizedSummary })}\n\n`);
+          }
+
+          // Gửi visionAnalysis cấu trúc nếu có ảnh
           if (imageId && currentVisionData) {
-            const structuredVision = createStructuredVisionResult({
-              text: fullResponseText,
-              imageId,
-              mimeType: tempImageData?.metadata?.mimeType,
-            });
-            res.write(`data: ${JSON.stringify({ visionAnalysis: structuredVision })}\n\n`);
+            const visionData = {
+              imageId: imageId || null,
+              mimeType: tempImageData?.metadata?.mimeType || 'image/jpeg',
+              summary: rawJson.summary || 'Đã phân tích hình ảnh sơ bộ.',
+              observations: Array.isArray(rawJson.observations) && rawJson.observations.length > 0
+                ? rawJson.observations
+                : ['Đã ghi nhận các đặc điểm quan sát trực quan từ ảnh.'],
+              ocrText: Array.isArray(rawJson.ocrText) ? rawJson.ocrText : [],
+              uncertainty: rawJson.uncertainty || 'Từ một bức ảnh đơn lẻ, các nhận định chỉ mang tính chất tham khảo sơ bộ và không thể khẳng định chắc chắn 100%.',
+              followUpQuestions: Array.isArray(rawJson.followUpQuestions) ? rawJson.followUpQuestions : [],
+              safetyNotice: rawJson.safetyNotice || 'Lưu ý: Phân tích hình ảnh này mang tính chất hỗ trợ thông tin tham khảo, không thể thay thế cho việc thăm khám trực tiếp cùng bác sĩ chuyên khoa.',
+              needsMedicalAttention: rawJson.riskLevel === 'URGENT' || rawJson.riskLevel === 'EMERGENCY',
+              timestamp: Date.now(),
+            };
+            res.write(`data: ${JSON.stringify({
+              event: 'vision:analysis',
+              type: 'VISION_ANALYSIS',
+              visionAnalysis: visionData,
+              data: visionData,
+            })}\n\n`);
           }
 
           // Phát sinh và gửi Canonical HEALTH_ASSESSMENT event về Frontend (Single Response Contract)
@@ -1071,11 +1137,12 @@ async function streamChat(req, res) {
             assessmentId: activeRecord.assessmentId,
           })}\n\n`);
         } else {
-          // Fallback an toàn khi model không tạo ra JSON hợp lệ (Section 14)
-          const fallbackNotice = 'Dạ, tôi đã tiếp nhận thông tin của bạn. Tuy nhiên, thông tin hiện tại chưa đủ để đưa ra đánh giá sơ bộ cụ thể. Bạn vui lòng mô tả chi tiết hơn về vị trí đau, thời gian xuất hiện hoặc đến cơ sở y tế gần nhất nếu cần thăm khám trực tiếp.';
+          // Khi model trả về văn bản mô tả trực tiếp mà không bọc JSON
+          const cleanProse = stripInternalStatusCodes(fullResponseText.replace(/```(?:json)?[\s\S]*?```/gi, '').trim());
+          const responseText = cleanProse || 'Dạ, tôi đã tiếp nhận hình ảnh của bạn. Bạn vui lòng mô tả cụ thể hơn về triệu chứng hoặc câu hỏi của bạn để mình có thể hỗ trợ tốt nhất.';
           res.write(`data: ${JSON.stringify({
-            text: fallbackNotice,
-            isHealthAssessment: true,
+            text: responseText,
+            isHealthAssessment: false,
             hasImage: Boolean(imageId),
             imageId: imageId || undefined
           })}\n\n`);
@@ -1259,8 +1326,8 @@ async function streamChat(req, res) {
       systemInstruction: systemPromptCombined,
       tools: [{
         functionDeclarations: [
-          ...Object.entries(aiFunctions).map(([name, def]) => ({ name, ...def })),
-          ...Object.entries(aiAuthFunctions).map(([name, def]) => ({ name, ...def })),
+          ...Object.entries(aiFunctions).filter(([name]) => !name.toLowerCase().includes('reschedule')).map(([name, def]) => ({ name, ...def })),
+          ...Object.entries(aiAuthFunctions).filter(([name]) => !name.toLowerCase().includes('reschedule')).map(([name, def]) => ({ name, ...def })),
         ],
       }],
     });
@@ -1371,7 +1438,7 @@ async function streamChat(req, res) {
         // Gửi text trực tiếp về client SSE
         const initialText = response.text ? response.text() : '';
         if (initialText && !res.writableEnded && isClientConnected) {
-          const safeText = initialText.replace(/\n\ndata:/g, '\n\n data:');
+          const safeText = stripInternalStatusCodes(initialText).replace(/\n\ndata:/g, '\n\n data:');
           res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
         }
         break;
@@ -1469,7 +1536,7 @@ async function streamChat(req, res) {
           ? sanitizeStructuredProse(rawFinalText, lastExecutedTool, lastFnResult, toolContext)
           : rawFinalText;
         if (finalText && !res.writableEnded && isClientConnected) {
-          const safeText = finalText.replace(/\n\ndata:/g, '\n\n data:');
+          const safeText = stripInternalStatusCodes(finalText).replace(/\n\ndata:/g, '\n\n data:');
           res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
         }
         break;
@@ -1497,7 +1564,11 @@ async function streamChat(req, res) {
       // Aborted — silent
     } else if (status === 429 || errMsg.includes('RESOURCE_EXHAUSTED')) {
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_RATE_LIMITED', text: 'Hệ thống AI đang nhận được rất nhiều yêu cầu. Vui lòng thử lại sau 30 giây.' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, code: 'RATE_LIMITED', text: 'Hệ thống AI đang nhận được rất nhiều yêu cầu. Vui lòng thử lại sau 30 giây.' })}\n\n`);
+      }
+    } else if (errMsg.includes('SAFETY') || errMsg.includes('blocked') || errMsg.includes('candidate')) {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_SAFETY_BLOCKED', text: 'Dạ, nội dung yêu cầu chưa phù hợp với chính sách an toàn y tế của hệ thống. Bạn vui lòng điều chỉnh lại câu hỏi hoặc mô tả cụ thể hơn nhé.' })}\n\n`);
       }
     } else if (status === 400) {
       if (!res.writableEnded) {
@@ -1507,9 +1578,17 @@ async function streamChat(req, res) {
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Dịch vụ AI đang bảo trì. Vui lòng quay lại sau.' })}\n\n`);
       }
+    } else if (status === 503 || errMsg.includes('503') || errMsg.includes('Service Unavailable') || errMsg.includes('high demand')) {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, code: 'SERVICE_UNAVAILABLE', text: 'Dịch vụ phân tích AI đang chịu tải cao. Vui lòng thử lại sau giây lát.' })}\n\n`);
+      }
+    } else if (imageId) {
+      if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, code: 'VISION_PROVIDER_ERROR', text: 'Đã xảy ra sự cố khi phân tích hình ảnh. Vui lòng thử lại sau.' })}\n\n`);
+      }
     } else {
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, code: 'VISION_PROVIDER_ERROR', text: 'Đã xảy ra sự cố khi kết nối trợ lý AI. Vui lòng thử lại sau.' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Đã xảy ra sự cố khi kết nối trợ lý AI. Vui lòng thử lại sau.' })}\n\n`);
       }
     }
   } finally {
@@ -1547,6 +1626,9 @@ function initSSEHeaders(res) {
     'Access-Control-Allow-Origin': process.env.URL_REACT || 'http://localhost:3000',
     'Access-Control-Allow-Credentials': 'true',
   });
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
 }
 
 /**
@@ -1636,19 +1718,11 @@ async function confirmCancelBookingEndpoint(req, res) {
  * Authenticated: R3 only
  */
 async function prepareRescheduleDraftEndpoint(req, res) {
-  const userId = req.user?.id;
-  try {
-    const result = await handlePrepareRescheduleDraft(req.body, userId, null);
-    const isOk = result.status === 'success' || result.status === 'needs_slot_selection';
-    const status = isOk ? 200 : (result.status === 'unauthorized' ? 401 : 400);
-    return res.status(status).json({
-      errCode: isOk ? 0 : 1,
-      ...result,
-    });
-  } catch (err) {
-    console.error('[AI_PREPARE_RESCHEDULE_DRAFT_ERR]', err);
-    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
-  }
+  return res.status(403).json({
+    errCode: 1,
+    status: 'unsupported',
+    message: 'Tính năng đổi lịch trực tiếp dành cho bệnh nhân hiện không được hỗ trợ. Quý khách vui lòng hủy lịch và đặt lịch mới.',
+  });
 }
 
 /**
@@ -1657,18 +1731,11 @@ async function prepareRescheduleDraftEndpoint(req, res) {
  * Authenticated: R3 only
  */
 async function confirmRescheduleBookingEndpoint(req, res) {
-  const userId = req.user?.id;
-  try {
-    const result = await handleConfirmRescheduleBooking(req.body, userId, null);
-    const status = result.status === 'success' ? 200 : (result.status === 'unauthorized' ? 401 : 400);
-    return res.status(status).json({
-      errCode: result.status === 'success' ? 0 : 1,
-      ...result,
-    });
-  } catch (err) {
-    console.error('[AI_CONFIRM_RESCHEDULE_BOOKING_ERR]', err);
-    return res.status(500).json({ errCode: -1, status: 'error', message: 'Lỗi server!' });
-  }
+  return res.status(403).json({
+    errCode: 1,
+    status: 'unsupported',
+    message: 'Tính năng đổi lịch trực tiếp dành cho bệnh nhân hiện không được hỗ trợ. Quý khách vui lòng hủy lịch và đặt lịch mới.',
+  });
 }
 
 /**
@@ -1789,4 +1856,5 @@ module.exports = {
   getMemoriesEndpoint,
   deleteMemoryEndpoint,
   clearMemoriesEndpoint,
+  stripInternalStatusCodes,
 };

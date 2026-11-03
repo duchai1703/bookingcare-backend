@@ -7,7 +7,8 @@
 
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
-const DEFAULT_MODEL = 'gemini-3.1-flash-lite';
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_VISION_MODEL = 'gemini-3.5-flash-lite';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_OUTPUT_TOKENS = 600;
 const DEFAULT_TIMEOUT_MS = 60000;
@@ -81,9 +82,19 @@ function getGenerativeModel(options = {}) {
     throw new Error('GEMINI_API_KEY_MISSING');
   }
 
-  const modelName = options.model || process.env.GEMINI_MODEL || DEFAULT_MODEL;
-  const temperature = typeof options.temperature === 'number' ? options.temperature : DEFAULT_TEMPERATURE;
-  const maxOutputTokens = typeof options.maxOutputTokens === 'number' ? options.maxOutputTokens : DEFAULT_MAX_OUTPUT_TOKENS;
+  const isVision = Boolean(options.isVision || options.hasImage);
+  const modelName = options.model || (isVision ? (process.env.GEMINI_VISION_MODEL || DEFAULT_VISION_MODEL) : (process.env.GEMINI_MODEL || DEFAULT_MODEL));
+  const temperature = typeof options.temperature === 'number'
+    ? options.temperature
+    : (typeof options.generationConfig?.temperature === 'number'
+      ? options.generationConfig.temperature
+      : DEFAULT_TEMPERATURE);
+
+  const maxOutputTokens = typeof options.maxOutputTokens === 'number'
+    ? options.maxOutputTokens
+    : (typeof options.generationConfig?.maxOutputTokens === 'number'
+      ? options.generationConfig.maxOutputTokens
+      : (isVision ? 2048 : DEFAULT_MAX_OUTPUT_TOKENS));
 
   const modelConfig = {
     model: modelName,
@@ -122,6 +133,7 @@ module.exports = {
   isAiConfigured,
   GENERATION_CONFIG,
   DEFAULT_MODEL,
+  DEFAULT_VISION_MODEL,
   DEFAULT_TEMPERATURE,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_TIMEOUT_MS,

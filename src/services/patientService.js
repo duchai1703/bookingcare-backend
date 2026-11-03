@@ -2192,7 +2192,7 @@ const getCancelPreview = async (bookingId, patientId) => {
     }
     const now = new Date();
     const refundCalc = policyEngineService.calculateRefundFromBookingSnapshot(booking, now);
-    const isPaid = ['S2', 'S3'].includes(booking.statusId) || booking.paymentStatus === 'paid';
+    const isPaid = booking.paymentStatus === 'paid';
     return {
       errCode: 0,
       data: {

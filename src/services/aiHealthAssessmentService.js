@@ -1052,6 +1052,25 @@ function extractJsonFromModelOutput(fullText = '') {
     } catch (_) {}
   }
 
+  // 3. Thử tự động đóng JSON bị ngắt giữa chừng
+  if (firstBrace !== -1) {
+    let unclosed = fullText.substring(firstBrace).trim();
+    unclosed = unclosed.replace(/```.*$/, '').trim();
+    const quoteCount = (unclosed.match(/(?<!\\)"/g) || []).length;
+    if (quoteCount % 2 !== 0) {
+      unclosed += '"';
+    }
+    const openBraces = (unclosed.match(/\{/g) || []).length;
+    const closeBraces = (unclosed.match(/\}/g) || []).length;
+    const openBrackets = (unclosed.match(/\[/g) || []).length;
+    const closeBrackets = (unclosed.match(/\]/g) || []).length;
+    for (let i = 0; i < (openBrackets - closeBrackets); i++) unclosed += ']';
+    for (let i = 0; i < (openBraces - closeBraces); i++) unclosed += '}';
+    try {
+      return JSON.parse(unclosed);
+    } catch (_) {}
+  }
+
   return null;
 }
 
@@ -1060,7 +1079,9 @@ function extractJsonFromModelOutput(fullText = '') {
  * @param {Object} [customOptions={}]
  */
 function getHealthAssessmentModel(customOptions = {}) {
+  const isVision = Boolean(customOptions.hasImage || customOptions.isVision);
   return getGenerativeModel({
+    isVision,
     systemInstruction: HEALTH_ASSESSMENT_SYSTEM_INSTRUCTION,
     generationConfig: {
       ...GENERATION_CONFIG,
