@@ -70,7 +70,15 @@ async function handleRunMasterAutomation(req, res) {
  */
 async function handleGetVisualCashflow(req, res) {
   try {
-    const result = await financialAutomationService.getVisualCashflowMetrics();
+    const options = {
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+      doctorId: req.query.doctorId,
+      clinicId: req.query.clinicId,
+      sort: req.query.sort,
+      timeRange: req.query.timeRange,
+    };
+    const result = await financialAutomationService.getVisualCashflowMetrics(options);
     return res.status(200).json(result);
   } catch (error) {
     console.error('Error in handleGetVisualCashflow:', error);
