@@ -797,6 +797,186 @@ async function runMasterAutomationCycle({ adminId = 1 } = {}) {
 }
 
 /**
+ * Helper: Giải mã khung thời gian lọc dòng tiền từ preset hoặc custom range
+ */
+function resolveCashflowDateRange(timeRange = 'all', fromDate = null, toDate = null) {
+  let start = null;
+  let end = null;
+  const effectiveRange = (fromDate || toDate) && (!timeRange || timeRange === 'all' || timeRange === 'custom')
+    ? 'custom'
+    : (timeRange || 'all');
+
+  if (effectiveRange === 'today') {
+    start = moment().startOf('day').toDate();
+    end = moment().endOf('day').toDate();
+  } else if (effectiveRange === '7d') {
+    start = moment().subtract(6, 'days').startOf('day').toDate();
+    end = moment().endOf('day').toDate();
+  } else if (effectiveRange === 'mtd') {
+    start = moment().startOf('month').toDate();
+    end = moment().endOf('day').toDate();
+  } else if (effectiveRange === 'custom') {
+    if (fromDate && moment(fromDate).isValid()) {
+      start = moment(fromDate).startOf('day').toDate();
+    }
+    if (toDate && moment(toDate).isValid()) {
+      end = moment(toDate).endOf('day').toDate();
+    }
+  }
+
+  return {
+    timeRange: effectiveRange,
+    start,
+    end,
+    buildWhere(field = 'createdAt') {
+      if (start && end) return { [field]: { [Op.between]: [start, end] } };
+      if (start) return { [field]: { [Op.gte]: start } };
+      if (end) return { [field]: { [Op.lte]: end } };
+      return {};
+    },
+    inRange(dateVal) {
+      if (!start && !end) return true;
+      if (!dateVal) return false;
+      const ts = new Date(dateVal).getTime();
+      if (isNaN(ts)) return false;
+      if (start && ts < start.getTime()) return false;
+      if (end && ts > end.getTime()) return false;
+      return true;
+    },
+  };
+}
+
+/**
+ * Helper: Sắp xếp danh sách chứng từ nhất quán theo sort option
+ */
+function sortCashflowItems(items, sort = 'newest', amountKey = 'amount', dateKey = 'createdAt') {
+  const list = [...(items || [])];
+  if (sort === 'oldest') {
+    return list.sort((a, b) => new Date(a[dateKey] || 0) - new Date(b[dateKey] || 0));
+  }
+  if (sort === 'highest') {
+    return list.sort((a, b) => (Number(b[amountKey]) || 0) - (Number(a[amountKey]) || 0));
+  }
+  if (sort === 'lowest') {
+    return list.sort((a, b) => (Number(a[amountKey]) || 0) - (Number(b[amountKey]) || 0));
+  }
+  return list.sort((a, b) => new Date(b[dateKey] || 0) - new Date(a[dateKey] || 0));
+}
+
+/**
+ * Helper: Chuẩn hóa ngày khám từ epoch ms hoặc chuỗi ngày thành DD/MM/YYYY
+ */
+function formatAppointmentDate(rawDate, fallbackDate) {
+  if (!rawDate) return fallbackDate ? moment(fallbackDate).format('DD/MM/YYYY') : '--';
+  const asNum = Number(rawDate);
+  const m = !isNaN(asNum) && asNum > 100000000 ? moment(asNum) : moment(rawDate);
+  return m.isValid() ? m.format('DD/MM/YYYY') : String(rawDate);
+}
+
+/**
+ * Helper: Tính phân bổ Bác sĩ / Sàn từ dữ liệu thật của Booking hoặc Policy Snapshot
+ */
+function resolveBookingSplit(booking, totalAmount, fallbackPlatformRate = 15) {
+  const gross = Number(totalAmount) || 0;
+  if (gross <= 0) return { doctorShare: 0, platformShare: 0 };
+
+  if (booking && ((booking.doctorShare !== undefined && booking.doctorShare !== null) || (booking.platformFee !== undefined && booking.platformFee !== null))) {
+    const doc = Number(booking.doctorShare || 0);
+    const fee = Number(booking.platformFee || 0);
+    if (doc + fee > 0) {
+      return { doctorShare: doc, platformShare: fee };
+    }
+  }
+
+  if (booking?.policySnapshot) {
+    try {
+      const snap = typeof booking.policySnapshot === 'string'
+        ? JSON.parse(booking.policySnapshot)
+        : booking.policySnapshot;
+      if (snap?.calculation && (Number(snap.calculation.doctorShare) + Number(snap.calculation.platformFee) > 0)) {
+        return {
+          doctorShare: Number(snap.calculation.doctorShare || 0),
+          platformShare: Number(snap.calculation.platformFee || 0),
+        };
+      }
+      if (snap?.revenuePolicy?.rules?.platformFeePercent != null) {
+        const rate = Number(snap.revenuePolicy.rules.platformFeePercent);
+        const fee = Math.round((gross * rate) / 100);
+        return { doctorShare: Math.max(0, gross - fee), platformShare: fee };
+      }
+    } catch (e) {
+      // Bỏ qua nếu policySnapshot không hợp lệ
+    }
+  }
+
+  const fee = Math.round((gross * fallbackPlatformRate) / 100);
+  return { doctorShare: Math.max(0, gross - fee), platformShare: fee };
+}
+
+/**
+ * Helper: Đọc tỷ lệ hoa hồng nền tảng đang hiệu lực từ Financial_Policy (GLOBAL)
+ */
+async function getActivePlatformFeeRate(fallbackRate = 15) {
+  try {
+    if (db.Financial_Policy) {
+      const revPolicy = await db.Financial_Policy.findOne({
+        where: { policyType: 'REVENUE_SHARE', status: 'ACTIVE', scopeType: 'GLOBAL' },
+        order: [['version', 'DESC']],
+        raw: true,
+      });
+      if (revPolicy?.rules) {
+        const rules = typeof revPolicy.rules === 'string' ? JSON.parse(revPolicy.rules) : revPolicy.rules;
+        if (rules?.standardRate != null && !isNaN(Number(rules.standardRate))) {
+          return Number(rules.standardRate);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Could not read active revenue policy:', e.message);
+  }
+  return fallbackRate;
+}
+
+/**
+ * Helper: Chuẩn hóa một bản ghi ca khám đang trong khoang tạm giữ Escrow Pool
+ */
+function buildEscrowBookingEntry(b, rawAmount, holdId, createdAt, paymentSource, fallbackRate = 15, fallbackPatientLabel = null) {
+  const patient = b?.patientData || {};
+  const doctor = b?.doctorBookingData || {};
+  const amount = Number(rawAmount ?? b?.bookingPrice ?? 0);
+  const { doctorShare, platformShare } = resolveBookingSplit(b, amount, fallbackRate);
+  const pName = (patient.firstName || patient.lastName)
+    ? `${patient.lastName || ''} ${patient.firstName || ''}`.trim()
+    : (b?.patientName || fallbackPatientLabel || (b?.patientId ? `Bệnh nhân #${b.patientId}` : `Bệnh nhân ca #${b?.id || 'N/A'}`));
+  const dName = (doctor.firstName || doctor.lastName)
+    ? `${doctor.lastName || ''} ${doctor.firstName || ''}`.trim()
+    : `Bác sĩ #${b?.doctorId || 'N/A'}`;
+  const doctorPercent = amount > 0 ? Math.round((doctorShare / amount) * 100) : (100 - fallbackRate);
+  const platformPercent = amount > 0 ? (100 - doctorPercent) : fallbackRate;
+
+  return {
+    holdId,
+    bookingId: b?.id || null,
+    paymentSource,
+    paymentSourceLabel: paymentSource === 'WALLET' ? 'Ví nội bộ (HELD)' : 'VNPay trực tiếp',
+    patientId: b?.patientId || null,
+    patientName: pName,
+    doctorId: b?.doctorId || null,
+    clinicId: b?.clinicId || null,
+    doctorName: dName,
+    bookingPrice: amount,
+    doctorShare,
+    platformShare,
+    doctorSharePercent: doctorPercent,
+    platformSharePercent: platformPercent,
+    statusId: b?.statusId || 'S2',
+    date: formatAppointmentDate(b?.date, createdAt),
+    timeType: b?.timeType || '--',
+    createdAt,
+  };
+}
+
+/**
  * [PHASE 1 - CASH FLOW ARCHITECTURE]
  * GET /api/v1/admin/financial/visual-cashflow
  * Tổng hợp toàn bộ dữ liệu 5 Khối Vốn Lõi, Đối soát Bất biến & 4 Biểu đồ Recharts chuẩn Ramp FinTech
@@ -805,31 +985,41 @@ async function getVisualCashflowMetrics(options = {}) {
   const { fromDate, toDate, doctorId, clinicId, sort = 'newest', timeRange = 'all' } = options || {};
   try {
     const now = new Date();
+    const dateFilter = resolveCashflowDateRange(timeRange, fromDate, toDate);
+    const parsedDoctorId = doctorId ? parseInt(doctorId, 10) : null;
+    const parsedClinicId = clinicId ? parseInt(clinicId, 10) : null;
 
-    // 1. Đọc cấu hình từ SystemSetting
+    // 1. Đọc cấu hình tài chính thực tế từ SystemSetting & Financial_Policy
     let adminProfitWithdrawn = 0;
+    let floatAllocatedAmount = 0;
+    let platformReserveFund = 0;
     try {
       const settings = await db.SystemSetting.findAll({
         where: {
           key: {
-            [Op.in]: ['financial_admin_profit_withdrawn', 'financial_float_allocated_amount'],
+            [Op.in]: [
+              'financial_admin_profit_withdrawn',
+              'financial_float_allocated_amount',
+              'financial_platform_reserve_fund',
+            ],
           },
         },
         raw: true,
       });
       settings.forEach((s) => {
-        if (s.key === 'financial_admin_profit_withdrawn' && !isNaN(Number(s.value))) {
-          adminProfitWithdrawn = Math.max(0, Number(s.value));
-        }
-        if (s.key === 'financial_float_allocated_amount' && !isNaN(Number(s.value)) && adminProfitWithdrawn === 0) {
-          adminProfitWithdrawn = Math.max(0, Number(s.value));
-        }
+        const val = Number(s.value);
+        if (isNaN(val)) return;
+        if (s.key === 'financial_admin_profit_withdrawn') adminProfitWithdrawn = Math.max(0, val);
+        if (s.key === 'financial_float_allocated_amount') floatAllocatedAmount = Math.max(0, val);
+        if (s.key === 'financial_platform_reserve_fund') platformReserveFund = Math.max(0, val);
       });
     } catch (e) {
       console.warn('Could not read financial system settings:', e.message);
     }
 
-    // 2. KHỐI VÍ BỆNH NHÂN (Patient Wallets)
+    const defaultPlatformFeeRate = await getActivePlatformFeeRate(15);
+
+    // 2. KHỐI VÍ BỆNH NHÂN (Patient Wallets — số dư hiện hữu toàn sàn)
     let patientAvailable = 0;
     let patientReserved = 0;
     let patientWalletCount = 0;
@@ -851,7 +1041,7 @@ async function getVisualCashflowMetrics(options = {}) {
     }
     const totalPatientWallets = patientAvailable + patientReserved;
 
-    // 3. KHỐI VÍ BÁC SĨ (Doctor Wallets)
+    // 3. KHỐI VÍ BÁC SĨ (Doctor Wallets — số dư hiện hữu toàn sàn)
     let doctorAvailable = 0;
     let doctorReserved = 0;
     let doctorWalletCount = 0;
@@ -873,62 +1063,140 @@ async function getVisualCashflowMetrics(options = {}) {
     }
     const totalDoctorWallets = doctorAvailable + doctorReserved;
 
-    // 4. KHỐI TẠM GIỮ TRUNG GIAN (Escrow Pool - Ca khám đang chờ khám hoặc đang giữ cọc)
-    // Bóc tách 2 ngăn: Ngăn Bác sĩ (90%) vs Ngăn Sàn (10%)
+    // 4. KHỐI TẠM GIỮ TRUNG GIAN (Escrow Pool — gồm cả cọc Ví BN HELD + ca VNPay đã thanh toán chờ khám S1/S2)
     let escrowTotal = 0;
     let escrowDoctorShare = 0;
     let escrowPlatformShare = 0;
+    let walletHoldTotal = 0;
+    let walletHoldCount = 0;
+    let directVnpayTotal = 0;
+    let directVnpayCount = 0;
     let activeHoldCount = 0;
+    let escrowBookingsAll = [];
 
     try {
-      const holdStats = await db.Wallet_Hold.findAll({
-        where: { status: 'HELD' },
-        attributes: [
-          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalHeld'],
-          [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'holdCount'],
-        ],
-        raw: true,
-      });
-      escrowTotal = Number(holdStats[0]?.totalHeld || 0);
-      activeHoldCount = parseInt(holdStats[0]?.holdCount || 0, 10);
-    } catch (e) {
-      console.warn('Could not query active holds:', e.message);
-    }
+      const heldBookingIdSet = new Set();
+      let walletEscrowBookingsAll = [];
 
-    try {
-      if (db.Doctor_Settlement_Item) {
-        const pendingItems = await db.Doctor_Settlement_Item.findAll({
-          where: { status: { [Op.in]: ['EARNED', 'PENDING'] } },
-          attributes: [
-            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('netAmount')), 0), 'totalDoctorNet'],
-            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('platformFee')), 0), 'totalPlatformFee'],
-            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('grossAmount')), 0), 'totalGross'],
-          ],
+      if (db.Wallet_Hold) {
+        const holds = await db.Wallet_Hold.findAll({
+          where: { status: 'HELD' },
           raw: true,
         });
-        const grossPending = Number(pendingItems[0]?.totalGross || 0);
-        if (grossPending > 0) {
-          escrowDoctorShare = Number(pendingItems[0]?.totalDoctorNet || 0);
-          escrowPlatformShare = Number(pendingItems[0]?.totalPlatformFee || 0);
-          if (escrowTotal === 0) escrowTotal = grossPending;
+        const bIds = holds.map((h) => h.bookingId).filter(Boolean);
+        bIds.forEach((id) => heldBookingIdSet.add(id));
+
+        const bookingsMap = {};
+        if (bIds.length > 0) {
+          const bList = await db.Booking.findAll({
+            where: { id: { [Op.in]: bIds } },
+            include: [
+              { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName'] },
+              { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
+            ],
+          });
+          bList.forEach((b) => {
+            bookingsMap[b.id] = b;
+          });
         }
+
+        walletEscrowBookingsAll = holds.map((h) => {
+          const b = bookingsMap[h.bookingId] || { id: h.bookingId };
+          return buildEscrowBookingEntry(
+            b,
+            h.amount,
+            h.id,
+            h.createdAt,
+            'WALLET',
+            defaultPlatformFeeRate,
+            `Bệnh nhân #${b.patientId || h.walletId}`
+          );
+        });
       }
+
+      // Loại trừ mọi booking đã có bút toán quyết toán (tránh đếm trùng với Doctor_Settlement_Item)
+      const settledBookingIdSet = new Set();
+      if (db.Doctor_Settlement_Item) {
+        const settledRows = await db.Doctor_Settlement_Item.findAll({
+          where: { status: { [Op.in]: ['EARNED', 'AVAILABLE', 'PAID'] } },
+          attributes: ['bookingId'],
+          raw: true,
+        });
+        settledRows.forEach((r) => {
+          if (r.bookingId) settledBookingIdSet.add(r.bookingId);
+        });
+      }
+
+      let directEscrowBookingsAll = [];
+      if (db.Booking) {
+        const excludedBookingIds = Array.from(new Set([...heldBookingIdSet, ...settledBookingIdSet]));
+        const directEscrowWhere = {
+          paymentMethod: 'VNPAY',
+          paymentStatus: 'paid',
+          statusId: { [Op.in]: ['S1', 'S2'] },
+          bookingPrice: { [Op.gt]: 0 },
+          [Op.or]: [{ refundStatus: 'none' }, { refundStatus: null }],
+        };
+        if (excludedBookingIds.length > 0) {
+          directEscrowWhere.id = { [Op.notIn]: excludedBookingIds };
+        }
+
+        const directList = await db.Booking.findAll({
+          where: directEscrowWhere,
+          include: [
+            { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName'] },
+            { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
+          ],
+        });
+
+        directEscrowBookingsAll = directList.map((b) =>
+          buildEscrowBookingEntry(b, b.bookingPrice, `VNPAY-BK-${b.id}`, b.createdAt, 'VNPAY', defaultPlatformFeeRate)
+        );
+      }
+
+      escrowBookingsAll = [...walletEscrowBookingsAll, ...directEscrowBookingsAll];
+      activeHoldCount = escrowBookingsAll.length;
+      escrowBookingsAll.forEach((eb) => {
+        escrowTotal += eb.bookingPrice;
+        escrowDoctorShare += eb.doctorShare;
+        escrowPlatformShare += eb.platformShare;
+        if (eb.paymentSource === 'WALLET') {
+          walletHoldTotal += eb.bookingPrice;
+          walletHoldCount += 1;
+        } else {
+          directVnpayTotal += eb.bookingPrice;
+          directVnpayCount += 1;
+        }
+      });
     } catch (e) {
-      console.warn('Could not query settlement escrow items:', e.message);
+      console.warn('Could not query active escrow holds:', e.message);
     }
 
-    if (escrowTotal > 0 && escrowDoctorShare === 0 && escrowPlatformShare === 0) {
-      escrowPlatformShare = Math.round(escrowTotal * 0.1);
-      escrowDoctorShare = escrowTotal - escrowPlatformShare;
-    }
+    const escrowDoctorPercent = escrowTotal > 0 ? Math.round((escrowDoctorShare / escrowTotal) * 100) : (100 - defaultPlatformFeeRate);
+    const escrowPlatformPercent = escrowTotal > 0 ? (100 - escrowDoctorPercent) : defaultPlatformFeeRate;
 
-    // 5. KHỐI TIỀN LỜI CÔNG TY (Platform Profit & Net Fees)
+    const filteredEscrowRaw = escrowBookingsAll.filter((eb) => {
+      if (parsedDoctorId && eb.doctorId !== parsedDoctorId) return false;
+      if (parsedClinicId && eb.clinicId !== parsedClinicId) return false;
+      return dateFilter.inRange(eb.createdAt);
+    });
+    const escrowBookings = sortCashflowItems(filteredEscrowRaw, sort, 'bookingPrice', 'createdAt');
+    const flowHeldBooking = escrowBookings.reduce((sum, item) => sum + item.bookingPrice, 0);
+    const flowHeldCount = escrowBookings.length;
+    const flowHeldWalletBooking = escrowBookings
+      .filter((item) => item.paymentSource === 'WALLET')
+      .reduce((sum, item) => sum + item.bookingPrice, 0);
+    const flowHeldWalletCount = escrowBookings.filter((item) => item.paymentSource === 'WALLET').length;
+    const flowHeldDirectVnpayBooking = flowHeldBooking - flowHeldWalletBooking;
+    const flowHeldDirectVnpayCount = flowHeldCount - flowHeldWalletCount;
+
+    // 5. KHỐI TIỀN LỜI CÔNG TY (Platform Profit — snapshot toàn sàn)
     let totalPlatformFeeEarned = 0;
     try {
       if (db.Doctor_Settlement_Item) {
         totalPlatformFeeEarned = Number(
           (await db.Doctor_Settlement_Item.sum('platformFee', {
-            where: { status: { [Op.in]: ['AVAILABLE', 'PAID'] } },
+            where: { status: { [Op.in]: ['EARNED', 'AVAILABLE', 'PAID'] } },
           })) || 0
         );
       }
@@ -937,107 +1205,341 @@ async function getVisualCashflowMetrics(options = {}) {
     }
     const spendableProfit = Math.max(0, totalPlatformFeeEarned - adminProfitWithdrawn);
 
-    // 6. KHỐI TÀI KHOẢN NGÂN HÀNG THẬT (Real Bank VCB Company Account)
-    let walletDepositInflow = 0;
-    let walletDepositCount = 0;
+    // 6. KHỐI TÀI KHOẢN NGÂN HÀNG THẬT (Real Bank VCB Company Account — Toàn sàn & Theo kỳ lọc)
+    let walletDepositInflowAll = 0;
+    let walletDepositInflowPeriod = 0;
+    let walletDepositCountPeriod = 0;
+    let recentDeposits = [];
     try {
-      const depStats = await db.Payment_Transaction.findAll({
-        where: { status: 'SUCCESS' },
-        attributes: [
-          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalDeposited'],
-          [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'depositCount'],
-        ],
-        raw: true,
-      });
-      walletDepositInflow = Number(depStats[0]?.totalDeposited || 0);
-      walletDepositCount = parseInt(depStats[0]?.depositCount || 0, 10);
+      if (db.Payment_Transaction) {
+        walletDepositInflowAll = Number(
+          (await db.Payment_Transaction.sum('amount', { where: { status: 'SUCCESS' } })) || 0
+        );
+
+        const depWhere = { status: 'SUCCESS', ...dateFilter.buildWhere('createdAt') };
+        const depList = await db.Payment_Transaction.findAll({
+          where: depWhere,
+          order: [['createdAt', 'DESC']],
+          include: [
+            {
+              model: db.Wallet,
+              as: 'wallet',
+              include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName'] }],
+            },
+          ],
+        });
+
+        walletDepositCountPeriod = depList.length;
+        const mappedDeposits = depList.map((d) => {
+          const amt = Number(d.amount || 0);
+          walletDepositInflowPeriod += amt;
+          const o = d.wallet?.owner;
+          return {
+            id: d.id,
+            amount: amt,
+            paymentMethod: d.gateway || d.paymentMethod || 'VNPAY',
+            txnRef: d.gatewayTransactionNo || d.txnRef || `PAY-${d.id}`,
+            patientName: o ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : 'Bệnh nhân',
+            createdAt: d.createdAt,
+          };
+        });
+        recentDeposits = sortCashflowItems(mappedDeposits, sort, 'amount', 'createdAt').slice(0, 50);
+      }
     } catch (e) {
       console.warn('Could not query payment transactions:', e.message);
     }
 
-    let directBookingInflow = 0;
+    let directBookingInflowAll = 0;
+    let directBookingInflowPeriod = 0;
+    let directBookingCountPeriod = 0;
     try {
-      const bStats = await db.Booking.findAll({
+      const bAllStats = await db.Booking.findAll({
         where: { paymentStatus: 'paid', paymentMethod: 'VNPAY' },
         attributes: [
           [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('bookingPrice')), 0), 'totalPaid'],
         ],
         raw: true,
       });
-      directBookingInflow = Number(bStats[0]?.totalPaid || 0);
+      directBookingInflowAll = Number(bAllStats[0]?.totalPaid || 0);
+
+      const bPeriodWhere = {
+        paymentStatus: 'paid',
+        paymentMethod: 'VNPAY',
+        ...dateFilter.buildWhere('createdAt'),
+      };
+      if (parsedDoctorId) bPeriodWhere.doctorId = parsedDoctorId;
+      if (parsedClinicId) bPeriodWhere.clinicId = parsedClinicId;
+
+      const bPeriodStats = await db.Booking.findAll({
+        where: bPeriodWhere,
+        attributes: [
+          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('bookingPrice')), 0), 'totalPaid'],
+          [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'cnt'],
+        ],
+        raw: true,
+      });
+      directBookingInflowPeriod = Number(bPeriodStats[0]?.totalPaid || 0);
+      directBookingCountPeriod = parseInt(bPeriodStats[0]?.cnt || 0, 10);
     } catch (e) {
       console.warn('Could not query direct bookings:', e.message);
     }
 
-    const totalRealInflow = walletDepositInflow + directBookingInflow;
+    const totalRealInflowAll = walletDepositInflowAll + directBookingInflowAll;
 
-    let doctorBankPayoutTotal = 0;
-    let doctorPayoutCount = 0;
+    // Rút tiền thực tế (Withdrawal_Request + join Wallet để lấy đúng walletType và accountNumber)
+    let doctorBankPayoutAll = 0;
+    let patientBankPayoutAll = 0;
+    let doctorBankPayoutPeriod = 0;
+    let patientBankPayoutPeriod = 0;
+    let doctorPayoutCountPeriod = 0;
+    let pendingWithdrawalsCount = 0;
+    let pendingWithdrawalsAmount = 0;
+    let recentWithdrawals = [];
+    let doctorPayoutsList = [];
+
     try {
       if (db.Withdrawal_Request) {
-        const docWallets = await db.Wallet.findAll({
-          where: { walletType: 'DOCTOR' },
-          attributes: ['id'],
-          raw: true,
+        const allWithdrawals = await db.Withdrawal_Request.findAll({
+          order: [['createdAt', 'DESC']],
+          include: [
+            {
+              model: db.Wallet,
+              as: 'wallet',
+              attributes: ['id', 'ownerId', 'walletType'],
+              include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName'] }],
+            },
+          ],
         });
-        const docWIds = docWallets.map(w => w.id);
-        if (docWIds.length > 0) {
-          const wDoc = await db.Withdrawal_Request.findAll({
-            where: { status: 'TRANSFERRED', walletId: { [Op.in]: docWIds } },
-            attributes: [
-              [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalPaid'],
-              [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'payoutCount'],
-            ],
-            raw: true,
-          });
-          doctorBankPayoutTotal = Number(wDoc[0]?.totalPaid || 0);
-          doctorPayoutCount = parseInt(wDoc[0]?.payoutCount || 0, 10);
-        }
+
+        const mappedAllWithdrawals = allWithdrawals.map((wInst) => {
+          const w = wInst.toJSON();
+          const wType = w.wallet?.walletType || 'USER';
+          const owner = w.wallet?.owner;
+          const ownerName = owner ? `${owner.lastName || ''} ${owner.firstName || ''}`.trim() : null;
+          const amt = Number(w.amount || 0);
+          const effectiveDate = w.transferredAt || w.createdAt;
+
+          if (w.status === 'TRANSFERRED') {
+            if (wType === 'DOCTOR') {
+              doctorBankPayoutAll += amt;
+            } else {
+              patientBankPayoutAll += amt;
+            }
+          } else if (['PENDING', 'APPROVED'].includes(w.status)) {
+            pendingWithdrawalsCount += 1;
+            pendingWithdrawalsAmount += amt;
+          }
+
+          return {
+            id: w.id,
+            amount: amt,
+            walletType: wType,
+            ownerName: ownerName || w.accountHolderName || 'Chủ tài khoản',
+            accountHolderName: w.accountHolderName || ownerName || 'Chủ tài khoản',
+            bankName: w.bankName || '--',
+            accountNumber: w.accountNumber || null,
+            bankAccountNumber: w.accountNumber || null,
+            bankTransactionRef: w.bankTransactionRef || null,
+            status: w.status,
+            transferredAt: w.transferredAt,
+            createdAt: w.createdAt,
+            effectiveDate,
+          };
+        });
+
+        const periodWithdrawals = mappedAllWithdrawals.filter((w) => dateFilter.inRange(w.effectiveDate));
+        recentWithdrawals = sortCashflowItems(periodWithdrawals, sort, 'amount', 'effectiveDate').slice(0, 50);
+
+        const disbursedDoctorList = periodWithdrawals.filter(
+          (w) => w.status === 'TRANSFERRED' && w.walletType === 'DOCTOR'
+        );
+        const disbursedPatientList = periodWithdrawals.filter(
+          (w) => w.status === 'TRANSFERRED' && w.walletType !== 'DOCTOR'
+        );
+
+        doctorBankPayoutPeriod = disbursedDoctorList.reduce((acc, w) => acc + w.amount, 0);
+        patientBankPayoutPeriod = disbursedPatientList.reduce((acc, w) => acc + w.amount, 0);
+        doctorPayoutCountPeriod = disbursedDoctorList.length;
+        doctorPayoutsList = sortCashflowItems(disbursedDoctorList, sort, 'amount', 'effectiveDate').slice(0, 50);
       }
     } catch (e) {
-      console.warn('Could not query doctor withdrawals:', e.message);
+      console.warn('Could not query withdrawals:', e.message);
     }
 
-    let patientBankPayoutTotal = 0;
-    try {
-      if (db.Withdrawal_Request) {
-        const patWallets = await db.Wallet.findAll({
-          where: { walletType: { [Op.in]: ['PATIENT', 'USER'] } },
-          attributes: ['id'],
-          raw: true,
-        });
-        const patWIds = patWallets.map(w => w.id);
-        if (patWIds.length > 0) {
-          const wPat = await db.Withdrawal_Request.findAll({
-            where: { status: 'TRANSFERRED', walletId: { [Op.in]: patWIds } },
-            attributes: [
-              [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalPaid'],
-            ],
-            raw: true,
-          });
-          patientBankPayoutTotal = Number(wPat[0]?.totalPaid || 0);
-        }
-      }
-    } catch (e) {
-      console.warn('Could not query patient withdrawals:', e.message);
-    }
+    // 6b. SỬA LOGIC KẾ TOÁN TẦNG 1 & ĐỐI SOÁT TẦNG 2 (Không đếm trùng reservedBalance!)
+    // Tổng nghĩa vụ Sổ cái Sàn = patientAvailable (rảnh) + escrowTotal (tạm giữ) + totalDoctorWallets + spendableProfit
+    const totalSystemLiabilities = patientAvailable + escrowTotal + totalDoctorWallets + spendableProfit;
 
-    // 6. KHỐI TÀI KHOẢN NGÂN HÀNG THẬT (Real Bank VCB Company Account)
-    // Sổ cái ngân quỹ đối chiếu trực tiếp: Tiền mặt VCB Thật bảo chứng 100% cho các nghĩa vụ ví nội bộ:
-    // VCB Thật = Ví Bệnh Nhân + Ví Bác Sĩ + Két Escrow + Lợi Nhuận Nền Tảng Khả Dụng
-    const totalInternalCapital = totalPatientWallets + totalDoctorWallets + escrowTotal + spendableProfit;
-    const computedRealInflow = totalInternalCapital + adminProfitWithdrawn;
-    const totalRealOutflow = adminProfitWithdrawn + doctorBankPayoutTotal + patientBankPayoutTotal;
-    const realBankBalance = totalInternalCapital;
+    // Tiền mặt thật tại VCB = Vốn đối ứng bảo chứng sàn + Tổng thu VNPay (Nạp ví + Đặt khám trực tiếp) - Tổng chi UNC/Rút lời - Vốn trích đầu tư
+    const totalRealOutflowAll = adminProfitWithdrawn + doctorBankPayoutAll + patientBankPayoutAll + floatAllocatedAmount;
+    const realBankBalance = Math.max(0, platformReserveFund + totalRealInflowAll - totalRealOutflowAll);
 
-    // 7. ĐỐI SOÁT BẤT BIẾN (Reconciliation Invariant)
-    const totalSystemLiabilities = totalInternalCapital;
-    const requiredBacking = totalPatientWallets + totalDoctorWallets + escrowTotal;
+    // Chênh lệch thanh khoản: Dương = Dự trữ thanh khoản tại VCB; Âm = Thiếu hụt tiền mặt bảo chứng
     const discrepancy = realBankBalance - totalSystemLiabilities;
-    const isBalanced = Math.abs(discrepancy) < 1;
-    const coveragePercent = 100;
+    const reserveSurplus = Math.max(0, discrepancy);
+    const isBalanced = realBankBalance >= totalSystemLiabilities;
+    const coveragePercent = totalSystemLiabilities > 0
+      ? Math.round((realBankBalance / totalSystemLiabilities) * 100)
+      : 100;
 
-    // 8. DỮ LIỆU BIỂU ĐỒ RECHARTS (4 Biểu đồ)
+    // 7. QUYẾT TOÁN THÙ LAO & PHÍ SÀN TRONG KỲ LỌC (Doctor_Settlement_Item)
+    let recentSettlements = [];
+    let platformFeeItemsList = [];
+    let periodDoctorSettledNet = 0;
+    let periodDoctorSettledGross = 0;
+    let periodPlatformCommission = 0;
+    let periodDoctorSettledCount = 0;
+    let periodDoctorPaidToWallet = 0;
+    let periodDoctorPendingPayout = 0;
+
+    try {
+      if (db.Doctor_Settlement_Item) {
+        const settleWhere = {
+          status: { [Op.in]: ['EARNED', 'AVAILABLE', 'PAID'] },
+          ...dateFilter.buildWhere('earnedAt'),
+        };
+        if (parsedDoctorId) settleWhere.doctorId = parsedDoctorId;
+        if (parsedClinicId) settleWhere.clinicId = parsedClinicId;
+
+        const items = await db.Doctor_Settlement_Item.findAll({
+          where: settleWhere,
+          order: [['earnedAt', 'DESC']],
+          raw: true,
+        });
+
+        const docIds = [...new Set(items.map((i) => i.doctorId).filter(Boolean))];
+        const docMap = {};
+        if (docIds.length > 0) {
+          const docUsers = await db.User.findAll({
+            where: { id: { [Op.in]: docIds } },
+            attributes: ['id', 'firstName', 'lastName'],
+            raw: true,
+          });
+          docUsers.forEach((u) => {
+            docMap[u.id] = `${u.lastName || ''} ${u.firstName || ''}`.trim();
+          });
+        }
+
+        const mappedSettlements = items.map((s) => {
+          const gross = Number(s.grossAmount || 0);
+          const net = Number(s.netAmount || 0);
+          const fee = Number(s.platformFee || 0);
+          periodDoctorSettledGross += gross;
+          periodDoctorSettledNet += net;
+          periodPlatformCommission += fee;
+          periodDoctorSettledCount += 1;
+          if (s.status === 'PAID') {
+            periodDoctorPaidToWallet += net;
+          } else {
+            periodDoctorPendingPayout += net;
+          }
+          return {
+            id: s.id,
+            bookingId: s.bookingId,
+            doctorId: s.doctorId,
+            doctorName: docMap[s.doctorId] || `Bác sĩ #${s.doctorId}`,
+            grossAmount: gross,
+            netAmount: net,
+            platformFeeRate: Number(s.platformFeeRate || defaultPlatformFeeRate),
+            platformFee: fee,
+            status: s.status,
+            earnedAt: s.earnedAt || s.createdAt,
+            note: s.note,
+          };
+        });
+
+        recentSettlements = sortCashflowItems(mappedSettlements, sort, 'netAmount', 'earnedAt').slice(0, 50);
+
+        const feeOnlyItems = mappedSettlements
+          .filter((f) => f.platformFee > 0)
+          .map((f) => ({
+            id: f.id,
+            bookingId: f.bookingId,
+            doctorId: f.doctorId,
+            doctorName: f.doctorName,
+            grossAmount: f.grossAmount,
+            platformFeeRate: f.platformFeeRate,
+            platformFee: f.platformFee,
+            earnedAt: f.earnedAt,
+            note: f.note,
+          }));
+        platformFeeItemsList = sortCashflowItems(feeOnlyItems, sort, 'platformFee', 'earnedAt').slice(0, 50);
+      }
+    } catch (e) {
+      console.warn('Could not query settlement constituents:', e.message);
+    }
+
+    const periodDoctorPercent = periodDoctorSettledGross > 0
+      ? Math.round((periodDoctorSettledNet / periodDoctorSettledGross) * 1000) / 10
+      : escrowDoctorPercent;
+    const periodPlatformPercent = periodDoctorSettledGross > 0
+      ? Math.round((periodPlatformCommission / periodDoctorSettledGross) * 1000) / 10
+      : escrowPlatformPercent;
+
+    // 7b. Lịch sử Rút lợi nhuận sàn thật từ Financial_Automation_Log
+    let companyWithdrawalsList = [];
+    let profitWithdrawnPeriod = 0;
+    try {
+      if (db.Financial_Automation_Log) {
+        const cashoutLogs = await db.Financial_Automation_Log.findAll({
+          where: {
+            jobType: 'PLATFORM_PROFIT_CASHOUT',
+            ...dateFilter.buildWhere('createdAt'),
+          },
+          order: [['createdAt', 'DESC']],
+          raw: true,
+        });
+        companyWithdrawalsList = cashoutLogs.map((log) => {
+          let details = {};
+          try {
+            details = typeof log.details === 'string' ? JSON.parse(log.details) : (log.details || {});
+          } catch (e) {
+            details = {};
+          }
+          const amt = Number(details.amount || log.totalAmount || 0);
+          profitWithdrawnPeriod += amt;
+          return {
+            id: log.id,
+            batchCode: log.batchCode,
+            amount: amt,
+            recipient: details.bankAccountInfo || 'CONG TY CP CONG NGHE BOOKINGCARE',
+            bankName: 'Ngân hàng thụ hưởng',
+            accountNumber: details.bankAccountInfo || 'Theo nhật ký Admin',
+            reason: details.note || 'Rút lợi nhuận hoa hồng sàn',
+            transferredAt: log.createdAt,
+            status: log.status === 'SUCCESS' ? 'TRANSFERRED' : log.status,
+          };
+        });
+        companyWithdrawalsList = sortCashflowItems(companyWithdrawalsList, sort, 'amount', 'transferredAt');
+      }
+    } catch (e) {
+      console.warn('Could not query company profit cashout logs:', e.message);
+    }
+
+    // Hoàn tiền trong kỳ lọc (Wallet_Transaction REFUND)
+    let refundedAmountPeriod = 0;
+    let refundCountPeriod = 0;
+    try {
+      if (db.Wallet_Transaction) {
+        const refStats = await db.Wallet_Transaction.findAll({
+          where: {
+            transactionType: 'REFUND',
+            ...dateFilter.buildWhere('createdAt'),
+          },
+          attributes: [
+            [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalRefund'],
+            [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'cnt'],
+          ],
+          raw: true,
+        });
+        refundedAmountPeriod = Number(refStats[0]?.totalRefund || 0);
+        refundCountPeriod = parseInt(refStats[0]?.cnt || 0, 10);
+      }
+    } catch (e) {
+      console.warn('Could not query refund period stats:', e.message);
+    }
+
+    // 8. DỮ LIỆU BIỂU ĐỒ RECHARTS (4 Biểu đồ — phản ánh đúng kỳ lọc và tỷ lệ thực tế)
     const reconciliationChart = [
       {
         name: 'Tiền mặt VCB Thực tế',
@@ -1049,34 +1551,56 @@ async function getVisualCashflowMetrics(options = {}) {
         reserveLiabilities: 0,
       },
       {
-        name: 'Nghĩa vụ Sổ cái Sàn',
+        name: 'Nghĩa vụ Sổ cái & Dự trữ',
         totalReal: 0,
-        patientLiabilities: totalPatientWallets,
+        patientLiabilities: patientAvailable,
         doctorLiabilities: totalDoctorWallets,
         escrowLiabilities: escrowTotal,
         profitLiabilities: spendableProfit,
-        reserveLiabilities: 0,
+        reserveLiabilities: reserveSurplus,
       },
     ];
 
     const capitalComposition = [
-      { name: 'Ví Bệnh nhân (BN App)', value: totalPatientWallets, color: '#8b5cf6' },
+      { name: 'Ví Bệnh nhân khả dụng', value: patientAvailable, color: '#8b5cf6' },
       { name: 'Ví Bác sĩ (BS App)', value: totalDoctorWallets, color: '#10b981' },
       { name: 'Quỹ Tạm giữ Escrow', value: escrowTotal, color: '#f59e0b' },
       { name: 'Lợi nhuận Công ty', value: spendableProfit, color: '#d4ff00' },
     ].filter((item) => item.value > 0);
 
     const dailyCashFlow = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = moment().subtract(i, 'days');
-      const startOfDay = d.startOf('day').toDate();
-      const endOfDay = d.endOf('day').toDate();
+    let chartDays = [];
+    if (dateFilter.timeRange === 'today') {
+      chartDays = [moment().startOf('day')];
+    } else if (dateFilter.timeRange === 'mtd') {
+      const mStart = moment().startOf('month');
+      const todayM = moment().startOf('day');
+      const diff = Math.min(30, todayM.diff(mStart, 'days'));
+      for (let i = diff; i >= 0; i--) {
+        chartDays.push(moment().subtract(i, 'days').startOf('day'));
+      }
+    } else if (dateFilter.timeRange === 'custom' && dateFilter.start && dateFilter.end) {
+      const cEnd = moment(dateFilter.end).startOf('day');
+      const cStart = moment(dateFilter.start).startOf('day');
+      const diff = Math.max(0, Math.min(30, cEnd.diff(cStart, 'days')));
+      for (let i = diff; i >= 0; i--) {
+        chartDays.push(moment(cEnd).subtract(i, 'days').startOf('day'));
+      }
+    } else {
+      for (let i = 6; i >= 0; i--) {
+        chartDays.push(moment().subtract(i, 'days').startOf('day'));
+      }
+    }
+
+    for (const d of chartDays) {
+      const startOfDay = moment(d).startOf('day').toDate();
+      const endOfDay = moment(d).endOf('day').toDate();
 
       let dayInflow = 0;
       let dayOutflow = 0;
       try {
         if (db.Payment_Transaction) {
-          dayInflow = Number(
+          dayInflow += Number(
             (await db.Payment_Transaction.sum('amount', {
               where: {
                 status: 'SUCCESS',
@@ -1085,8 +1609,19 @@ async function getVisualCashflowMetrics(options = {}) {
             })) || 0
           );
         }
+        if (db.Booking) {
+          dayInflow += Number(
+            (await db.Booking.sum('bookingPrice', {
+              where: {
+                paymentStatus: 'paid',
+                paymentMethod: 'VNPAY',
+                createdAt: { [Op.between]: [startOfDay, endOfDay] },
+              },
+            })) || 0
+          );
+        }
         if (db.Withdrawal_Request) {
-          dayOutflow = Number(
+          dayOutflow += Number(
             (await db.Withdrawal_Request.sum('amount', {
               where: {
                 status: 'TRANSFERRED',
@@ -1108,17 +1643,42 @@ async function getVisualCashflowMetrics(options = {}) {
       });
     }
 
-    const commissionSplit = [
-      { name: 'Thù lao Bác sĩ', percent: 90, amount: escrowDoctorShare || Math.round(escrowTotal * 0.9), color: '#10b981' },
-      { name: 'Phí Dịch vụ Sàn', percent: 10, amount: escrowPlatformShare || Math.round(escrowTotal * 0.1), color: '#d4ff00' },
-    ];
+    const commissionSplit = periodDoctorSettledGross > 0
+      ? [
+          {
+            name: 'Thù lao Bác sĩ',
+            percent: periodDoctorPercent,
+            amount: periodDoctorSettledNet,
+            color: '#10b981',
+          },
+          {
+            name: 'Phí Dịch vụ Sàn',
+            percent: periodPlatformPercent,
+            amount: periodPlatformCommission,
+            color: '#d4ff00',
+          },
+        ]
+      : [
+          {
+            name: 'Thù lao Bác sĩ',
+            percent: escrowDoctorPercent,
+            amount: escrowDoctorShare,
+            color: '#10b981',
+          },
+          {
+            name: 'Phí Dịch vụ Sàn',
+            percent: escrowPlatformPercent,
+            amount: escrowPlatformShare,
+            color: '#d4ff00',
+          },
+        ];
 
-    // 9. BƯỚC THỰC TẾ GẦN NHẤT (Step Breakdown)
+    // 9. BƯỚC THỰC TẾ GẦN NHẤT TRONG KỲ LỌC (Step Breakdown — không hardcode giả)
     let latestDeposit = null;
     try {
       if (db.Payment_Transaction) {
         latestDeposit = await db.Payment_Transaction.findOne({
-          where: { status: 'SUCCESS' },
+          where: { status: 'SUCCESS', ...dateFilter.buildWhere('createdAt') },
           order: [['createdAt', 'DESC']],
           include: [
             {
@@ -1133,54 +1693,25 @@ async function getVisualCashflowMetrics(options = {}) {
       latestDeposit = null;
     }
 
-    let latestBookingHold = null;
-    try {
-      if (db.Wallet_Hold) {
-        latestBookingHold = await db.Wallet_Hold.findOne({
-          where: { status: 'HELD' },
-          order: [['createdAt', 'DESC']],
-          include: [
-            {
-              model: db.Booking,
-              as: 'booking',
-              include: [
-                { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName'] },
-                { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
-              ],
-            },
-          ],
-        });
-      }
-    } catch (e) {
-      latestBookingHold = null;
-    }
+    const latestBookingHoldItem = escrowBookings[0] || null;
+    const latestWithdrawalItem = doctorPayoutsList[0] || recentWithdrawals.find((w) => w.status === 'TRANSFERRED') || null;
 
-    let latestWithdrawal = null;
-    try {
-      if (db.Withdrawal_Request) {
-        latestWithdrawal = await db.Withdrawal_Request.findOne({
-          where: { status: 'TRANSFERRED' },
-          order: [['transferredAt', 'DESC']],
-          include: [
-            {
-              model: db.Wallet,
-              as: 'wallet',
-              include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName'] }],
-            },
-          ],
-        });
-      }
-    } catch (e) {
-      latestWithdrawal = null;
-    }
-
-    // 10. GIAO DỊCH THỜI GIAN THỰC GẦN ĐÂY (Recent Audit Feed)
+    // 10. GIAO DỊCH THỜI GIAN THỰC GẦN ĐÂY (Recent Audit Feed — lọc theo thời gian & sắp xếp)
     let recentTransactions = [];
     try {
       if (db.Wallet_Transaction) {
+        const orderCol = sort === 'oldest'
+          ? [['createdAt', 'ASC']]
+          : sort === 'highest'
+          ? [['amount', 'DESC']]
+          : sort === 'lowest'
+          ? [['amount', 'ASC']]
+          : [['createdAt', 'DESC']];
+
         const txs = await db.Wallet_Transaction.findAll({
-          limit: 10,
-          order: [['createdAt', 'DESC']],
+          where: dateFilter.buildWhere('createdAt'),
+          limit: 15,
+          order: orderCol,
           include: [
             {
               model: db.Wallet,
@@ -1202,199 +1733,39 @@ async function getVisualCashflowMetrics(options = {}) {
       recentTransactions = [];
     }
 
-        // ── 11. BÓC TÁCH THÀNH PHẦN CẤU TẠO THỰC TẾ & VÒNG ĐỜI DÒNG TIỀN (CONSTITUENT LINEAGE) ──
-    let escrowBookings = [];
-    try {
-      if (db.Wallet_Hold) {
-        const holds = await db.Wallet_Hold.findAll({
-          where: { status: 'HELD' },
-          raw: true,
-        });
-        const bIds = holds.map(h => h.bookingId).filter(Boolean);
-        let bookingsMap = {};
-        if (bIds.length > 0) {
-          const bList = await db.Booking.findAll({
-            where: { id: { [Op.in]: bIds } },
-            include: [
-              { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName'] },
-              { model: db.User, as: 'doctorBookingData', attributes: ['id', 'firstName', 'lastName'] },
-            ],
-          });
-          bList.forEach(b => {
-            bookingsMap[b.id] = b;
-          });
-        }
-
-        escrowBookings = holds.map(h => {
-          const b = bookingsMap[h.bookingId] || {};
-          const patient = b.patientData || {};
-          const doctor = b.doctorBookingData || {};
-          const amount = Number(h.amount) || Number(b.bookingPrice) || 100000;
-          const doctorShare = Math.round(amount * 0.9);
-          const platformShare = amount - doctorShare;
-          return {
-            holdId: h.id,
-            bookingId: h.bookingId || b.id || 1024,
-            patientId: b.patientId,
-            patientName: patient.firstName || patient.lastName ? `${patient.lastName || ''} ${patient.firstName || ''}`.trim() : 'Đặng Giang',
-            doctorId: b.doctorId,
-            doctorName: doctor.firstName || doctor.lastName ? `${doctor.lastName || ''} ${doctor.firstName || ''}`.trim() : 'BS. Bình Lê Thanh',
-            bookingPrice: amount,
-            doctorShare,
-            platformShare,
-            statusId: b.statusId || 'S2',
-            date: b.date || moment(h.createdAt).format('DD/MM/YYYY'),
-            timeType: b.timeType || 'Khung giờ khám',
-            createdAt: h.createdAt,
-          };
-        });
-
-        if (sort === 'oldest') {
-          escrowBookings.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-        } else if (sort === 'highest') {
-          escrowBookings.sort((a, b) => b.bookingPrice - a.bookingPrice);
-        } else if (sort === 'lowest') {
-          escrowBookings.sort((a, b) => a.bookingPrice - b.bookingPrice);
-        } else {
-          escrowBookings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-        }
-      }
-    } catch (e) {
-      console.warn('Could not query escrow constituents:', e.message);
-    }
-
-    let recentSettlements = [];
-    let totalDoctorSettledAmount = 0;
-    let totalDoctorSettledCount = 0;
-    try {
-      if (db.Doctor_Settlement_Item) {
-        const whereClause = { status: { [Op.in]: ['AVAILABLE', 'PAID'] } };
-        if (doctorId) {
-          whereClause.doctorId = doctorId;
-        }
-        const items = await db.Doctor_Settlement_Item.findAll({
-          where: whereClause,
-          limit: 30,
-          order: [['id', 'DESC']],
-          raw: true,
-        });
-
-        const docIds = [...new Set(items.map(i => i.doctorId).filter(Boolean))];
-        let docMap = {};
-        if (docIds.length > 0) {
-          const docUsers = await db.User.findAll({
-            where: { id: { [Op.in]: docIds } },
-            attributes: ['id', 'firstName', 'lastName'],
-            raw: true,
-          });
-          docUsers.forEach(u => {
-            docMap[u.id] = `${u.lastName || ''} ${u.firstName || ''}`.trim();
-          });
-        }
-
-        recentSettlements = items.map(s => {
-          const gross = Number(s.grossAmount) || 0;
-          const net = Number(s.netAmount) || 0;
-          const fee = Number(s.platformFee) || 0;
-          totalDoctorSettledAmount += net;
-          totalDoctorSettledCount += 1;
-          return {
-            id: s.id,
-            bookingId: s.bookingId,
-            doctorId: s.doctorId,
-            doctorName: docMap[s.doctorId] || `Bác sĩ #${s.doctorId}`,
-            grossAmount: gross,
-            netAmount: net,
-            platformFee: fee,
-            status: s.status,
-            earnedAt: s.earnedAt || s.createdAt,
-            note: s.note,
-          };
-        });
-
-        if (sort === 'oldest') {
-          recentSettlements.sort((a, b) => new Date(a.earnedAt) - new Date(b.earnedAt));
-        } else if (sort === 'highest') {
-          recentSettlements.sort((a, b) => b.netAmount - a.netAmount);
-        } else if (sort === 'lowest') {
-          recentSettlements.sort((a, b) => a.netAmount - b.netAmount);
-        }
-      }
-    } catch (e) {
-      console.warn('Could not query settlement constituents:', e.message);
-    }
-
-    let recentDeposits = [];
-    try {
-      if (db.Payment_Transaction) {
-        const depList = await db.Payment_Transaction.findAll({
-          where: { status: 'SUCCESS' },
-          limit: 20,
-          order: [['createdAt', 'DESC']],
-          include: [
-            {
-              model: db.Wallet,
-              as: 'wallet',
-              include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName'] }],
-            },
-          ],
-        });
-        recentDeposits = depList.map(d => {
-          const w = d.wallet;
-          const o = w?.owner;
-          return {
-            id: d.id,
-            amount: Number(d.amount),
-            paymentMethod: d.paymentMethod || 'VNPAY',
-            txnRef: d.txnRef || d.gatewayTransactionNo,
-            patientName: o ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : 'Bệnh nhân',
-            createdAt: d.createdAt,
-          };
-        });
-      }
-    } catch (e) {
-      console.warn('Could not query recent deposits:', e.message);
-    }
-
-    let recentWithdrawals = [];
-    try {
-      if (db.Withdrawal_Request) {
-        const wList = await db.Withdrawal_Request.findAll({
-          limit: 20,
-          order: [['createdAt', 'DESC']],
-          raw: true,
-        });
-        recentWithdrawals = wList.map(w => ({
-          id: w.id,
-          amount: Number(w.amount),
-          walletType: w.walletType,
-          accountHolderName: w.accountHolderName || 'Chủ tài khoản',
-          bankName: w.bankName || 'Vietcombank',
-          bankAccountNumber: w.bankAccountNumber,
-          bankTransactionRef: w.bankTransactionRef || 'VCB-FT-AUTO',
-          status: w.status,
-          transferredAt: w.transferredAt,
-          createdAt: w.createdAt,
-        }));
-      }
-    } catch (e) {
-      console.warn('Could not query recent withdrawals:', e.message);
-    }
-
+    // 11. FLOWS THEO KỲ LỌC (100% số liệu thật từ DB trong khoảng thời gian đã chọn)
     const flows = {
-      depositInflow: walletDepositInflow > 0 ? walletDepositInflow : totalRealInflow,
-      depositCount: walletDepositCount,
-      heldBooking: escrowTotal,
-      heldCount: activeHoldCount,
-      doctorSettled: totalDoctorSettledAmount > 0 ? totalDoctorSettledAmount : (escrowDoctorShare || Math.round(escrowTotal * 0.9)),
-      doctorSettledCount: totalDoctorSettledCount,
-      platformCommission: totalPlatformFeeEarned > 0 ? totalPlatformFeeEarned : (escrowPlatformShare || Math.round(escrowTotal * 0.1)),
-      bankTransferred: doctorBankPayoutTotal,
-      bankTransferredCount: doctorPayoutCount,
-      profitWithdrawn: adminProfitWithdrawn,
+      depositInflow: walletDepositInflowPeriod,
+      depositCount: walletDepositCountPeriod,
+      directBookingInflow: directBookingInflowPeriod,
+      directBookingCount: directBookingCountPeriod,
+      totalVnpayInflow: walletDepositInflowPeriod + directBookingInflowPeriod,
+      heldBooking: flowHeldBooking,
+      heldCount: flowHeldCount,
+      heldWalletBooking: flowHeldWalletBooking,
+      heldWalletCount: flowHeldWalletCount,
+      heldDirectVnpayBooking: flowHeldDirectVnpayBooking,
+      heldDirectVnpayCount: flowHeldDirectVnpayCount,
+      doctorSettled: periodDoctorSettledNet,
+      doctorSettledGross: periodDoctorSettledGross,
+      doctorSettledCount: periodDoctorSettledCount,
+      doctorSettledPaidToWallet: periodDoctorPaidToWallet,
+      doctorSettledPendingPayout: periodDoctorPendingPayout,
+      platformCommission: periodPlatformCommission,
+      doctorSharePercent: periodDoctorPercent,
+      platformSharePercent: periodPlatformPercent,
+      bankTransferred: doctorBankPayoutPeriod + patientBankPayoutPeriod,
+      doctorBankTransferred: doctorBankPayoutPeriod,
+      patientBankTransferred: patientBankPayoutPeriod,
+      bankTransferredCount: doctorPayoutCountPeriod,
+      pendingWithdrawalsCount,
+      pendingWithdrawalsAmount,
+      profitWithdrawn: profitWithdrawnPeriod,
+      refundedAmount: refundedAmountPeriod,
+      refundCount: refundCountPeriod,
     };
 
-    // ── 12. TRUY VẤN MINH CHỨNG THỰC TẾ CHI TIẾT TỪNG VÍ & TỪNG KHOẢN MỤC (EVIDENCE SUB-LEDGER) ──
+    // 12. DANH SÁCH VÍ CẤU THÀNH (EVIDENCE SUB-LEDGER)
     let patientWalletsList = [];
     try {
       if (db.Wallet) {
@@ -1403,14 +1774,14 @@ async function getVisualCashflowMetrics(options = {}) {
           order: [['availableBalance', 'DESC']],
           include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName', 'phoneNumber', 'email'] }],
         });
-        patientWalletsList = pwList.map(w => {
+        patientWalletsList = pwList.map((w) => {
           const o = w.owner || {};
           const avail = Number(w.availableBalance) || 0;
           const resv = Number(w.reservedBalance) || 0;
           return {
             walletId: w.id,
             ownerId: w.ownerId,
-            ownerName: o.firstName || o.lastName ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : 'Bệnh nhân',
+            ownerName: (o.firstName || o.lastName) ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : `Bệnh nhân #${w.ownerId}`,
             phone: o.phoneNumber || '---',
             email: o.email || '---',
             availableBalance: avail,
@@ -1419,14 +1790,7 @@ async function getVisualCashflowMetrics(options = {}) {
             updatedAt: w.updatedAt,
           };
         });
-
-        if (sort === 'lowest') {
-          patientWalletsList.sort((a, b) => a.totalBalance - b.totalBalance);
-        } else if (sort === 'oldest') {
-          patientWalletsList.sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt));
-        } else if (sort === 'highest') {
-          patientWalletsList.sort((a, b) => b.totalBalance - a.totalBalance);
-        }
+        patientWalletsList = sortCashflowItems(patientWalletsList, sort, 'totalBalance', 'updatedAt');
       }
     } catch (e) {
       console.warn('Could not query patient wallets list:', e.message);
@@ -1440,14 +1804,14 @@ async function getVisualCashflowMetrics(options = {}) {
           order: [['availableBalance', 'DESC']],
           include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName', 'phoneNumber', 'email'] }],
         });
-        doctorWalletsList = dwList.map(w => {
+        doctorWalletsList = dwList.map((w) => {
           const o = w.owner || {};
           const avail = Number(w.availableBalance) || 0;
           const resv = Number(w.reservedBalance) || 0;
           return {
             walletId: w.id,
             ownerId: w.ownerId,
-            doctorName: o.firstName || o.lastName ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : 'Bác sĩ',
+            doctorName: (o.firstName || o.lastName) ? `${o.lastName || ''} ${o.firstName || ''}`.trim() : `Bác sĩ #${w.ownerId}`,
             phone: o.phoneNumber || '---',
             email: o.email || '---',
             availableBalance: avail,
@@ -1456,76 +1820,11 @@ async function getVisualCashflowMetrics(options = {}) {
             updatedAt: w.updatedAt,
           };
         });
-
-        if (sort === 'lowest') {
-          doctorWalletsList.sort((a, b) => a.totalBalance - b.totalBalance);
-        } else if (sort === 'oldest') {
-          doctorWalletsList.sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt));
-        } else if (sort === 'highest') {
-          doctorWalletsList.sort((a, b) => b.totalBalance - a.totalBalance);
-        }
+        doctorWalletsList = sortCashflowItems(doctorWalletsList, sort, 'totalBalance', 'updatedAt');
       }
     } catch (e) {
       console.warn('Could not query doctor wallets list:', e.message);
     }
-
-    let platformFeeItemsList = [];
-    try {
-      if (db.Doctor_Settlement_Item) {
-        const feeItems = await db.Doctor_Settlement_Item.findAll({
-          where: { platformFee: { [Op.gt]: 0 } },
-          limit: 50,
-          order: [['id', 'DESC']],
-          raw: true,
-        });
-        const docIds = [...new Set(feeItems.map(i => i.doctorId).filter(Boolean))];
-        let docMap = {};
-        if (docIds.length > 0) {
-          const docUsers = await db.User.findAll({
-            where: { id: { [Op.in]: docIds } },
-            attributes: ['id', 'firstName', 'lastName'],
-            raw: true,
-          });
-          docUsers.forEach(u => {
-            docMap[u.id] = `${u.lastName || ''} ${u.firstName || ''}`.trim();
-          });
-        }
-        platformFeeItemsList = feeItems.map(f => ({
-          id: f.id,
-          bookingId: f.bookingId,
-          doctorId: f.doctorId,
-          doctorName: docMap[f.doctorId] || `Bác sĩ #${f.doctorId}`,
-          grossAmount: Number(f.grossAmount),
-          platformFeeRate: Number(f.platformFeeRate) || 10,
-          platformFee: Number(f.platformFee),
-          earnedAt: f.earnedAt || f.createdAt,
-          note: f.note,
-        }));
-
-        if (sort === 'highest') {
-          platformFeeItemsList.sort((a, b) => b.platformFee - a.platformFee);
-        } else if (sort === 'lowest') {
-          platformFeeItemsList.sort((a, b) => a.platformFee - b.platformFee);
-        }
-      }
-    } catch (e) {
-      console.warn('Could not query platform fee items list:', e.message);
-    }
-
-    const doctorPayoutsList = recentWithdrawals.filter(w => w.status === 'TRANSFERRED' || w.walletType === 'DOCTOR' || w.bankTransactionRef);
-
-    const companyWithdrawalsList = [
-      {
-        id: 1,
-        amount: adminProfitWithdrawn,
-        recipient: 'CONG TY CP CONG NGHE BOOKINGCARE',
-        bankName: 'Vietcombank',
-        accountNumber: '9988-1703-8888',
-        reason: 'Rút lợi nhuận hoa hồng sàn ra tài khoản công ty phục vụ chi phí vận hành',
-        transferredAt: now.toISOString(),
-        status: 'TRANSFERRED',
-      }
-    ];
 
     const constituents = {
       escrowBookings,
@@ -1539,7 +1838,9 @@ async function getVisualCashflowMetrics(options = {}) {
       companyWithdrawalsList,
     };
 
-return {
+    const balanceSign = discrepancy >= 0 ? `+${reserveSurplus.toLocaleString('vi-VN')} đ dự trữ` : `THIẾU ${Math.abs(discrepancy).toLocaleString('vi-VN')} đ`;
+
+    return {
       errCode: 0,
       errMessage: 'OK',
       data: {
@@ -1547,20 +1848,26 @@ return {
         flows,
         constituents,
         filters: {
-          timeRange,
+          timeRange: dateFilter.timeRange,
           fromDate: fromDate || null,
           toDate: toDate || null,
           sort,
+          doctorId: parsedDoctorId,
+          clinicId: parsedClinicId,
         },
         vaults: {
           realBank: {
             currentBalance: realBankBalance,
-            totalInflowVNPay: totalRealInflow,
-            totalOutflowBank: totalRealOutflow,
-            doctorPayouts: doctorBankPayoutTotal,
-            patientPayouts: patientBankPayoutTotal,
+            totalInflowVNPay: totalRealInflowAll,
+            walletDepositInflow: walletDepositInflowAll,
+            directBookingInflow: directBookingInflowAll,
+            totalOutflowBank: totalRealOutflowAll,
+            doctorPayouts: doctorBankPayoutAll,
+            patientPayouts: patientBankPayoutAll,
             adminProfitWithdrawn,
-            platformReserveFund: 0,
+            floatAllocatedAmount,
+            platformReserveFund,
+            reserveSurplus,
             bankName: 'Vietcombank (VCB)',
             accountNumber: '9988-1703-8888',
             accountHolder: 'CONG TY CP CONG NGHE BOOKINGCARE',
@@ -1573,10 +1880,14 @@ return {
           },
           escrowPool: {
             total: escrowTotal,
+            walletHoldTotal,
+            walletHoldCount,
+            directVnpayTotal,
+            directVnpayCount,
             doctorShare: escrowDoctorShare,
             platformShare: escrowPlatformShare,
-            doctorSharePercent: escrowTotal > 0 ? Math.round((escrowDoctorShare / escrowTotal) * 100) : 90,
-            platformSharePercent: escrowTotal > 0 ? Math.round((escrowPlatformShare / escrowTotal) * 100) : 10,
+            doctorSharePercent: escrowDoctorPercent,
+            platformSharePercent: escrowPlatformPercent,
             activeCount: activeHoldCount,
           },
           doctorWallets: {
@@ -1584,6 +1895,7 @@ return {
             available: doctorAvailable,
             reserved: doctorReserved,
             count: doctorWalletCount,
+            pendingSettlementTotal: periodDoctorPendingPayout,
           },
           platformProfit: {
             totalEarned: totalPlatformFeeEarned,
@@ -1596,9 +1908,11 @@ return {
           isBalanced,
           status: isBalanced ? 'HEALTHY' : 'DEFICIT',
           discrepancyAmount: discrepancy,
+          totalSystemLiabilities,
+          reserveSurplus,
           coveragePercent,
-          requiredBacking,
-          formula: `VCB Thật (${realBankBalance.toLocaleString('vi-VN')} đ) = Ví BN (${totalPatientWallets.toLocaleString('vi-VN')} đ) + Ví BS (${totalDoctorWallets.toLocaleString('vi-VN')} đ) + Escrow (${escrowTotal.toLocaleString('vi-VN')} đ) + Lợi nhuận sàn (${spendableProfit.toLocaleString('vi-VN')} đ)`,
+          requiredBacking: totalSystemLiabilities,
+          formula: `VCB Thật (${realBankBalance.toLocaleString('vi-VN')} đ) vs Sổ cái (${totalSystemLiabilities.toLocaleString('vi-VN')} đ = Ví BN rảnh ${patientAvailable.toLocaleString('vi-VN')} + Escrow ${escrowTotal.toLocaleString('vi-VN')} + Ví BS ${totalDoctorWallets.toLocaleString('vi-VN')} + Lợi nhuận ${spendableProfit.toLocaleString('vi-VN')}) | ${balanceSign}`,
         },
         charts: {
           reconciliationChart,
@@ -1613,41 +1927,29 @@ return {
                 vnpayTxCode: latestDeposit.gatewayTransactionNo || latestDeposit.txnRef,
                 patientName: latestDeposit.wallet?.owner
                   ? `${latestDeposit.wallet.owner.lastName || ''} ${latestDeposit.wallet.owner.firstName || ''}`.trim()
-                  : 'Bệnh nhân A',
+                  : 'Bệnh nhân',
                 createdAt: latestDeposit.createdAt,
               }
             : null,
-          step2: latestBookingHold
+          step2: latestBookingHoldItem
             ? {
-                bookingId: latestBookingHold.bookingId,
-                amount: Number(latestBookingHold.amount),
-                doctorShare: Math.round(Number(latestBookingHold.amount) * 0.9),
-                platformShare: Math.round(Number(latestBookingHold.amount) * 0.1),
-                doctorName: latestBookingHold.booking?.doctorData
-                  ? `${latestBookingHold.booking.doctorData.lastName || ''} ${latestBookingHold.booking.doctorData.firstName || ''}`.trim()
-                  : 'BS. Nguyễn Văn B',
-                createdAt: latestBookingHold.createdAt,
+                bookingId: latestBookingHoldItem.bookingId,
+                amount: latestBookingHoldItem.bookingPrice,
+                doctorShare: latestBookingHoldItem.doctorShare,
+                platformShare: latestBookingHoldItem.platformShare,
+                doctorName: latestBookingHoldItem.doctorName,
+                createdAt: latestBookingHoldItem.createdAt,
               }
             : null,
-          step3: latestWithdrawal
+          step3: latestWithdrawalItem
             ? {
-                amount: Number(latestWithdrawal.amount),
-                bankRef: latestWithdrawal.bankTransactionRef || 'VCB-FT982173',
-                recipientName:
-                  latestWithdrawal.accountHolderName ||
-                  (latestWithdrawal.wallet?.owner
-                    ? `${latestWithdrawal.wallet.owner.lastName || ''} ${latestWithdrawal.wallet.owner.firstName || ''}`.trim()
-                    : 'Bác sĩ B'),
-                bankName: latestWithdrawal.bankName || 'Vietcombank',
-                transferredAt: latestWithdrawal.transferredAt || latestWithdrawal.updatedAt,
+                amount: latestWithdrawalItem.amount,
+                bankRef: latestWithdrawalItem.bankTransactionRef,
+                recipientName: latestWithdrawalItem.accountHolderName,
+                bankName: latestWithdrawalItem.bankName,
+                transferredAt: latestWithdrawalItem.transferredAt || latestWithdrawalItem.createdAt,
               }
-            : {
-                amount: 270000,
-                bankRef: 'VCB-FT982173',
-                recipientName: 'BS. Nguyễn Văn B',
-                bankName: 'Vietcombank',
-                transferredAt: now.toISOString(),
-              },
+            : null,
         },
         recentTransactions,
       },
@@ -1692,7 +1994,7 @@ async function withdrawPlatformProfit(adminId, { amount, note, bankAccountInfo }
 
     const remainingCash = metrics.vaults.realBank.currentBalance - numAmount;
     const requiredCoverage =
-      metrics.vaults.patientWallets.total +
+      metrics.vaults.patientWallets.available +
       metrics.vaults.doctorWallets.total +
       metrics.vaults.escrowPool.total;
 
@@ -1890,9 +2192,34 @@ async function getTransactionLineage(targetId) {
             ],
           }).catch(() => null);
         }
+      } else if (/^PAY-/i.test(strId)) {
+        const pId = parseInt(strId.replace(/^PAY-/i, ''), 10);
+        if (!isNaN(pId)) {
+          paymentTx = await db.Payment_Transaction.findByPk(pId).catch(() => null);
+          if (paymentTx) {
+            walletTx = await db.Wallet_Transaction.findOne({
+              where: {
+                referenceType: 'PAYMENT_TRANSACTION',
+                referenceId: String(paymentTx.id),
+              },
+              include: [
+                {
+                  model: db.Wallet,
+                  as: 'wallet',
+                  include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'roleId'] }],
+                },
+              ],
+            }).catch(() => null);
+            if (!walletTx && paymentTx.walletId) {
+              wallet = await db.Wallet.findByPk(paymentTx.walletId, {
+                include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'roleId'] }],
+              }).catch(() => null);
+            }
+          }
+        }
       }
 
-      if (!booking && !refundCase && !withdrawal && !settlement) {
+      if (!booking && !refundCase && !withdrawal && !settlement && !walletTx) {
         walletTx = await db.Wallet_Transaction.findOne({
           where: {
             [Op.or]: [
@@ -1908,6 +2235,15 @@ async function getTransactionLineage(targetId) {
             },
           ],
         }).catch(() => null);
+      }
+
+      if (!booking && !refundCase && !withdrawal && !settlement && !walletTx && !paymentTx) {
+        paymentTx = await db.Payment_Transaction.findOne({ where: { txnRef: strId } }).catch(() => null);
+        if (paymentTx?.walletId) {
+          wallet = await db.Wallet.findByPk(paymentTx.walletId, {
+            include: [{ model: db.User, as: 'owner', attributes: ['id', 'firstName', 'lastName', 'email', 'phoneNumber', 'roleId'] }],
+          }).catch(() => null);
+        }
       }
     }
 
@@ -1955,7 +2291,7 @@ async function getTransactionLineage(targetId) {
     }
 
     // 5. Nếu chưa có thông tin gì và không tìm thấy thực thể nào: chỉ khi đó mới fallback về booking gần nhất
-    if (!booking && !walletTx && !withdrawal && !refundCase && !settlement) {
+    if (!booking && !walletTx && !withdrawal && !refundCase && !settlement && !paymentTx) {
       booking = await db.Booking.findOne({
         where: { bookingPrice: { [Op.gt]: 0 } },
         order: [['id', 'DESC']],
@@ -2049,13 +2385,18 @@ async function getTransactionLineage(targetId) {
     const nonRefundableAmount = refundCase ? Number(refundCase.nonRefundableAmount) : 0;
     const refundRate = refundCase ? Number(refundCase.refundRate) : (bookingPrice > 0 ? Math.round((refundAmount / bookingPrice) * 100) : 100);
 
+    const activePlatformRate = await getActivePlatformFeeRate(15);
+    const bookingSplit = resolveBookingSplit(booking, bookingPrice, activePlatformRate);
     const grossRevenue = Number(settlement?.grossRevenue || (booking ? booking.bookingPrice : walletTx?.amount || 0));
-    const doctorShareAmount = Number(settlement?.netPayout || (booking ? (booking.doctorShare || Math.round(bookingPrice * 0.9)) : (walletTx?.amount || Math.round(grossRevenue * 0.9))));
-    const platformFeeAmount = Number(settlement?.platformFee || (booking ? booking.platformFee : (grossRevenue - doctorShareAmount)));
-    const commissionPercent = settlement?.commissionRate ? Number(settlement.commissionRate) : (grossRevenue > 0 ? Math.round((platformFeeAmount / grossRevenue) * 100) : 10);
+    const doctorShareAmount = Number(settlement?.netPayout || (booking ? bookingSplit.doctorShare : (walletTx?.amount || Math.round((grossRevenue * (100 - activePlatformRate)) / 100))));
+    const platformFeeAmount = Number(settlement?.platformFee || (booking ? bookingSplit.platformShare : Math.max(0, grossRevenue - doctorShareAmount)));
+    const commissionPercent = settlement?.commissionRate ? Number(settlement.commissionRate) : (grossRevenue > 0 ? Math.round((platformFeeAmount / grossRevenue) * 100) : activePlatformRate);
 
-    const doctorShare = Number(booking?.doctorShare) || Math.round(bookingPrice * 0.9);
-    const platformFee = Number(booking?.platformFee) || (bookingPrice - doctorShare);
+    const doctorShare = bookingSplit.doctorShare;
+    const platformFee = bookingSplit.platformShare;
+    const bookingDoctorPercent = bookingPrice > 0 ? Math.round((doctorShare / bookingPrice) * 100) : (100 - activePlatformRate);
+    const bookingPlatformPercent = bookingPrice > 0 ? (100 - bookingDoctorPercent) : activePlatformRate;
+    const isDirectVnpayBooking = booking?.paymentMethod === 'VNPAY';
 
     const vnpayRef =
       paymentTx?.gatewayTransactionNo ||
@@ -2518,7 +2859,7 @@ async function getTransactionLineage(targetId) {
         {
           step: 1,
           key: 'PAY_IN',
-          title: 'Bệnh Nhân Nạp Tiền & Thanh Toán (Pay-In)',
+          title: isDirectVnpayBooking ? 'Bệnh Nhân Thanh Toán Trực Tiếp VNPAY (Pay-In)' : 'Bệnh Nhân Nạp Tiền & Thanh Toán (Pay-In)',
           subtitle: 'Cổng VNPAY Sandbox',
           status: 'COMPLETED',
           isCurrentStep: currentStepNumber === 1,
@@ -2536,14 +2877,17 @@ async function getTransactionLineage(targetId) {
           },
           virtualAppChannel: {
             label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
-            from: 'Hệ thống Sổ Cái',
-            to: `Ví Bệnh Nhân (${patientName})`,
+            from: isDirectVnpayBooking ? 'Cổng VNPAY IPN (Xác nhận thu hộ)' : 'Hệ thống Sổ Cái',
+            to: isDirectVnpayBooking ? `Ghi nhận đã thu tiền ca #${booking?.id}` : `Ví Bệnh Nhân (${patientName})`,
             amountText: `+${bookingPrice.toLocaleString('vi-VN')} ₫`,
-            statusText: 'Cộng số dư ví ảo để bệnh nhân có thể chọn bác sĩ & đặt lịch khám',
+            statusText: isDirectVnpayBooking
+              ? 'Bệnh nhân thanh toán thẳng cho ca khám qua VNPay (không qua số dư khả dụng ví)'
+              : 'Cộng số dư ví ảo để bệnh nhân có thể chọn bác sĩ & đặt lịch khám',
             movementType: 'CREDIT',
           },
-          educationalContrast:
-            `Cả tiền mặt thật và số dư ảo đều tăng +${bookingPrice.toLocaleString('vi-VN')} ₫ tương ứng để kích hoạt dòng tiền ban đầu.`,
+          educationalContrast: isDirectVnpayBooking
+            ? `Tiền mặt thật về VCB Công ty (+${bookingPrice.toLocaleString('vi-VN')} ₫) từ cổng VNPay và được hạch toán thẳng vào nghĩa vụ tạm giữ chờ khám.`
+            : `Cả tiền mặt thật và số dư ảo đều tăng +${bookingPrice.toLocaleString('vi-VN')} ₫ tương ứng để kích hoạt dòng tiền ban đầu.`,
         },
         {
           step: 2,
@@ -2566,10 +2910,10 @@ async function getTransactionLineage(targetId) {
           },
           virtualAppChannel: {
             label: '─── LUỒNG SỐ DƯ ẢO NỘI BỘ (HỆ THỐNG APP - ĐƯỜNG NÉT LIỀN) ───',
-            from: `Ví Bệnh Nhân (-${bookingPrice.toLocaleString('vi-VN')} ₫)`,
+            from: isDirectVnpayBooking ? `Lệnh thu VNPay ca #${booking?.id}` : `Ví Bệnh Nhân (-${bookingPrice.toLocaleString('vi-VN')} ₫)`,
             to: `Két Ký Quỹ Escrow (${bookingPrice.toLocaleString('vi-VN')} ₫)`,
-            amountText: `-${bookingPrice.toLocaleString('vi-VN')} ₫`,
-            statusText: `Tiền vào Escrow 2 ngăn: BS 90% (${doctorShare.toLocaleString('vi-VN')} ₫) & Sàn 10% (${platformFee.toLocaleString('vi-VN')} ₫)`,
+            amountText: isDirectVnpayBooking ? `${bookingPrice.toLocaleString('vi-VN')} ₫` : `-${bookingPrice.toLocaleString('vi-VN')} ₫`,
+            statusText: `Tiền vào Escrow 2 ngăn: BS ${bookingDoctorPercent}% (${doctorShare.toLocaleString('vi-VN')} ₫) & Sàn ${bookingPlatformPercent}% (${platformFee.toLocaleString('vi-VN')} ₫)`,
             movementType: 'DEBIT',
           },
           educationalContrast:
@@ -2599,7 +2943,7 @@ async function getTransactionLineage(targetId) {
             from: 'Két Ký Quỹ Escrow (Đóng lệnh hold)',
             to: `Ví Bác Sĩ (+${doctorShare.toLocaleString('vi-VN')} ₫) & Quỹ Lời Sàn (+${platformFee.toLocaleString('vi-VN')} ₫)`,
             amountText: `${bookingPrice.toLocaleString('vi-VN')} ₫`,
-            statusText: 'Bác sĩ nhận 90% thù lao, Sàn ghi nhận 10% hoa hồng nền tảng',
+            statusText: `Bác sĩ nhận ${bookingDoctorPercent}% thù lao, Sàn ghi nhận ${bookingPlatformPercent}% hoa hồng nền tảng`,
             movementType: 'SPLIT',
           },
           educationalContrast:
@@ -2723,8 +3067,10 @@ async function getTransactionLineage(targetId) {
           direction: 'CREDIT',
           amount: bookingPrice,
           balanceAfter: bookingPrice,
-          desc: `Nguồn tiền thanh toán ca khám #${booking?.id || 102} (${patientName})`,
-          account: 'TK 112 (Tiền gửi VCB) / TK 3388 (Ví Bệnh nhân)',
+          desc: isDirectVnpayBooking
+            ? `Thu tiền trực tiếp qua VNPay cho ca khám #${booking?.id || 102} (${patientName})`
+            : `Nguồn tiền thanh toán ca khám #${booking?.id || 102} (${patientName})`,
+          account: isDirectVnpayBooking ? 'TK 112 (Tiền gửi VCB) / TK 331 (Tạm giữ Escrow chờ khám)' : 'TK 112 (Tiền gửi VCB) / TK 3388 (Ví Bệnh nhân)',
         },
         {
           journalCode: `JRN-HLD-${booking?.id || 102}`,
@@ -2732,8 +3078,8 @@ async function getTransactionLineage(targetId) {
           direction: 'DEBIT',
           amount: bookingPrice,
           balanceAfter: 0,
-          desc: `Ký quỹ giữ chỗ ca khám #${booking?.id || 102} (${doctorName})`,
-          account: 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
+          desc: `Tạm giữ Escrow chờ khám ca #${booking?.id || 102} (${doctorName})`,
+          account: isDirectVnpayBooking ? 'TK 112 (Tiền gửi VCB) / TK 331 (Tạm giữ Escrow)' : 'TK 3388 (Ví Bệnh nhân) / TK 331 (Tạm giữ Escrow)',
         },
         {
           journalCode: `JRN-SET-${booking?.id || 102}`,
@@ -2741,7 +3087,7 @@ async function getTransactionLineage(targetId) {
           direction: 'CREDIT',
           amount: doctorShare,
           balanceAfter: doctorShare,
-          desc: `Thù lao 90% ca khám #${booking?.id || 102} hoàn tất cho ${doctorName}`,
+          desc: `Thù lao ${bookingDoctorPercent}% ca khám #${booking?.id || 102} hoàn tất cho ${doctorName}`,
           account: 'TK 331 (Tạm giữ Escrow) / TK 334 (Phải trả Bác sĩ)',
         },
         {
@@ -2750,7 +3096,7 @@ async function getTransactionLineage(targetId) {
           direction: 'CREDIT',
           amount: platformFee,
           balanceAfter: platformFee,
-          desc: `Hoa hồng kết nối 10% ca khám #${booking?.id || 102}`,
+          desc: `Hoa hồng kết nối ${bookingPlatformPercent}% ca khám #${booking?.id || 102}`,
           account: 'TK 331 (Tạm giữ Escrow) / TK 511 (Doanh thu sàn)',
         },
         {
