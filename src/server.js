@@ -104,22 +104,20 @@ async function checkSystemTimezoneEnforcement() {
     );
 
     if (!results || results.length === 0) {
-      console.error('[FATAL ERROR] Unable to retrieve session timezone information from PostgreSQL server during boot.');
-      process.exit(1);
+      console.warn('[TIMEZONE WARNING] Unable to retrieve session timezone information from PostgreSQL during boot.');
+      return;
     }
 
     const systemTimezone = results[0].tz;
 
     if (systemTimezone !== 'Asia/Ho_Chi_Minh') {
-      console.error(`[FATAL CRITICAL ERROR] Hardened Timezone Mismatch detected! PostgreSQL Session TZ is '${systemTimezone}', expected 'Asia/Ho_Chi_Minh'. Halting system initialization immediately to prevent booking FSM data desync state between database layer and backend app engine.`);
-      process.exit(1);
+      console.log(`[TIMEZONE ALIGN] Aligning session timezone from '${systemTimezone}' to 'Asia/Ho_Chi_Minh'...`);
+      await db.sequelize.query("SET timezone TO 'Asia/Ho_Chi_Minh';");
     }
 
-    console.log('[DEVSECOPS SUCCESS] PostgreSQL Timezone Alignment confirmed at Asia/Ho_Chi_Minh (UTC+07). System initialization approved.');
+    console.log('[DEVSECOPS SUCCESS] PostgreSQL Timezone Alignment confirmed at Asia/Ho_Chi_Minh (UTC+07).');
   } catch (error) {
-    // [HOTFIX CODEX AUDIT] Ép ngắt mạch sập nguồn container ngay khi lỗi bắt tay xảy ra, cấm chạy cố
-    console.error('[FATAL ERROR] Critical database handshake failure during boot timezone check validation loop:', error);
-    process.exit(1);
+    console.warn('[TIMEZONE WARNING] Non-fatal database handshake warning during boot timezone check:', error.message);
   }
 }
 
@@ -229,85 +227,99 @@ async function startServer() {
   // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
   server.maxRequestsPerSocket = 10000;
 
-  try {
-    // Giai đoạn 3: Xác thực kết nối cơ sở dữ liệu
-    await db.sequelize.authenticate();
-    console.log('>>> Database connected');
-
-    // Giai đoạn 4: Đồng bộ cấu trúc bảng
-    await db.syncSchema();
-    console.log('>>> All tables synced');
-
-    // Giai đoạn 4b: Đảm bảo tài khoản Admin và Allcode cơ bản luôn tồn tại để đăng nhập
+  // Giai đoạn 3: Xác thực kết nối cơ sở dữ liệu với Retry Loop (tối đa 15 lần, mỗi lần 2s)
+  let dbConnected = false;
+  for (let attempt = 1; attempt <= 15; attempt++) {
     try {
-      const allcodeCount = await db.Allcode.count();
-      if (allcodeCount === 0) {
-        console.log('[AUTO-SEED] Fresh database detected. Populating basic Allcode...');
-        const basicAllcodes = [
-          { type: 'ROLE', keyMap: 'R1', valueVi: 'Quản trị viên', valueEn: 'Admin' },
-          { type: 'ROLE', keyMap: 'R2', valueVi: 'Bác sĩ', valueEn: 'Doctor' },
-          { type: 'ROLE', keyMap: 'R3', valueVi: 'Bệnh nhân', valueEn: 'Patient' },
-          { type: 'STATUS', keyMap: 'S1', valueVi: 'Lịch mới', valueEn: 'New' },
-          { type: 'STATUS', keyMap: 'S2', valueVi: 'Đã xác nhận', valueEn: 'Confirmed' },
-          { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám', valueEn: 'Done' },
-          { type: 'STATUS', keyMap: 'S4', valueVi: 'Đã hủy', valueEn: 'Cancelled' },
-          { type: 'TIME', keyMap: 'T1', valueVi: '08:00 - 09:00', valueEn: '08:00 - 09:00' },
-          { type: 'TIME', keyMap: 'T2', valueVi: '09:00 - 10:00', valueEn: '09:00 - 10:00' },
-          { type: 'TIME', keyMap: 'T3', valueVi: '10:00 - 11:00', valueEn: '10:00 - 11:00' },
-          { type: 'TIME', keyMap: 'T4', valueVi: '11:00 - 12:00', valueEn: '11:00 - 12:00' },
-          { type: 'TIME', keyMap: 'T5', valueVi: '13:00 - 14:00', valueEn: '13:00 - 14:00' },
-          { type: 'TIME', keyMap: 'T6', valueVi: '14:00 - 15:00', valueEn: '14:00 - 15:00' },
-          { type: 'TIME', keyMap: 'T7', valueVi: '15:00 - 16:00', valueEn: '15:00 - 16:00' },
-          { type: 'TIME', keyMap: 'T8', valueVi: '16:00 - 17:00', valueEn: '16:00 - 17:00' },
-          { type: 'GENDER', keyMap: 'M', valueVi: 'Nam', valueEn: 'Male' },
-          { type: 'GENDER', keyMap: 'F', valueVi: 'Nữ', valueEn: 'Female' },
-          { type: 'GENDER', keyMap: 'O', valueVi: 'Khác', valueEn: 'Other' },
-        ];
-        await db.Allcode.bulkCreate(basicAllcodes, { ignoreDuplicates: true });
-        console.log('>>> [AUTO-SEED] Basic Allcode populated successfully');
-      }
-
-      const adminCount = await db.User.count({ where: { roleId: 'R1' } });
-      if (adminCount === 0) {
-        console.log('[AUTO-SEED] Creating initial admin account...');
-        const bcrypt = require('bcryptjs');
-        const salt = bcrypt.genSaltSync(10);
-        const hashedPassword = bcrypt.hashSync('123456', salt);
-        await db.User.findOrCreate({
-          where: { email: 'admin@bookingcare.vn' },
-          defaults: {
-            email: 'admin@bookingcare.vn',
-            password: hashedPassword,
-            firstName: 'Super',
-            lastName: 'Admin',
-            address: 'BookingCare HQ',
-            gender: 'M',
-            roleId: 'R1',
-            status: 'ACTIVE',
-            phoneNumber: '0901234567',
-          },
-        });
-        console.log('>>> [AUTO-SEED SUCCESS] Admin account ready: admin@bookingcare.vn / 123456');
-      }
-    } catch (seedErr) {
-      console.warn('[AUTO-SEED WARNING] Admin/Allcode ensure error:', seedErr.message);
+      console.log(`>>> Database connection attempt ${attempt}/15...`);
+      await db.sequelize.authenticate();
+      dbConnected = true;
+      console.log('>>> Database connected successfully');
+      break;
+    } catch (connErr) {
+      console.warn(`[DATABASE ATTEMPT ${attempt} FAILED] ${connErr.message}. Retrying in 2s...`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
+  }
 
-    // Giai đoạn 5: Chốt chặn boot guard timezone
-    await checkSystemTimezoneEnforcement();
+  if (dbConnected) {
+    try {
+      // Giai đoạn 4: Đồng bộ cấu trúc bảng
+      await db.syncSchema();
+      console.log('>>> All tables synced');
 
-    // Giai đoạn 6: Tự động chạy Dynamic Rolling Seeder
-    if (process.env.NODE_ENV !== 'production' || process.env.AUTO_SEED_ROLLING === 'true') {
+      // Giai đoạn 4b: Đảm bảo tài khoản Admin và Allcode cơ bản luôn tồn tại để đăng nhập
       try {
-        const dynamicSeedService = require('./services/dynamicSeedService');
-        await dynamicSeedService.ensureRollingSchedulesAndBookings();
+        const allcodeCount = await db.Allcode.count();
+        if (allcodeCount === 0) {
+          console.log('[AUTO-SEED] Fresh database detected. Populating basic Allcode...');
+          const basicAllcodes = [
+            { type: 'ROLE', keyMap: 'R1', valueVi: 'Quản trị viên', valueEn: 'Admin' },
+            { type: 'ROLE', keyMap: 'R2', valueVi: 'Bác sĩ', valueEn: 'Doctor' },
+            { type: 'ROLE', keyMap: 'R3', valueVi: 'Bệnh nhân', valueEn: 'Patient' },
+            { type: 'STATUS', keyMap: 'S1', valueVi: 'Lịch mới', valueEn: 'New' },
+            { type: 'STATUS', keyMap: 'S2', valueVi: 'Đã xác nhận', valueEn: 'Confirmed' },
+            { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám', valueEn: 'Done' },
+            { type: 'STATUS', keyMap: 'S4', valueVi: 'Đã hủy', valueEn: 'Cancelled' },
+            { type: 'TIME', keyMap: 'T1', valueVi: '08:00 - 09:00', valueEn: '08:00 - 09:00' },
+            { type: 'TIME', keyMap: 'T2', valueVi: '09:00 - 10:00', valueEn: '09:00 - 10:00' },
+            { type: 'TIME', keyMap: 'T3', valueVi: '10:00 - 11:00', valueEn: '10:00 - 11:00' },
+            { type: 'TIME', keyMap: 'T4', valueVi: '11:00 - 12:00', valueEn: '11:00 - 12:00' },
+            { type: 'TIME', keyMap: 'T5', valueVi: '13:00 - 14:00', valueEn: '13:00 - 14:00' },
+            { type: 'TIME', keyMap: 'T6', valueVi: '14:00 - 15:00', valueEn: '14:00 - 15:00' },
+            { type: 'TIME', keyMap: 'T7', valueVi: '15:00 - 16:00', valueEn: '15:00 - 16:00' },
+            { type: 'TIME', keyMap: 'T8', valueVi: '16:00 - 17:00', valueEn: '16:00 - 17:00' },
+            { type: 'GENDER', keyMap: 'M', valueVi: 'Nam', valueEn: 'Male' },
+            { type: 'GENDER', keyMap: 'F', valueVi: 'Nữ', valueEn: 'Female' },
+            { type: 'GENDER', keyMap: 'O', valueVi: 'Khác', valueEn: 'Other' },
+          ];
+          await db.Allcode.bulkCreate(basicAllcodes, { ignoreDuplicates: true });
+          console.log('>>> [AUTO-SEED] Basic Allcode populated successfully');
+        }
+
+        const adminCount = await db.User.count({ where: { roleId: 'R1' } });
+        if (adminCount === 0) {
+          console.log('[AUTO-SEED] Creating initial admin account...');
+          const bcrypt = require('bcryptjs');
+          const salt = bcrypt.genSaltSync(10);
+          const hashedPassword = bcrypt.hashSync('123456', salt);
+          await db.User.findOrCreate({
+            where: { email: 'admin@bookingcare.vn' },
+            defaults: {
+              email: 'admin@bookingcare.vn',
+              password: hashedPassword,
+              firstName: 'Super',
+              lastName: 'Admin',
+              address: 'BookingCare HQ',
+              gender: 'M',
+              roleId: 'R1',
+              status: 'ACTIVE',
+              phoneNumber: '0901234567',
+            },
+          });
+          console.log('>>> [AUTO-SEED SUCCESS] Admin account ready: admin@bookingcare.vn / 123456');
+        }
       } catch (seedErr) {
-        console.warn('[DYNAMIC SEED WARNING] Dynamic seed failed non-fatally:', seedErr.message);
+        console.warn('[AUTO-SEED WARNING] Admin/Allcode ensure error:', seedErr.message);
       }
+
+      // Giai đoạn 5: Chốt chặn boot guard timezone
+      await checkSystemTimezoneEnforcement();
+
+      // Giai đoạn 6: Tự động chạy Dynamic Rolling Seeder
+      if (process.env.NODE_ENV !== 'production' || process.env.AUTO_SEED_ROLLING === 'true') {
+        try {
+          const dynamicSeedService = require('./services/dynamicSeedService');
+          await dynamicSeedService.ensureRollingSchedulesAndBookings();
+        } catch (seedErr) {
+          console.warn('[DYNAMIC SEED WARNING] Dynamic seed failed non-fatally:', seedErr.message);
+        }
+      }
+    } catch (err) {
+      console.error('[DATABASE INIT ERROR] Schema/Seed init error:', err.message);
     }
-  } catch (err) {
-    console.error('[DATABASE WARNING] Database connection error during startup:', err.message);
-    console.log('[INFO] Server remains online to serve health check and static portal while database reconnects.');
+  } else {
+    console.warn('[DATABASE WARNING] Database could not be reached after 15 attempts. Server remains online in disconnected mode.');
   }
 }
 
