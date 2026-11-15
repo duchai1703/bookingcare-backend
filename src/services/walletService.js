@@ -532,6 +532,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
     let dynamicRatio = 40;
     let dynamicReserveFund = 1000000000;
     let floatAllocatedAmount = 0;
+    let adminProfitWithdrawn = 0;
     let floatAllocatedNote = '';
     let floatAllocatedDueDate = '';
     let floatHistory = [];
@@ -543,6 +544,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
               'financial_reserve_ratio_target',
               'financial_platform_reserve_fund',
               'financial_float_allocated_amount',
+              'financial_admin_profit_withdrawn',
               'financial_float_allocated_note',
               'financial_float_allocated_due_date',
               'financial_float_history',
@@ -560,6 +562,9 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
         }
         if (s.key === 'financial_float_allocated_amount' && !isNaN(Number(s.value))) {
           floatAllocatedAmount = Math.max(0, Number(s.value));
+        }
+        if (s.key === 'financial_admin_profit_withdrawn' && !isNaN(Number(s.value))) {
+          adminProfitWithdrawn = Math.max(0, Number(s.value));
         }
         if (s.key === 'financial_float_allocated_note') {
           floatAllocatedNote = s.value;
@@ -580,7 +585,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
 
     // 1. Nợ phải trả bệnh nhân (Available Liabilities)
     const patientWallets = await db.Wallet.findAll({
-      where: { walletType: 'PATIENT' },
+      where: { walletType: { [Op.in]: ['PATIENT', 'USER'] } },
       attributes: [
         [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('availableBalance')), 0), 'totalAvailable'],
         [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('reservedBalance')), 0), 'totalReserved'],
@@ -606,17 +611,58 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
     const doctorWalletLiability = Number(doctorWallets[0]?.totalAvailable || 0) + Number(doctorWallets[0]?.totalReserved || 0);
     const totalDoctorWallets = parseInt(doctorWallets[0]?.walletCount || 0, 10);
 
-    // 2. Ký quỹ giữ chỗ ca khám đang chờ thực hiện (Active Escrow Holds)
+    // 2. Ký quỹ giữ chỗ ca khám đang chờ thực hiện (Active Escrow: Wallet_Hold HELD + Booking VNPay paid S1/S2)
     const activeHolds = await db.Wallet_Hold.findAll({
       where: { status: 'HELD' },
-      attributes: [
-        [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('amount')), 0), 'totalHeld'],
-        [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'holdCount'],
-      ],
+      attributes: ['bookingId', 'amount'],
       raw: true,
     });
-    const escrowActiveHolds = Number(activeHolds[0]?.totalHeld || 0);
-    const activeHoldCount = parseInt(activeHolds[0]?.holdCount || 0, 10);
+    const heldBookingIds = activeHolds.map((h) => h.bookingId).filter(Boolean);
+    const walletHeldAmount = activeHolds.reduce((sum, h) => sum + Number(h.amount || 0), 0);
+
+    let settledBookingIds = [];
+    let totalPlatformFeeEarned = 0;
+    if (db.Doctor_Settlement_Item) {
+      const settledRows = await db.Doctor_Settlement_Item.findAll({
+        where: { status: { [Op.in]: ['EARNED', 'AVAILABLE', 'PAID'] } },
+        attributes: ['bookingId', 'platformFee'],
+        raw: true,
+      });
+      settledBookingIds = settledRows.map((r) => r.bookingId).filter(Boolean);
+      totalPlatformFeeEarned = settledRows.reduce((sum, r) => sum + Number(r.platformFee || 0), 0);
+    }
+    const spendableProfit = Math.max(0, totalPlatformFeeEarned - adminProfitWithdrawn);
+
+    let directVnpayEscrowAmount = 0;
+    let directVnpayEscrowCount = 0;
+    try {
+      const excludedIds = Array.from(new Set([...heldBookingIds, ...settledBookingIds]));
+      const directWhere = {
+        paymentMethod: 'VNPAY',
+        paymentStatus: 'paid',
+        statusId: { [Op.in]: ['S1', 'S2'] },
+        bookingPrice: { [Op.gt]: 0 },
+        [Op.or]: [{ refundStatus: 'none' }, { refundStatus: null }],
+      };
+      if (excludedIds.length > 0) {
+        directWhere.id = { [Op.notIn]: excludedIds };
+      }
+      const directEscrowStats = await db.Booking.findAll({
+        where: directWhere,
+        attributes: [
+          [db.sequelize.fn('COALESCE', db.sequelize.fn('SUM', db.sequelize.col('bookingPrice')), 0), 'totalDirect'],
+          [db.sequelize.fn('COUNT', db.sequelize.col('id')), 'cnt'],
+        ],
+        raw: true,
+      });
+      directVnpayEscrowAmount = Number(directEscrowStats[0]?.totalDirect || 0);
+      directVnpayEscrowCount = parseInt(directEscrowStats[0]?.cnt || 0, 10);
+    } catch (e) {
+      directVnpayEscrowAmount = 0;
+    }
+
+    const escrowActiveHolds = walletHeldAmount + directVnpayEscrowAmount;
+    const activeHoldCount = activeHolds.length + directVnpayEscrowCount;
 
     // 3. Tiền chờ trả Bác sĩ / Cơ sở y tế (Doctor Payables)
     let doctorPayables = 0;
@@ -635,8 +681,8 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
       doctorPayables = 0;
     }
 
-    // Tổng nghĩa vụ nợ của toàn hệ thống (Total Liabilities)
-    const totalLiabilities = patientAvailableLiability + patientReservedLiability + doctorWalletLiability + doctorPayables;
+    // Tổng nghĩa vụ nợ toàn sàn (Đồng bộ chuẩn Dual-Layer, không đếm trùng patientReserved)
+    const totalLiabilities = patientAvailableLiability + escrowActiveHolds + doctorWalletLiability + doctorPayables + spendableProfit;
 
     // 4. Dòng tiền thực tế nạp vào hệ thống qua cổng thanh toán (Total Inflow Cash)
     const depositTransactions = await db.Payment_Transaction.findAll({
@@ -718,7 +764,7 @@ async function getAdminLiquidityMetrics({ reserveRatio, reserveFund } = {}) {
       totalPatientWithdrawalPaid = 0;
     }
 
-    const totalCashOutflow = totalDoctorCashPaid + totalPatientWithdrawalPaid;
+    const totalCashOutflow = totalDoctorCashPaid + totalPatientWithdrawalPaid + adminProfitWithdrawn;
     // Số tiền mặt thực tế còn tồn trong két tài khoản ngân hàng của Sàn
     const realNetCashInTreasury = Math.max(0, totalCashInflow - totalCashOutflow - floatAllocatedAmount);
 
@@ -1954,15 +2000,39 @@ async function getFinancialConfigs() {
       configMap[s.key] = s.value;
     });
 
+    let platformFeePercent = 15;
+    try {
+      if (db.Financial_Policy) {
+        const revPolicy = await db.Financial_Policy.findOne({
+          where: { policyType: 'REVENUE_SHARE', status: 'ACTIVE', scopeType: 'GLOBAL' },
+          order: [['version', 'DESC']],
+          raw: true,
+        });
+        if (revPolicy?.rules) {
+          const rules = typeof revPolicy.rules === 'string' ? JSON.parse(revPolicy.rules) : revPolicy.rules;
+          if (rules?.standardRate != null && !isNaN(Number(rules.standardRate))) {
+            platformFeePercent = Number(rules.standardRate);
+          }
+        }
+      }
+    } catch (e) {
+      platformFeePercent = 15;
+    }
+
+    const ratioTarget = Number(configMap['financial_reserve_ratio_target'] || 40);
+
     return {
       errCode: 0,
       errMessage: 'OK',
       data: {
         platformReserveFund: Number(configMap['financial_platform_reserve_fund'] || 1000000000),
-        reserveRatioTarget: Number(configMap['financial_reserve_ratio_target'] || 40),
+        reserveRatioTarget: ratioTarget,
+        mandatoryReserveRatio: ratioTarget,
         minWithdrawalAmount: Number(configMap['financial_min_withdrawal_amount'] || 50000),
         withdrawalSlaHours: Number(configMap['financial_withdrawal_sla_hours'] || 24),
         settlementHoldHours: Number(configMap['financial_doctor_settlement_hold_hours'] !== undefined ? configMap['financial_doctor_settlement_hold_hours'] : 24),
+        platformFeePercent,
+        doctorRevenueSharePercent: Math.max(1, 100 - platformFeePercent),
         rawSettings: settings,
       },
     };
@@ -1975,7 +2045,7 @@ async function getFinancialConfigs() {
 /**
  * [PHASE 5] Cập nhật cấu hình tham số tài chính & quỹ bảo chứng sàn
  */
-async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours } = {}) {
+async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget, mandatoryReserveRatio, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours, doctorRevenueSharePercent } = {}) {
   try {
     const updates = [];
     if (platformReserveFund != null && !isNaN(Number(platformReserveFund))) {
@@ -1985,8 +2055,9 @@ async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget,
         description: 'Vốn đối ứng bảo chứng thanh khoản ban đầu của sàn (VNĐ)',
       });
     }
-    if (reserveRatioTarget != null && !isNaN(Number(reserveRatioTarget))) {
-      const r = Math.max(10, Math.min(100, Number(reserveRatioTarget)));
+    const targetRatio = reserveRatioTarget ?? mandatoryReserveRatio;
+    if (targetRatio != null && !isNaN(Number(targetRatio))) {
+      const r = Math.max(10, Math.min(100, Number(targetRatio)));
       updates.push({
         key: 'financial_reserve_ratio_target',
         value: String(r),
@@ -2025,6 +2096,20 @@ async function updateFinancialConfigs({ platformReserveFund, reserveRatioTarget,
 
     for (const item of updates) {
       await db.SystemSetting.upsert(item);
+    }
+
+    if (doctorRevenueSharePercent != null && !isNaN(Number(doctorRevenueSharePercent)) && db.Financial_Policy) {
+      const docPct = Math.max(50, Math.min(99, Number(doctorRevenueSharePercent)));
+      const feePct = 100 - docPct;
+      const revPolicy = await db.Financial_Policy.findOne({
+        where: { policyType: 'REVENUE_SHARE', status: 'ACTIVE', scopeType: 'GLOBAL' },
+        order: [['version', 'DESC']],
+      });
+      if (revPolicy) {
+        const rules = typeof revPolicy.rules === 'string' ? JSON.parse(revPolicy.rules) : { ...(revPolicy.rules || {}) };
+        rules.standardRate = feePct;
+        await revPolicy.update({ rules: typeof revPolicy.rules === 'string' ? JSON.stringify(rules) : rules });
+      }
     }
 
     return await getFinancialConfigs();
@@ -2355,7 +2440,7 @@ async function getPeriodicTreasuryCycles(options = {}) {
     const now = new Date();
     
     // Lấy cấu hình quỹ bảo chứng ban đầu & vốn float
-    let dynamicReserveFund = 350000000;
+    let dynamicReserveFund = 1000000000;
     let floatAllocatedAmount = 0;
     try {
       const dbSettings = await db.SystemSetting.findAll({
@@ -2422,6 +2507,15 @@ async function getPeriodicTreasuryCycles(options = {}) {
       });
     }
 
+    let profitCashouts = [];
+    if (db.Financial_Automation_Log) {
+      profitCashouts = await db.Financial_Automation_Log.findAll({
+        where: { jobType: 'PLATFORM_PROFIT_CASHOUT', status: 'SUCCESS' },
+        attributes: ['totalAmount', 'createdAt'],
+        raw: true
+      });
+    }
+
     let settlementItems = [];
     if (db.Doctor_Settlement_Item) {
       settlementItems = await db.Doctor_Settlement_Item.findAll({
@@ -2448,6 +2542,10 @@ async function getPeriodicTreasuryCycles(options = {}) {
     for (const w of withdrawals) {
       const wDate = new Date(w.transferredAt || w.updatedAt || w.createdAt);
       if (wDate < earliestStart) runningCash -= Number(w.amount || 0);
+    }
+    for (const pc of profitCashouts) {
+      const cDate = new Date(pc.createdAt);
+      if (cDate < earliestStart) runningCash -= Number(pc.totalAmount || 0);
     }
 
     const calculatedCycles = chronPeriods.map((p) => {
@@ -2476,7 +2574,12 @@ async function getPeriodicTreasuryCycles(options = {}) {
         const dt = new Date(w.transferredAt || w.updatedAt || w.createdAt);
         if (dt >= pStart && dt <= pEnd) patientWithdrawalOutflow += Number(w.amount || 0);
       }
-      const totalOutflows = docPayoutOutflow + patientWithdrawalOutflow;
+      let profitCashoutOutflow = 0;
+      for (const pc of profitCashouts) {
+        const dt = new Date(pc.createdAt);
+        if (dt >= pStart && dt <= pEnd) profitCashoutOutflow += Number(pc.totalAmount || 0);
+      }
+      const totalOutflows = docPayoutOutflow + patientWithdrawalOutflow + profitCashoutOutflow;
 
       const netCashFlow = totalInflows - totalOutflows;
       const openingCash = runningCash;
@@ -2540,6 +2643,7 @@ async function getPeriodicTreasuryCycles(options = {}) {
 
     for (const dp of docPayouts) allTimeOutflows += Number(dp.netPayout || 0);
     for (const w of withdrawals) allTimeOutflows += Number(w.amount || 0);
+    for (const pc of profitCashouts) allTimeOutflows += Number(pc.totalAmount || 0);
 
     for (const item of settlementItems) {
       allTimeDoctorPayable += Number(item.netAmount || 0);

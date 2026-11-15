@@ -501,13 +501,14 @@ async function handleGetFinancialConfigs(req, res) {
  */
 async function handleUpdateFinancialConfigs(req, res) {
   try {
-    const { platformReserveFund, reserveRatioTarget, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours } = req.body;
+    const { platformReserveFund, reserveRatioTarget, mandatoryReserveRatio, minWithdrawalAmount, withdrawalSlaHours, settlementHoldHours, doctorRevenueSharePercent } = req.body;
     const result = await walletService.updateFinancialConfigs({
       platformReserveFund,
-      reserveRatioTarget,
+      reserveRatioTarget: reserveRatioTarget ?? mandatoryReserveRatio,
       minWithdrawalAmount,
       withdrawalSlaHours,
       settlementHoldHours,
+      doctorRevenueSharePercent,
     });
     return res.status(200).json(result);
   } catch (error) {

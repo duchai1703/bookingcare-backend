@@ -43,6 +43,44 @@ const authLimiter = rateLimit({
 const routes = (app) => {
   // ✅ [FIX-IMAGE] DS-01 v2: jsonLarge không cần nữa — global limit đã 8mb trong server.js
 
+  // ===== ROOT & HEALTH CHECK =====
+  app.get('/', (req, res) => {
+    res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BookingCare API & System Portal</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0b0f19; color: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; box-sizing: border-box; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 1rem; padding: 2.5rem; max-width: 540px; width: 100%; text-align: center; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
+    .badge { display: inline-flex; align-items: center; gap: 0.5rem; background: #064e3b; color: #34d399; font-size: 0.85rem; font-weight: 600; padding: 0.35rem 0.85rem; border-radius: 9999px; margin-bottom: 1.25rem; }
+    .dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; }
+    h1 { font-size: 1.75rem; font-weight: 700; color: #38bdf8; margin: 0 0 0.75rem 0; }
+    p { color: #94a3b8; font-size: 0.95rem; line-height: 1.6; margin: 0 0 1.75rem 0; }
+    .actions { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+    .btn { background: #0284c7; color: #ffffff; text-decoration: none; font-weight: 600; font-size: 0.9rem; padding: 0.65rem 1.25rem; border-radius: 0.5rem; transition: all 0.2s; }
+    .btn:hover { background: #0369a1; }
+    .btn-secondary { background: #1f2937; color: #e2e8f0; border: 1px solid #374151; }
+    .btn-secondary:hover { background: #374151; }
+    .footer { margin-top: 2rem; font-size: 0.75rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge"><span class="dot"></span> HỆ THỐNG BOOKINGCARE ĐANG HOẠT ĐỘNG</div>
+    <h1>BookingCare Medical Server</h1>
+    <p>Máy chủ dịch vụ BookingCare đã được kết nối thành công qua cổng Traefik Reverse Proxy và đang sẵn sàng phục vụ các yêu cầu API & Khám chữa bệnh.</p>
+    <div class="actions">
+      <a class="btn" href="/api/health">Kiểm tra /api/health</a>
+      <a class="btn btn-secondary" href="/api/v1/doctors/top">Danh sách Bác sĩ</a>
+    </div>
+    <div class="footer">BookingCare Platform &copy; 2026 &bull; Traefik SSL Secured</div>
+  </div>
+</body>
+</html>`);
+  });
+
   // ===== HEALTH CHECK =====
   app.get('/api/health', (req, res) => res.json({ errCode: 0, message: 'BookingCare Backend is running!' }));
 

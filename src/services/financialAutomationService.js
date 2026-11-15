@@ -1252,6 +1252,7 @@ async function getVisualCashflowMetrics(options = {}) {
     let directBookingInflowAll = 0;
     let directBookingInflowPeriod = 0;
     let directBookingCountPeriod = 0;
+    let directVnpayBookingsPeriod = [];
     try {
       const bAllStats = await db.Booking.findAll({
         where: { paymentStatus: 'paid', paymentMethod: 'VNPAY' },
@@ -1280,15 +1281,60 @@ async function getVisualCashflowMetrics(options = {}) {
       });
       directBookingInflowPeriod = Number(bPeriodStats[0]?.totalPaid || 0);
       directBookingCountPeriod = parseInt(bPeriodStats[0]?.cnt || 0, 10);
+
+      const bDirectList = await db.Booking.findAll({
+        where: bPeriodWhere,
+        order: [['createdAt', 'DESC']],
+        limit: 120,
+        include: [
+          { model: db.User, as: 'patientData', attributes: ['id', 'firstName', 'lastName'] },
+        ],
+      });
+      directVnpayBookingsPeriod = bDirectList.map((b) => {
+        const p = b.patientData || {};
+        const pName = (p.firstName || p.lastName)
+          ? `${p.lastName || ''} ${p.firstName || ''}`.trim()
+          : (b.patientName || `Bệnh nhân ca #${b.id}`);
+        return {
+          id: b.id,
+          recordKey: `BK-${b.id}`,
+          bookingId: b.id,
+          inflowType: 'DIRECT_BOOKING',
+          inflowTypeLabel: 'Đặt khám VNPay trực tiếp',
+          amount: Number(b.bookingPrice || 0),
+          paymentMethod: 'VNPAY',
+          txnRef: b.vnpayTransactionNo || b.vnpayTxnRef || `BK-${b.id}`,
+          patientName: pName,
+          statusId: b.statusId,
+          refundStatus: b.refundStatus,
+          createdAt: b.createdAt,
+        };
+      });
     } catch (e) {
       console.warn('Could not query direct bookings:', e.message);
     }
 
+    const vnpayInflowsList = sortCashflowItems(
+      [
+        ...recentDeposits.map((d) => ({
+          ...d,
+          recordKey: `PAY-${d.id}`,
+          inflowType: 'WALLET_DEPOSIT',
+          inflowTypeLabel: 'Nạp ví VNPay',
+        })),
+        ...directVnpayBookingsPeriod,
+      ],
+      sort,
+      'amount',
+      'createdAt'
+    ).slice(0, 100);
+
     const totalRealInflowAll = walletDepositInflowAll + directBookingInflowAll;
 
-    // Rút tiền thực tế (Withdrawal_Request + join Wallet để lấy đúng walletType và accountNumber)
+    // Rút tiền thực tế (Withdrawal_Request + Doctor_Settlement đợt đối soát bank_transfer đã chi trả)
     let doctorBankPayoutAll = 0;
     let patientBankPayoutAll = 0;
+    let legacyDoctorSettlementAll = 0;
     let doctorBankPayoutPeriod = 0;
     let patientBankPayoutPeriod = 0;
     let doctorPayoutCountPeriod = 0;
@@ -1298,6 +1344,7 @@ async function getVisualCashflowMetrics(options = {}) {
     let doctorPayoutsList = [];
 
     try {
+      let mappedAllWithdrawals = [];
       if (db.Withdrawal_Request) {
         const allWithdrawals = await db.Withdrawal_Request.findAll({
           order: [['createdAt', 'DESC']],
@@ -1311,7 +1358,7 @@ async function getVisualCashflowMetrics(options = {}) {
           ],
         });
 
-        const mappedAllWithdrawals = allWithdrawals.map((wInst) => {
+        mappedAllWithdrawals = allWithdrawals.map((wInst) => {
           const w = wInst.toJSON();
           const wType = w.wallet?.walletType || 'USER';
           const owner = w.wallet?.owner;
@@ -1332,8 +1379,11 @@ async function getVisualCashflowMetrics(options = {}) {
 
           return {
             id: w.id,
+            recordKey: `UNC-${w.id}`,
+            payoutSource: 'WITHDRAWAL_REQUEST',
             amount: amt,
             walletType: wType,
+            doctorId: wType === 'DOCTOR' ? w.wallet?.ownerId : null,
             ownerName: ownerName || w.accountHolderName || 'Chủ tài khoản',
             accountHolderName: w.accountHolderName || ownerName || 'Chủ tài khoản',
             bankName: w.bankName || '--',
@@ -1346,22 +1396,66 @@ async function getVisualCashflowMetrics(options = {}) {
             effectiveDate,
           };
         });
-
-        const periodWithdrawals = mappedAllWithdrawals.filter((w) => dateFilter.inRange(w.effectiveDate));
-        recentWithdrawals = sortCashflowItems(periodWithdrawals, sort, 'amount', 'effectiveDate').slice(0, 50);
-
-        const disbursedDoctorList = periodWithdrawals.filter(
-          (w) => w.status === 'TRANSFERRED' && w.walletType === 'DOCTOR'
-        );
-        const disbursedPatientList = periodWithdrawals.filter(
-          (w) => w.status === 'TRANSFERRED' && w.walletType !== 'DOCTOR'
-        );
-
-        doctorBankPayoutPeriod = disbursedDoctorList.reduce((acc, w) => acc + w.amount, 0);
-        patientBankPayoutPeriod = disbursedPatientList.reduce((acc, w) => acc + w.amount, 0);
-        doctorPayoutCountPeriod = disbursedDoctorList.length;
-        doctorPayoutsList = sortCashflowItems(disbursedDoctorList, sort, 'amount', 'effectiveDate').slice(0, 50);
       }
+
+      let mappedLegacySettlementPayouts = [];
+      if (db.Doctor_Settlement) {
+        const dsPaidList = await db.Doctor_Settlement.findAll({
+          where: { payoutStatus: 'paid', paymentMethod: 'bank_transfer' },
+          order: [['paidAt', 'DESC']],
+          include: [{ model: db.User, as: 'doctorData', attributes: ['id', 'firstName', 'lastName'] }],
+        });
+        mappedLegacySettlementPayouts = dsPaidList.map((dsInst) => {
+          const ds = dsInst.toJSON();
+          const dOwner = ds.doctorData || {};
+          const docName = (dOwner.firstName || dOwner.lastName)
+            ? `${dOwner.lastName || ''} ${dOwner.firstName || ''}`.trim()
+            : `Bác sĩ #${ds.doctorId}`;
+          const amt = Number(ds.netPayout || 0);
+          const effDate = ds.paidAt || ds.updatedAt || ds.createdAt;
+          legacyDoctorSettlementAll += amt;
+
+          return {
+            id: `DS-${ds.id}`,
+            recordKey: `DS-${ds.id}`,
+            payoutSource: 'LEGACY_SETTLEMENT',
+            amount: amt,
+            walletType: 'DOCTOR',
+            doctorId: ds.doctorId,
+            ownerName: docName,
+            accountHolderName: docName.toUpperCase(),
+            bankName: 'Chuyển khoản đối soát (Đợt cũ)',
+            accountNumber: 'TK Bác sĩ đối soát',
+            bankAccountNumber: 'TK Bác sĩ đối soát',
+            bankTransactionRef: ds.transactionRef || ds.batchCode || `BATCH-DS-${ds.id}`,
+            status: 'TRANSFERRED',
+            transferredAt: effDate,
+            createdAt: ds.createdAt,
+            effectiveDate: effDate,
+          };
+        });
+      }
+
+      const periodWithdrawals = mappedAllWithdrawals.filter((w) => dateFilter.inRange(w.effectiveDate));
+      recentWithdrawals = sortCashflowItems(periodWithdrawals, sort, 'amount', 'effectiveDate').slice(0, 50);
+
+      const periodLegacyDoctor = mappedLegacySettlementPayouts.filter((ds) => {
+        if (parsedDoctorId && ds.doctorId !== parsedDoctorId) return false;
+        return dateFilter.inRange(ds.effectiveDate);
+      });
+
+      const disbursedDoctorList = [
+        ...periodWithdrawals.filter((w) => w.status === 'TRANSFERRED' && w.walletType === 'DOCTOR'),
+        ...periodLegacyDoctor,
+      ];
+      const disbursedPatientList = periodWithdrawals.filter(
+        (w) => w.status === 'TRANSFERRED' && w.walletType !== 'DOCTOR'
+      );
+
+      doctorBankPayoutPeriod = disbursedDoctorList.reduce((acc, w) => acc + w.amount, 0);
+      patientBankPayoutPeriod = disbursedPatientList.reduce((acc, w) => acc + w.amount, 0);
+      doctorPayoutCountPeriod = disbursedDoctorList.length;
+      doctorPayoutsList = sortCashflowItems(disbursedDoctorList, sort, 'amount', 'effectiveDate').slice(0, 50);
     } catch (e) {
       console.warn('Could not query withdrawals:', e.message);
     }
@@ -1370,8 +1464,9 @@ async function getVisualCashflowMetrics(options = {}) {
     // Tổng nghĩa vụ Sổ cái Sàn = patientAvailable (rảnh) + escrowTotal (tạm giữ) + totalDoctorWallets + spendableProfit
     const totalSystemLiabilities = patientAvailable + escrowTotal + totalDoctorWallets + spendableProfit;
 
-    // Tiền mặt thật tại VCB = Vốn đối ứng bảo chứng sàn + Tổng thu VNPay (Nạp ví + Đặt khám trực tiếp) - Tổng chi UNC/Rút lời - Vốn trích đầu tư
-    const totalRealOutflowAll = adminProfitWithdrawn + doctorBankPayoutAll + patientBankPayoutAll + floatAllocatedAmount;
+    // Tiền mặt thật tại VCB = Vốn đối ứng bảo chứng sàn + Tổng thu VNPay (Nạp ví + Đặt khám trực tiếp) - Tổng chi (UNC Rút tiền + Đợt đối soát cũ bank_transfer + Rút lời Admin) - Vốn trích đầu tư
+    const totalRealOutflowAll =
+      adminProfitWithdrawn + doctorBankPayoutAll + legacyDoctorSettlementAll + patientBankPayoutAll + floatAllocatedAmount;
     const realBankBalance = Math.max(0, platformReserveFund + totalRealInflowAll - totalRealOutflowAll);
 
     // Chênh lệch thanh khoản: Dương = Dự trữ thanh khoản tại VCB; Âm = Thiếu hụt tiền mặt bảo chứng
@@ -1569,33 +1664,50 @@ async function getVisualCashflowMetrics(options = {}) {
     ].filter((item) => item.value > 0);
 
     const dailyCashFlow = [];
-    let chartDays = [];
+    const chartBuckets = [];
     if (dateFilter.timeRange === 'today') {
-      chartDays = [moment().startOf('day')];
+      const todayStart = moment().startOf('day');
+      for (let h = 0; h < 24; h += 4) {
+        const bStart = moment(todayStart).add(h, 'hours');
+        const bEnd = moment(bStart).add(4, 'hours').subtract(1, 'millisecond');
+        chartBuckets.push({ start: bStart.toDate(), end: bEnd.toDate(), label: bStart.format('HH:mm') });
+      }
     } else if (dateFilter.timeRange === 'mtd') {
       const mStart = moment().startOf('month');
       const todayM = moment().startOf('day');
       const diff = Math.min(30, todayM.diff(mStart, 'days'));
       for (let i = diff; i >= 0; i--) {
-        chartDays.push(moment().subtract(i, 'days').startOf('day'));
+        const d = moment().subtract(i, 'days');
+        chartBuckets.push({
+          start: moment(d).startOf('day').toDate(),
+          end: moment(d).endOf('day').toDate(),
+          label: d.format('DD/MM'),
+        });
       }
     } else if (dateFilter.timeRange === 'custom' && dateFilter.start && dateFilter.end) {
       const cEnd = moment(dateFilter.end).startOf('day');
       const cStart = moment(dateFilter.start).startOf('day');
       const diff = Math.max(0, Math.min(30, cEnd.diff(cStart, 'days')));
       for (let i = diff; i >= 0; i--) {
-        chartDays.push(moment(cEnd).subtract(i, 'days').startOf('day'));
+        const d = moment(cEnd).subtract(i, 'days');
+        chartBuckets.push({
+          start: moment(d).startOf('day').toDate(),
+          end: moment(d).endOf('day').toDate(),
+          label: d.format('DD/MM'),
+        });
       }
     } else {
       for (let i = 6; i >= 0; i--) {
-        chartDays.push(moment().subtract(i, 'days').startOf('day'));
+        const d = moment().subtract(i, 'days');
+        chartBuckets.push({
+          start: moment(d).startOf('day').toDate(),
+          end: moment(d).endOf('day').toDate(),
+          label: d.format('DD/MM'),
+        });
       }
     }
 
-    for (const d of chartDays) {
-      const startOfDay = moment(d).startOf('day').toDate();
-      const endOfDay = moment(d).endOf('day').toDate();
-
+    for (const bucket of chartBuckets) {
       let dayInflow = 0;
       let dayOutflow = 0;
       try {
@@ -1604,28 +1716,47 @@ async function getVisualCashflowMetrics(options = {}) {
             (await db.Payment_Transaction.sum('amount', {
               where: {
                 status: 'SUCCESS',
-                createdAt: { [Op.between]: [startOfDay, endOfDay] },
+                createdAt: { [Op.between]: [bucket.start, bucket.end] },
               },
             })) || 0
           );
         }
         if (db.Booking) {
-          dayInflow += Number(
-            (await db.Booking.sum('bookingPrice', {
-              where: {
-                paymentStatus: 'paid',
-                paymentMethod: 'VNPAY',
-                createdAt: { [Op.between]: [startOfDay, endOfDay] },
-              },
-            })) || 0
-          );
+          const bChartWhere = {
+            paymentStatus: 'paid',
+            paymentMethod: 'VNPAY',
+            createdAt: { [Op.between]: [bucket.start, bucket.end] },
+          };
+          if (parsedDoctorId) bChartWhere.doctorId = parsedDoctorId;
+          if (parsedClinicId) bChartWhere.clinicId = parsedClinicId;
+          dayInflow += Number((await db.Booking.sum('bookingPrice', { where: bChartWhere })) || 0);
         }
         if (db.Withdrawal_Request) {
           dayOutflow += Number(
             (await db.Withdrawal_Request.sum('amount', {
               where: {
                 status: 'TRANSFERRED',
-                transferredAt: { [Op.between]: [startOfDay, endOfDay] },
+                transferredAt: { [Op.between]: [bucket.start, bucket.end] },
+              },
+            })) || 0
+          );
+        }
+        if (db.Doctor_Settlement) {
+          const dsChartWhere = {
+            payoutStatus: 'paid',
+            paymentMethod: 'bank_transfer',
+            paidAt: { [Op.between]: [bucket.start, bucket.end] },
+          };
+          if (parsedDoctorId) dsChartWhere.doctorId = parsedDoctorId;
+          dayOutflow += Number((await db.Doctor_Settlement.sum('netPayout', { where: dsChartWhere })) || 0);
+        }
+        if (db.Financial_Automation_Log) {
+          dayOutflow += Number(
+            (await db.Financial_Automation_Log.sum('totalAmount', {
+              where: {
+                jobType: 'PLATFORM_PROFIT_CASHOUT',
+                status: 'SUCCESS',
+                createdAt: { [Op.between]: [bucket.start, bucket.end] },
               },
             })) || 0
           );
@@ -1636,7 +1767,7 @@ async function getVisualCashflowMetrics(options = {}) {
       }
 
       dailyCashFlow.push({
-        date: d.format('DD/MM'),
+        date: bucket.label,
         inflow: dayInflow,
         outflow: dayOutflow,
         net: dayInflow - dayOutflow,
@@ -1830,6 +1961,7 @@ async function getVisualCashflowMetrics(options = {}) {
       escrowBookings,
       recentSettlements,
       recentDeposits,
+      vnpayInflowsList,
       recentWithdrawals,
       patientWalletsList,
       doctorWalletsList,
@@ -1863,6 +1995,7 @@ async function getVisualCashflowMetrics(options = {}) {
             directBookingInflow: directBookingInflowAll,
             totalOutflowBank: totalRealOutflowAll,
             doctorPayouts: doctorBankPayoutAll,
+            legacyDoctorPayouts: legacyDoctorSettlementAll,
             patientPayouts: patientBankPayoutAll,
             adminProfitWithdrawn,
             floatAllocatedAmount,
