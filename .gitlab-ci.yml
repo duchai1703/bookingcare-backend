@@ -121,7 +121,17 @@ deploy_staging:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
-      -e GEMINI_API_KEY=${GEMINI_API_KEY:-"AIzaSyDemoFallbackKey"} 
+      -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
+      -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
+      -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
+      -e "EMAIL_APP_PASSWORD=lrpb xnpu iczt lwti" 
+      -e VNP_TMN_CODE=WNHP9CK0 
+      -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
+      -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
+      -e VNP_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction 
+      -e VNP_RETURN_URL=https://bookingcare.s2.ttpprojects.com/payment-result 
+      -e API_CRON_SECRET=Hai23520421_CronJobSecret_7a8b9c0d1e2f3 
+      -e RECEIPT_FALLBACK_SECRET=BookingCare_Hai_d83ha9d73j9f8h2n4m5v6c7x8z9a0s1d2f3g4h5j6k7l8q9w0e1r2t3y 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
@@ -176,7 +186,17 @@ deploy_production:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
-      -e GEMINI_API_KEY=${GEMINI_API_KEY:-"AIzaSyDemoFallbackKey"} 
+      -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
+      -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
+      -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
+      -e "EMAIL_APP_PASSWORD=lrpb xnpu iczt lwti" 
+      -e VNP_TMN_CODE=WNHP9CK0 
+      -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
+      -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
+      -e VNP_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction 
+      -e VNP_RETURN_URL=https://bookingcare.s2.ttpprojects.com/payment-result 
+      -e API_CRON_SECRET=Hai23520421_CronJobSecret_7a8b9c0d1e2f3 
+      -e RECEIPT_FALLBACK_SECRET=BookingCare_Hai_d83ha9d73j9f8h2n4m5v6c7x8z9a0s1d2f3g4h5j6k7l8q9w0e1r2t3y 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
