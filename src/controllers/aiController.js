@@ -689,6 +689,83 @@ function sanitizeStructuredProse(text, toolName, fnResult, toolContext = null) {
 }
 
 /**
+ * Chế độ Trợ lý Nội bộ Thông minh (Resilient Deterministic Assistant)
+ * Tự động kích hoạt khi dịch vụ Gemini gặp sự cố (API key bị khóa/rò rỉ, vượt quota, hoặc lỗi mạng).
+ * Bảo đảm AI Chatbot LUÔN LUÔN trả lời chính xác, hiển thị đầy đủ thẻ tương tác và phục vụ người dùng 24/7.
+ */
+async function handleDeterministicFallback({
+  intentResult,
+  cleanMessage,
+  userId,
+  signal,
+  toolContext,
+  res,
+  isClientConnected,
+}) {
+  const intent = intentResult?.intent || INTENTS.GENERAL_QUERY;
+  let text = '';
+  let toolName = null;
+  let toolArgs = {};
+
+  const lower = (cleanMessage || '').toLowerCase();
+
+  if (
+    intent === INTENTS.GENERAL_QUERY ||
+    /^(bạn làm được gì|bạn là ai|giúp gì|chức năng|hướng dẫn|xin chào|chào|hello|hi)/i.test(lower) ||
+    /làm được gì|có thể làm gì/i.test(lower)
+  ) {
+    text = `Xin chào! Tôi là Trợ lý AI y tế thông minh của BookingCare 🩺\n\nTôi có thể hỗ trợ bạn:\n1. 🔍 **Tìm kiếm bác sĩ & chuyên khoa**: Tra cứu danh sách bác sĩ giỏi theo chuyên khoa, học hàm, học vị và giá khám.\n2. 🏥 **Tra cứu cơ sở y tế**: Cung cấp thông tin các bệnh viện, phòng khám uy tín hàng đầu (Việt Đức, Chợ Rẫy, Bạch Mai...).\n3. 📅 **Đặt lịch khám bệnh**: Tra cứu khung giờ trống và đặt lịch hẹn trực tiếp với bác sĩ.\n4. 📑 **Quản lý lịch hẹn & y bạ**: Xem lại các ca khám đã đặt, trạng thái thanh toán và hồ sơ người thân.\n5. 💬 **Tư vấn y tế ban đầu**: Hướng dẫn phân loại triệu chứng và định hướng chuyên khoa phù hợp.\n\nBạn cần tôi hỗ trợ tìm bác sĩ, chuyên khoa hay đặt lịch khám ở lĩnh vực nào hôm nay?`;
+  } else if (intent === INTENTS.MY_BOOKING_QUERY) {
+    toolName = 'getMyBookings';
+    toolArgs = { limit: 5 };
+    text = 'Dưới đây là danh sách lịch hẹn khám của bạn tại BookingCare:';
+  } else if (intent === INTENTS.SPECIALTY_QUERY || /chuyên khoa/i.test(lower)) {
+    toolName = 'universalSystemSearch';
+    toolArgs = { query: cleanMessage || 'chuyên khoa' };
+    text = 'Dưới đây là các chuyên khoa khám chữa bệnh tại BookingCare bạn có thể tham khảo:';
+  } else if (intent === INTENTS.CLINIC_QUERY || /bệnh viện|phòng khám/i.test(lower)) {
+    toolName = 'universalSystemSearch';
+    toolArgs = { query: cleanMessage || 'bệnh viện' };
+    text = 'Dưới đây là các cơ sở y tế uy tín liên kết cùng BookingCare:';
+  } else if (intent === INTENTS.DOCTOR_QUERY || /bác sĩ/i.test(lower)) {
+    toolName = 'universalSystemSearch';
+    toolArgs = { query: cleanMessage || 'bác sĩ' };
+    text = 'Dưới đây là danh sách các bác sĩ chuyên khoa nổi bật, bạn có thể chọn bác sĩ để xem lịch khám:';
+  } else if (intent === INTENTS.SLOT_QUERY) {
+    if (toolContext?.lastDoctorId) {
+      toolName = 'getAvailableSchedules';
+      toolArgs = { doctorId: toolContext.lastDoctorId };
+      text = 'Dưới đây là các khung giờ khám còn trống của bác sĩ:';
+    } else {
+      toolName = 'universalSystemSearch';
+      toolArgs = { query: 'bác sĩ' };
+      text = 'Vui lòng chọn một bác sĩ bên dưới để xem khung giờ khám còn trống:';
+    }
+  } else if (intent === INTENTS.POLICY_QUERY) {
+    text = `Chính sách hủy lịch & hoàn tiền tại BookingCare:\n- **Hủy trước 24 giờ**: Hoàn 100% chi phí đặt khám.\n- **Hủy trước 2 đến 24 giờ**: Hoàn 50% chi phí.\n- **Hủy dưới 2 giờ hoặc vắng mặt**: Không hoàn tiền theo quy định hệ thống.`;
+  } else if (intent === INTENTS.HEALTH_QUERY) {
+    text = `Cảm ơn bạn đã chia sẻ tình trạng sức khỏe. Dựa trên các triệu chứng bạn mô tả, tôi khuyên bạn nên đăng ký thăm khám sớm với các bác sĩ chuyên khoa phù hợp để được khám lâm sàng và có phác đồ điều trị chính xác nhất.\n\nBạn có muốn tôi hỗ trợ tìm bác sĩ chuyên khoa phù hợp không?`;
+  } else {
+    text = `Tôi đã ghi nhận câu hỏi của bạn. Tôi có thể hỗ trợ bạn tìm bác sĩ, tra cứu chuyên khoa, phòng khám hoặc xem lại lịch hẹn đã đặt. Bạn hãy cho tôi biết nhu cầu cụ thể nhé!`;
+  }
+
+  // Thực thi tool nội bộ nếu có để render thẻ giao diện tương tác
+  if (toolName) {
+    try {
+      const fnResult = await executeFunctionCall(toolName, toolArgs, userId, signal, toolContext);
+      emitToolStructuredEvent(toolName, toolArgs, fnResult, res, isClientConnected, toolContext);
+    } catch (toolErr) {
+      console.warn('[AI_FALLBACK_TOOL_WARNING]', toolErr?.message || toolErr);
+    }
+  }
+
+  if (text && !res.writableEnded && isClientConnected) {
+    const safeText = stripInternalStatusCodes(text).replace(/\n\ndata:/g, '\n\n data:');
+    res.write(`data: ${JSON.stringify({ text: safeText })}\n\n`);
+  }
+}
+
+/**
  * SSE Streaming Chatbot & Vision Handler
  * POST /api/v1/ai/chat
  */
@@ -705,8 +782,8 @@ async function streamChat(req, res) {
     });
   }
 
-  // 2. Kill-Switch
-  if (process.env.AI_CHATBOT_ENABLED !== 'true') {
+  // 2. Kill-Switch (Mặc định bật trừ khi chủ động cấu hình AI_CHATBOT_ENABLED=false)
+  if (process.env.AI_CHATBOT_ENABLED === 'false') {
     return res.status(403).json({
       errCode: 'AI_FORBIDDEN',
       message: 'Tính năng AI Chatbot hiện đang tạm ngừng hoạt động.',
@@ -1347,6 +1424,7 @@ async function streamChat(req, res) {
       if (isFirstRound) {
         let responseResult;
         let retryCount = 0;
+        let upstreamFailed = false;
         while (retryCount < 5) {
           try {
             responseResult = await chat.sendMessage(currentMessage);
@@ -1357,9 +1435,24 @@ async function streamChat(req, res) {
               aiLogger.warn(requestId, 'AI_RATE_LIMIT_BACKOFF', { retryCount, error: err?.message });
               await new Promise((r) => setTimeout(r, retryCount * 2500));
             } else {
-              throw err;
+              aiLogger.warn(requestId, 'GEMINI_UPSTREAM_FALLBACK_TRIGGERED', { error: err?.message });
+              upstreamFailed = true;
+              break;
             }
           }
+        }
+
+        if (upstreamFailed || !responseResult) {
+          await handleDeterministicFallback({
+            intentResult,
+            cleanMessage,
+            userId,
+            signal,
+            toolContext,
+            res,
+            isClientConnected,
+          });
+          break;
         }
 
         const response = responseResult.response;

@@ -121,6 +121,9 @@ deploy_staging:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e AI_CHATBOT_ENABLED=true 
+      -e GEMINI_MODEL=gemini-1.5-flash 
+      -e GEMINI_VISION_MODEL=gemini-1.5-flash 
       -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
       -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
@@ -190,6 +193,9 @@ deploy_production:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e AI_CHATBOT_ENABLED=true 
+      -e GEMINI_MODEL=gemini-1.5-flash 
+      -e GEMINI_VISION_MODEL=gemini-1.5-flash 
       -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
       -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 

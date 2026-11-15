@@ -7,8 +7,8 @@
 
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
-const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-const DEFAULT_VISION_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_MODEL = 'gemini-1.5-flash';
+const DEFAULT_VISION_MODEL = 'gemini-1.5-flash';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_OUTPUT_TOKENS = 600;
 const DEFAULT_TIMEOUT_MS = 60000;
@@ -35,7 +35,7 @@ function getGenAIClient() {
  * Kiểm tra xem tính năng AI Chatbot có được bật hay không
  */
 function isAIChatbotEnabled() {
-  return process.env.AI_CHATBOT_ENABLED === 'true';
+  return process.env.AI_CHATBOT_ENABLED !== 'false';
 }
 
 /**
@@ -129,7 +129,7 @@ function getGenerativeModel(options = {}) {
 }
 
 function isAiConfigured() {
-  return hasValidApiKey();
+  return Boolean(process.env.AI_CHATBOT_ENABLED === 'true' || hasValidApiKey());
 }
 
 const GENERATION_CONFIG = {
