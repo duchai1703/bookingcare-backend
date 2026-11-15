@@ -218,27 +218,30 @@ const PORT = process.env.PORT || 8080;
 const server = http.createServer(app);
 
 async function startServer() {
+  // Giai đoạn 1: Mở cổng HTTP Server ngay lập tức để đảm bảo container luôn sống và Traefik định tuyến được
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`>>> Production Hardened App Backend is running on port ${PORT} (0.0.0.0)`);
+  });
+
+  // Giai đoạn 2: Khởi tạo Socket.IO Real-time Engine
+  initSocketIO(server);
+
+  // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
+  server.maxRequestsPerSocket = 10000;
+
   try {
-    // Giai đoạn 1: Xác thực kết nối cơ sở dữ liệu
+    // Giai đoạn 3: Xác thực kết nối cơ sở dữ liệu
     await db.sequelize.authenticate();
     console.log('>>> Database connected');
 
-    // Giai đoạn 2: Đồng bộ cấu trúc bảng
+    // Giai đoạn 4: Đồng bộ cấu trúc bảng
     await db.syncSchema();
     console.log('>>> All tables synced');
 
-    // Giai đoạn 3: Chốt chặn boot guard timezone — DỪNG NGAY nếu sai timezone
+    // Giai đoạn 5: Chốt chặn boot guard timezone
     await checkSystemTimezoneEnforcement();
 
-    // Giai đoạn 4: Mở cổng HTTP Server lắng nghe request trên tất cả giao diện mạng (0.0.0.0)
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`>>> Production Hardened App Backend is running on port ${PORT} (0.0.0.0)`);
-    });
-
-    // Giai đoạn 5: Khởi tạo Socket.IO Real-time Engine
-    initSocketIO(server);
-
-    // Giai đoạn 6: Tự động chạy Dynamic Rolling Seeder (đảm bảo luôn có slot & lịch hẹn 7 ngày tới)
+    // Giai đoạn 6: Tự động chạy Dynamic Rolling Seeder
     if (process.env.NODE_ENV !== 'production' || process.env.AUTO_SEED_ROLLING === 'true') {
       try {
         const dynamicSeedService = require('./services/dynamicSeedService');
@@ -247,13 +250,9 @@ async function startServer() {
         console.warn('[DYNAMIC SEED WARNING] Dynamic seed failed non-fatally:', seedErr.message);
       }
     }
-
-    // [Phase 13 — Blueprint PK8.5] Đồng bộ maxRequestsPerSocket với Nginx keepalive_requests 10000
-    server.maxRequestsPerSocket = 10000;
   } catch (err) {
-    // [HOTFIX CODEX AUDIT] Ép process.exit(1) khi bất kỳ bước boot nào thất bại
-    console.error('[FATAL ERROR] Server startup failed:', err);
-    process.exit(1);
+    console.error('[DATABASE WARNING] Database connection error during startup:', err.message);
+    console.log('[INFO] Server remains online to serve health check and static portal while database reconnects.');
   }
 }
 

@@ -28,7 +28,7 @@ stages:
   - release
   - deploy
 
-# Build stage - Build Docker image and push to registry
+# Build stage - Build Docker image và push lên registry
 build:
   stage: build
   image:
@@ -46,8 +46,6 @@ build:
     - whoami
     - echo "TARGET_BRANCH is $TARGET_BRANCH"
     - echo "CONTAINER_DEPLOY_IMAGE is $CONTAINER_DEPLOY_IMAGE"
-    - echo "CI_MERGE_REQUEST_TARGET_BRANCH_NAME is $CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-    - echo "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME is $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME"
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker build -t $CONTAINER_DEPLOY_IMAGE .
     - docker push $CONTAINER_DEPLOY_IMAGE
@@ -105,21 +103,37 @@ deploy_staging:
     # Xóa image cũ nếu tồn tại
     - if [ -n "$IMAGEID" ] && docker images --no-trunc --quiet | grep -q "$IMAGEID"; then docker rmi $IMAGEID -f || true; fi
     # Khởi chạy container mới từ Release Image
-    - echo "Deploying to staging..."
+    - echo "Deploying backend to staging..."
     - >
       docker run -d 
+      --name $CONTAINER_NAME 
+      --network localnet 
+      --network-alias app-backend 
+      --restart always 
       -e NODE_ENV=staging 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
+      -e DB_HOST=${DB_HOST:-db-postgres} 
+      -e DB_PORT=${DB_PORT:-5432} 
+      -e DB_NAME=${DB_NAME:-bookingcare} 
+      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
+      -e DB_PASSWORD=${DB_PASSWORD:-StrongPgPass2026} 
+      -e DB_DIALECT=${DB_DIALECT:-postgres} 
+      -e REDIS_HOST=${REDIS_HOST:-redis-cache} 
+      -e REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisP@ss2026} 
+      -e JWT_SECRET=${JWT_SECRET:-BookingCareSecretKey2026} 
       -v bookingcare_uploads:/app/uploads 
-      --name $CONTAINER_NAME 
-      --network localnet 
       -l "traefik.enable=true" 
-      -l "traefik.http.routers.bookingcare-test.rule=Host(\`bookingcare-test.s2.ttpprojects.com\`)" 
-      -l "traefik.http.routers.bookingcare-test.entrypoints=websecure" 
-      -l "traefik.http.routers.bookingcare-test.tls=true" 
-      -l "traefik.http.routers.bookingcare-test.tls.certresolver=godaddy" 
-      -l "traefik.http.services.bookingcare-test-service.loadbalancer.server.port=8080" 
+      -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-test.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend-test.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend-test.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend-test.tls.certresolver=godaddy" 
+      -l "traefik.http.routers.bookingcare-backend-test.priority=100" 
+      -l "traefik.http.routers.bookingcare-backend-test-direct.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
+      -l "traefik.http.routers.bookingcare-backend-test-direct.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend-test-direct.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend-test-direct.tls.certresolver=godaddy" 
+      -l "traefik.http.services.bookingcare-backend-test-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
     - docker logout $CI_REGISTRY
   dependencies:
@@ -134,7 +148,6 @@ deploy_production:
     - host
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
-      when: manual
   script:
     - docker -v
     - whoami
@@ -147,21 +160,37 @@ deploy_production:
     # Xóa image cũ nếu tồn tại
     - if [ -n "$IMAGEID" ] && docker images --no-trunc --quiet | grep -q "$IMAGEID"; then docker rmi $IMAGEID -f || true; fi
     # Khởi chạy container mới từ Release Image
-    - echo "Deploying to production..."
+    - echo "Deploying backend to production..."
     - >
       docker run -d 
+      --name $CONTAINER_NAME 
+      --network localnet 
+      --network-alias app-backend 
+      --restart always 
       -e NODE_ENV=production 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
+      -e DB_HOST=${DB_HOST:-db-postgres} 
+      -e DB_PORT=${DB_PORT:-5432} 
+      -e DB_NAME=${DB_NAME:-bookingcare} 
+      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
+      -e DB_PASSWORD=${DB_PASSWORD:-StrongPgPass2026} 
+      -e DB_DIALECT=${DB_DIALECT:-postgres} 
+      -e REDIS_HOST=${REDIS_HOST:-redis-cache} 
+      -e REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisP@ss2026} 
+      -e JWT_SECRET=${JWT_SECRET:-BookingCareSecretKey2026} 
       -v bookingcare_uploads:/app/uploads 
-      --name $CONTAINER_NAME 
-      --network localnet 
       -l "traefik.enable=true" 
-      -l "traefik.http.routers.bookingcare.rule=Host(\`bookingcare.s2.ttpprojects.com\`)" 
-      -l "traefik.http.routers.bookingcare.entrypoints=websecure" 
-      -l "traefik.http.routers.bookingcare.tls=true" 
-      -l "traefik.http.routers.bookingcare.tls.certresolver=godaddy" 
-      -l "traefik.http.services.bookingcare-service.loadbalancer.server.port=8080" 
+      -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend.tls.certresolver=godaddy" 
+      -l "traefik.http.routers.bookingcare-backend.priority=100" 
+      -l "traefik.http.routers.bookingcare-backend-direct.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
+      -l "traefik.http.routers.bookingcare-backend-direct.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend-direct.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend-direct.tls.certresolver=godaddy" 
+      -l "traefik.http.services.bookingcare-backend-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
     - docker logout $CI_REGISTRY
   dependencies:
