@@ -252,29 +252,51 @@ async function startServer() {
       try {
         const allcodeCount = await db.Allcode.count();
         if (allcodeCount === 0) {
-          console.log('[AUTO-SEED] Fresh database detected. Populating basic Allcode...');
+          console.log('[AUTO-SEED] Fresh database detected. Populating canonical Allcode catalog...');
           const basicAllcodes = [
             { type: 'ROLE', keyMap: 'R1', valueVi: 'Quản trị viên', valueEn: 'Admin' },
             { type: 'ROLE', keyMap: 'R2', valueVi: 'Bác sĩ', valueEn: 'Doctor' },
             { type: 'ROLE', keyMap: 'R3', valueVi: 'Bệnh nhân', valueEn: 'Patient' },
-            { type: 'STATUS', keyMap: 'S1', valueVi: 'Lịch mới', valueEn: 'New' },
+            { type: 'GENDER', keyMap: 'G1', valueVi: 'Nam', valueEn: 'Male' },
+            { type: 'GENDER', keyMap: 'G2', valueVi: 'Nữ', valueEn: 'Female' },
+            { type: 'GENDER', keyMap: 'G3', valueVi: 'Khác', valueEn: 'Other' },
+            { type: 'TIME', keyMap: 'T1', valueVi: '8:00 - 9:00', valueEn: '8:00 AM - 9:00 AM' },
+            { type: 'TIME', keyMap: 'T2', valueVi: '9:00 - 10:00', valueEn: '9:00 AM - 10:00 AM' },
+            { type: 'TIME', keyMap: 'T3', valueVi: '10:00 - 11:00', valueEn: '10:00 AM - 11:00 AM' },
+            { type: 'TIME', keyMap: 'T4', valueVi: '11:00 - 12:00', valueEn: '11:00 AM - 12:00 PM' },
+            { type: 'TIME', keyMap: 'T5', valueVi: '13:00 - 14:00', valueEn: '1:00 PM - 2:00 PM' },
+            { type: 'TIME', keyMap: 'T6', valueVi: '14:00 - 15:00', valueEn: '2:00 PM - 3:00 PM' },
+            { type: 'TIME', keyMap: 'T7', valueVi: '15:00 - 16:00', valueEn: '3:00 PM - 4:00 PM' },
+            { type: 'TIME', keyMap: 'T8', valueVi: '16:00 - 17:00', valueEn: '4:00 PM - 5:00 PM' },
+            { type: 'STATUS', keyMap: 'S1', valueVi: 'Lịch hẹn mới', valueEn: 'New appointment' },
+            { type: 'STATUS', keyMap: 'S1.5', valueVi: 'Chờ thanh toán', valueEn: 'Pending Payment' },
             { type: 'STATUS', keyMap: 'S2', valueVi: 'Đã xác nhận', valueEn: 'Confirmed' },
-            { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám', valueEn: 'Done' },
+            { type: 'STATUS', keyMap: 'S3', valueVi: 'Đã khám xong', valueEn: 'Done' },
             { type: 'STATUS', keyMap: 'S4', valueVi: 'Đã hủy', valueEn: 'Cancelled' },
-            { type: 'TIME', keyMap: 'T1', valueVi: '08:00 - 09:00', valueEn: '08:00 - 09:00' },
-            { type: 'TIME', keyMap: 'T2', valueVi: '09:00 - 10:00', valueEn: '09:00 - 10:00' },
-            { type: 'TIME', keyMap: 'T3', valueVi: '10:00 - 11:00', valueEn: '10:00 - 11:00' },
-            { type: 'TIME', keyMap: 'T4', valueVi: '11:00 - 12:00', valueEn: '11:00 - 12:00' },
-            { type: 'TIME', keyMap: 'T5', valueVi: '13:00 - 14:00', valueEn: '13:00 - 14:00' },
-            { type: 'TIME', keyMap: 'T6', valueVi: '14:00 - 15:00', valueEn: '14:00 - 15:00' },
-            { type: 'TIME', keyMap: 'T7', valueVi: '15:00 - 16:00', valueEn: '15:00 - 16:00' },
-            { type: 'TIME', keyMap: 'T8', valueVi: '16:00 - 17:00', valueEn: '16:00 - 17:00' },
-            { type: 'GENDER', keyMap: 'M', valueVi: 'Nam', valueEn: 'Male' },
-            { type: 'GENDER', keyMap: 'F', valueVi: 'Nữ', valueEn: 'Female' },
-            { type: 'GENDER', keyMap: 'O', valueVi: 'Khác', valueEn: 'Other' },
+            { type: 'POSITION', keyMap: 'P0', valueVi: 'Không chọn', valueEn: 'None' },
+            { type: 'POSITION', keyMap: 'P1', valueVi: 'Bác sĩ', valueEn: 'Doctor' },
+            { type: 'POSITION', keyMap: 'P2', valueVi: 'Thạc sĩ', valueEn: 'Master' },
+            { type: 'POSITION', keyMap: 'P3', valueVi: 'Tiến sĩ', valueEn: 'PhD' },
+            { type: 'POSITION', keyMap: 'P4', valueVi: 'Phó giáo sư', valueEn: 'Associate Professor' },
+            { type: 'POSITION', keyMap: 'P5', valueVi: 'Giáo sư', valueEn: 'Professor' },
+            { type: 'PRICE', keyMap: 'PRI1', valueVi: '100.000đ', valueEn: '100,000 VND' },
+            { type: 'PRICE', keyMap: 'PRI2', valueVi: '200.000đ', valueEn: '200,000 VND' },
+            { type: 'PRICE', keyMap: 'PRI3', valueVi: '300.000đ', valueEn: '300,000 VND' },
+            { type: 'PRICE', keyMap: 'PRI4', valueVi: '500.000đ', valueEn: '500,000 VND' },
+            { type: 'PRICE', keyMap: 'PRI5', valueVi: '1.000.000đ', valueEn: '1,000,000 VND' },
+            { type: 'PRICE', keyMap: 'PRI6', valueVi: '2.000.000đ', valueEn: '2,000,000 VND' },
+            { type: 'PAYMENT', keyMap: 'PAY1', valueVi: 'Tiền mặt', valueEn: 'Cash' },
+            { type: 'PAYMENT', keyMap: 'PAY2', valueVi: 'Chuyển khoản', valueEn: 'Bank transfer' },
+            { type: 'PAYMENT', keyMap: 'PAY3', valueVi: 'Thẻ tín dụng', valueEn: 'Credit card' },
+            { type: 'PROVINCE', keyMap: 'PRO1', valueVi: 'Hà Nội', valueEn: 'Hanoi' },
+            { type: 'PROVINCE', keyMap: 'PRO2', valueVi: 'TP. Hồ Chí Minh', valueEn: 'Ho Chi Minh City' },
+            { type: 'PROVINCE', keyMap: 'PRO3', valueVi: 'Đà Nẵng', valueEn: 'Da Nang' },
+            { type: 'PROVINCE', keyMap: 'PRO4', valueVi: 'Cần Thơ', valueEn: 'Can Tho' },
+            { type: 'PROVINCE', keyMap: 'PRO5', valueVi: 'Hải Phòng', valueEn: 'Hai Phong' },
+            { type: 'PROVINCE', keyMap: 'PRO6', valueVi: 'Huế', valueEn: 'Hue' },
           ];
           await db.Allcode.bulkCreate(basicAllcodes, { ignoreDuplicates: true });
-          console.log('>>> [AUTO-SEED] Basic Allcode populated successfully');
+          console.log('>>> [AUTO-SEED] Canonical Allcode catalog populated successfully');
         }
 
         const adminCount = await db.User.count({ where: { roleId: 'R1' } });
@@ -291,7 +313,7 @@ async function startServer() {
               firstName: 'Super',
               lastName: 'Admin',
               address: 'BookingCare HQ',
-              gender: 'M',
+              gender: 'G1',
               roleId: 'R1',
               status: 'ACTIVE',
               phoneNumber: '0901234567',

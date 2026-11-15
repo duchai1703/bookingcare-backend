@@ -81,17 +81,60 @@ const allcodeData = [
 ];
 
 // ══════════════════════════════════════════════════════════════
-// MAIN SEED FUNCTION
+// MAIN SEED FUNCTION (Super Seeder v5.1 — Idempotent Safe Mode)
 // ══════════════════════════════════════════════════════════════
 const seed = async () => {
   const t0 = Date.now();
   try {
-    await db.sequelize.authenticate();
-    console.log('>>> Database connected');
+    // 1. Kết nối cơ sở dữ liệu với Retry Loop (tối đa 10 lần, 2s mỗi lần)
+    let connected = false;
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      try {
+        console.log(`>>> Database connection attempt ${attempt}/10...`);
+        await db.sequelize.authenticate();
+        connected = true;
+        console.log('>>> Database connected successfully');
+        break;
+      } catch (connErr) {
+        console.warn(`[SEED ATTEMPT ${attempt} FAILED] ${connErr.message}. Retrying in 2s...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    if (!connected) {
+      throw new Error('Unable to connect to PostgreSQL database after 10 attempts');
+    }
+
+    // 2. Kiểm tra chế độ chạy: --force vs --safe (Idempotent)
+    const isForce = process.argv.includes('--force') || process.env.SEED_FORCE === 'true';
+
+    if (!isForce) {
+      try {
+        const doctorCount = await db.User.count({ where: { roleId: 'R2' } });
+        const specialtyCount = await db.Specialty.count();
+        if (doctorCount > 0 && specialtyCount > 0) {
+          console.log(`>>> [SEED SAFE] Database already seeded (${doctorCount} doctors, ${specialtyCount} specialties found).`);
+          console.log('>>> [SEED SAFE] Skipping destructive drop to preserve existing user and transaction data.');
+          console.log('>>> [SEED SAFE] Ensuring rolling schedules and active booking slots for the next 7 days...');
+          const dynamicSeedService = require('../services/dynamicSeedService');
+          const rollingResults = await dynamicSeedService.ensureRollingSchedulesAndBookings();
+          console.log('>>> [SEED SAFE] Rolling schedules synchronized:', JSON.stringify(rollingResults));
+          console.log('✅ SEED SAFE CHECK COMPLETE — Database is healthy and up to date.');
+          process.exit(0);
+        } else {
+          console.log(`>>> [SEED SAFE] Unseeded database detected (${doctorCount} doctors, ${specialtyCount} specialties).`);
+          console.log('>>> [SEED SAFE] Proceeding with full automated initial seed...');
+        }
+      } catch (checkErr) {
+        console.warn('>>> [SEED SAFE] Table existence check warning, proceeding with full seed:', checkErr.message);
+      }
+    } else {
+      console.log('>>> [SEED FORCE] Force flag detected. Dropping all tables and re-seeding completely...');
+    }
 
     // Drop & recreate all tables
     await db.sequelize.sync({ force: true });
-    console.log('>>> All tables dropped & recreated');
+    console.log('>>> All tables cleanly recreated');
 
     // ═══════════ 1. ALLCODE (bulkCreate) ═══════════
     await db.Allcode.bulkCreate(allcodeData);

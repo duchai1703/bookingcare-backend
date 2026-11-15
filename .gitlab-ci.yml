@@ -140,8 +140,12 @@ deploy_staging:
       -l "traefik.http.routers.bookingcare-backend-test.tls.certresolver=godaddy" 
       -l "traefik.http.services.bookingcare-backend-test-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
-    - sleep 4
+    - sleep 8
+    - echo "=== BACKEND STATUS ==="
     - docker ps -a -f name=app-backend
+    - echo "=== CHECKING AND SEEDING DATABASE (SAFE IDEMPOTENT) ==="
+    - docker exec app-backend node src/seeders/seedAllcode.js --safe
+    - echo "=== RECENT APP-BACKEND LOGS ==="
     - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY
   dependencies:
@@ -205,9 +209,11 @@ deploy_production:
       -l "traefik.http.routers.bookingcare-backend.tls.certresolver=godaddy" 
       -l "traefik.http.services.bookingcare-backend-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
-    - sleep 4
+    - sleep 8
     - echo "=== BACKEND STATUS ==="
     - docker ps -a -f name=app-backend
+    - echo "=== CHECKING AND SEEDING DATABASE (SAFE IDEMPOTENT) ==="
+    - docker exec app-backend node src/seeders/seedAllcode.js --safe
     - echo "=== RECENT APP-BACKEND LOGS ==="
     - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY
