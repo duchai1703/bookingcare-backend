@@ -118,7 +118,7 @@ deploy_staging:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend
     - echo "Deploying app-backend to staging..."
-    - |
+    - >
       docker run -d 
       --name app-backend 
       --network localnet 
@@ -136,6 +136,11 @@ deploy_staging:
       -e JWT_SECRET=bookingcare-secret-key-2026 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
+      -l "traefik.http.routers.bookingcare-backend-test-api.rule=Host(\`bookingcare-test.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend-test-api.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend-test-api.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend-test-api.tls.certresolver=godaddy" 
+      -l "traefik.http.routers.bookingcare-backend-test-api.priority=100" 
       -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
       -l "traefik.http.routers.bookingcare-backend-test.entrypoints=websecure" 
       -l "traefik.http.routers.bookingcare-backend-test.tls=true" 
@@ -185,7 +190,7 @@ deploy_production:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend với tên định danh app-backend trên localnet
     - echo "Deploying app-backend to production..."
-    - |
+    - >
       docker run -d 
       --name app-backend 
       --network localnet 
@@ -203,6 +208,11 @@ deploy_production:
       -e JWT_SECRET=bookingcare-secret-key-2026 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
+      -l "traefik.http.routers.bookingcare-backend-api.rule=Host(\`bookingcare.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend-api.entrypoints=websecure" 
+      -l "traefik.http.routers.bookingcare-backend-api.tls=true" 
+      -l "traefik.http.routers.bookingcare-backend-api.tls.certresolver=godaddy" 
+      -l "traefik.http.routers.bookingcare-backend-api.priority=100" 
       -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
       -l "traefik.http.routers.bookingcare-backend.entrypoints=websecure" 
       -l "traefik.http.routers.bookingcare-backend.tls=true" 
