@@ -96,45 +96,55 @@ deploy_staging:
     - whoami
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker pull $CONTAINER_RELEASE_IMAGE
-    # Lấy IMAGEID của container cũ để dọn dẹp
-    - if docker inspect $CONTAINER_NAME &> /dev/null; then export IMAGEID=$(docker inspect --format='{{.Image}}' $CONTAINER_NAME); fi
-    # Dừng và xóa container cũ
-    - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f; fi
-    # Xóa image cũ nếu tồn tại
-    - if [ -n "$IMAGEID" ] && docker images --no-trunc --quiet | grep -q "$IMAGEID"; then docker rmi $IMAGEID -f || true; fi
-    # Khởi chạy container mới từ Release Image
-    - echo "Deploying backend to staging..."
+    # 1. Đảm bảo db-postgres đang chạy trên localnet
+    - >
+      if ! docker ps -q -f name=db-postgres | grep -q .; then
+        echo "Starting db-postgres on localnet..."
+        docker run -d \
+          --name db-postgres \
+          --network localnet \
+          --restart always \
+          -e POSTGRES_DB=bookingcare \
+          -e POSTGRES_USER=bookingcare_user \
+          -e POSTGRES_PASSWORD=StrongPgPass2026 \
+          -e TZ=Asia/Ho_Chi_Minh \
+          -e PGTZ=Asia/Ho_Chi_Minh \
+          -v postgres_data:/var/lib/postgresql/data \
+          postgres:16-alpine || true
+        sleep 3
+      fi
+    # 2. Dọn dẹp container backend cũ
+    - if [ "$(docker ps -a -q -f name=app-backend)" ]; then docker stop app-backend && docker rm app-backend -f || true; fi
+    - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
+    # 3. Khởi chạy app-backend
+    - echo "Deploying app-backend to staging..."
     - >
       docker run -d 
-      --name $CONTAINER_NAME 
+      --name app-backend 
       --network localnet 
-      --network-alias app-backend 
+      --network-alias bookingcare-backend 
       --restart always 
       -e NODE_ENV=staging 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
-      -e DB_HOST=${DB_HOST:-db-postgres} 
-      -e DB_PORT=${DB_PORT:-5432} 
-      -e DB_NAME=${DB_NAME:-bookingcare} 
-      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
-      -e DB_PASSWORD=${DB_PASSWORD:-StrongPgPass2026} 
-      -e DB_DIALECT=${DB_DIALECT:-postgres} 
-      -e REDIS_HOST=${REDIS_HOST:-redis-cache} 
-      -e REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisP@ss2026} 
-      -e JWT_SECRET=${JWT_SECRET:-BookingCareSecretKey2026} 
+      -e DB_HOST=db-postgres 
+      -e DB_PORT=5432 
+      -e DB_NAME=bookingcare 
+      -e DB_USERNAME=bookingcare_user 
+      -e DB_PASSWORD=StrongPgPass2026 
+      -e DB_DIALECT=postgres 
+      -e JWT_SECRET=bookingcare-secret-key-2026 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
-      -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-test.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
       -l "traefik.http.routers.bookingcare-backend-test.entrypoints=websecure" 
       -l "traefik.http.routers.bookingcare-backend-test.tls=true" 
       -l "traefik.http.routers.bookingcare-backend-test.tls.certresolver=godaddy" 
-      -l "traefik.http.routers.bookingcare-backend-test.priority=100" 
-      -l "traefik.http.routers.bookingcare-backend-test-direct.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
-      -l "traefik.http.routers.bookingcare-backend-test-direct.entrypoints=websecure" 
-      -l "traefik.http.routers.bookingcare-backend-test-direct.tls=true" 
-      -l "traefik.http.routers.bookingcare-backend-test-direct.tls.certresolver=godaddy" 
       -l "traefik.http.services.bookingcare-backend-test-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
+    - sleep 4
+    - docker ps -a -f name=app-backend
+    - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY
   dependencies:
     - release
@@ -153,45 +163,57 @@ deploy_production:
     - whoami
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker pull $CONTAINER_RELEASE_IMAGE
-    # Lấy IMAGEID của container cũ để dọn dẹp
-    - if docker inspect $CONTAINER_NAME &> /dev/null; then export IMAGEID=$(docker inspect --format='{{.Image}}' $CONTAINER_NAME); fi
-    # Dừng và xóa container cũ
-    - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f; fi
-    # Xóa image cũ nếu tồn tại
-    - if [ -n "$IMAGEID" ] && docker images --no-trunc --quiet | grep -q "$IMAGEID"; then docker rmi $IMAGEID -f || true; fi
-    # Khởi chạy container mới từ Release Image
-    - echo "Deploying backend to production..."
+    # 1. Đảm bảo db-postgres đang chạy trên localnet
+    - >
+      if ! docker ps -q -f name=db-postgres | grep -q .; then
+        echo "Starting db-postgres on localnet..."
+        docker run -d \
+          --name db-postgres \
+          --network localnet \
+          --restart always \
+          -e POSTGRES_DB=bookingcare \
+          -e POSTGRES_USER=bookingcare_user \
+          -e POSTGRES_PASSWORD=StrongPgPass2026 \
+          -e TZ=Asia/Ho_Chi_Minh \
+          -e PGTZ=Asia/Ho_Chi_Minh \
+          -v postgres_data:/var/lib/postgresql/data \
+          postgres:16-alpine || true
+        sleep 3
+      fi
+    # 2. Dọn dẹp container backend cũ
+    - if [ "$(docker ps -a -q -f name=app-backend)" ]; then docker stop app-backend && docker rm app-backend -f || true; fi
+    - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
+    # 3. Khởi chạy app-backend với tên định danh app-backend trên localnet
+    - echo "Deploying app-backend to production..."
     - >
       docker run -d 
-      --name $CONTAINER_NAME 
+      --name app-backend 
       --network localnet 
-      --network-alias app-backend 
+      --network-alias bookingcare-backend 
       --restart always 
       -e NODE_ENV=production 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
-      -e DB_HOST=${DB_HOST:-db-postgres} 
-      -e DB_PORT=${DB_PORT:-5432} 
-      -e DB_NAME=${DB_NAME:-bookingcare} 
-      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
-      -e DB_PASSWORD=${DB_PASSWORD:-StrongPgPass2026} 
-      -e DB_DIALECT=${DB_DIALECT:-postgres} 
-      -e REDIS_HOST=${REDIS_HOST:-redis-cache} 
-      -e REDIS_PASSWORD=${REDIS_PASSWORD:-StrongRedisP@ss2026} 
-      -e JWT_SECRET=${JWT_SECRET:-BookingCareSecretKey2026} 
+      -e DB_HOST=db-postgres 
+      -e DB_PORT=5432 
+      -e DB_NAME=bookingcare 
+      -e DB_USERNAME=bookingcare_user 
+      -e DB_PASSWORD=StrongPgPass2026 
+      -e DB_DIALECT=postgres 
+      -e JWT_SECRET=bookingcare-secret-key-2026 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
-      -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare.s2.ttpprojects.com\`) && PathPrefix(\`/api\`)" 
+      -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
       -l "traefik.http.routers.bookingcare-backend.entrypoints=websecure" 
       -l "traefik.http.routers.bookingcare-backend.tls=true" 
       -l "traefik.http.routers.bookingcare-backend.tls.certresolver=godaddy" 
-      -l "traefik.http.routers.bookingcare-backend.priority=100" 
-      -l "traefik.http.routers.bookingcare-backend-direct.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
-      -l "traefik.http.routers.bookingcare-backend-direct.entrypoints=websecure" 
-      -l "traefik.http.routers.bookingcare-backend-direct.tls=true" 
-      -l "traefik.http.routers.bookingcare-backend-direct.tls.certresolver=godaddy" 
       -l "traefik.http.services.bookingcare-backend-service.loadbalancer.server.port=8080" 
       $CONTAINER_RELEASE_IMAGE
+    - sleep 4
+    - echo "=== BACKEND STATUS ==="
+    - docker ps -a -f name=app-backend
+    - echo "=== RECENT APP-BACKEND LOGS ==="
+    - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY
   dependencies:
     - release
