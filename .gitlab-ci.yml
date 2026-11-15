@@ -97,7 +97,7 @@ deploy_staging:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker pull $CONTAINER_RELEASE_IMAGE
     # 1. Đảm bảo db-postgres đang chạy trên localnet
-    - >
+    - |
       if ! docker ps -q -f name=db-postgres | grep -q .; then
         echo "Starting db-postgres on localnet..."
         docker run -d \
@@ -118,7 +118,7 @@ deploy_staging:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend
     - echo "Deploying app-backend to staging..."
-    - >
+    - |
       docker run -d 
       --name app-backend 
       --network localnet 
@@ -164,7 +164,7 @@ deploy_production:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker pull $CONTAINER_RELEASE_IMAGE
     # 1. Đảm bảo db-postgres đang chạy trên localnet
-    - >
+    - |
       if ! docker ps -q -f name=db-postgres | grep -q .; then
         echo "Starting db-postgres on localnet..."
         docker run -d \
@@ -185,7 +185,7 @@ deploy_production:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend với tên định danh app-backend trên localnet
     - echo "Deploying app-backend to production..."
-    - >
+    - |
       docker run -d 
       --name app-backend 
       --network localnet 
