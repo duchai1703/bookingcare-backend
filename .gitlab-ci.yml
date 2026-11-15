@@ -121,6 +121,7 @@ deploy_staging:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e GEMINI_API_KEY=${GEMINI_API_KEY:-"AIzaSyDemoFallbackKey"} 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
@@ -175,6 +176,7 @@ deploy_production:
       -e DB_PASSWORD=StrongPgPass2026 
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e GEMINI_API_KEY=${GEMINI_API_KEY:-"AIzaSyDemoFallbackKey"} 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 

@@ -79,7 +79,19 @@ const DEFAULT_SAFETY_SETTINGS = [
 function getGenerativeModel(options = {}) {
   const client = getGenAIClient();
   if (!client) {
-    throw new Error('GEMINI_API_KEY_MISSING');
+    console.warn('[AI WARNING] GEMINI_API_KEY is not configured. Returning fallback mock model to ensure system resilience.');
+    return {
+      startChat: () => ({
+        sendMessage: async () => ({ response: { text: () => 'Trợ lý AI đang trong quá trình cấu hình.' } }),
+        sendMessageStream: async () => ({
+          stream: (async function* () { yield { text: () => 'Trợ lý AI đang trong quá trình cấu hình.' }; })()
+        })
+      }),
+      generateContent: async () => ({ response: { text: () => 'Trợ lý AI đang trong quá trình cấu hình.' } }),
+      generateContentStream: async () => ({
+        stream: (async function* () { yield { text: () => 'Trợ lý AI đang trong quá trình cấu hình.' }; })()
+      })
+    };
   }
 
   const isVision = Boolean(options.isVision || options.hasImage);

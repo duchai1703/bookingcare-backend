@@ -101,8 +101,13 @@ const SYSTEM_PROMPT = `Bạn là trợ lý AI chuyên nghiệp của nền tản
 - Giá khám hiển thị định dạng VND rõ ràng (VD: 300.000 VNĐ).
 - Mọi link điều hướng là đường dẫn tương đối (bắt đầu bằng /).`;
 
-// Khởi tạo model mặc định từ cấu hình tập trung
-const model = getGenerativeModel();
+// Khởi tạo model mặc định từ cấu hình tập trung với try-catch an toàn
+let model = null;
+try {
+  model = getGenerativeModel();
+} catch (err) {
+  console.warn('[AI WARNING] Gemini AI model fallback triggered:', err.message);
+}
 
 module.exports = {
   model,
