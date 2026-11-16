@@ -719,6 +719,51 @@ async function handleDeterministicFallback({
     toolName = 'getMyBookings';
     toolArgs = { limit: 5 };
     text = 'Dưới đây là danh sách lịch hẹn khám của bạn tại BookingCare:';
+  }
+  // 3. Tư vấn triệu chứng sức khỏe (HEALTH_QUERY hoặc mô tả đau, sốt, ngứa, mệt, bệnh lý...)
+  else if (
+    intent === INTENTS.HEALTH_QUERY ||
+    /(đau|sốt|mỏi|nhức|viêm|ngứa|chóng\s*mặt|buồn\s*nôn|khó\s*thở|ho|sưng|tê\s*bì|bệnh|dị\s*ứng|mệt)/i.test(lower)
+  ) {
+    let specialtyKeyword = 'Cơ xương khớp';
+    let symptomName = 'triệu chứng của bạn';
+
+    if (/(tay|chân|lưng|khớp|xương|cột\s*sống|vai|gáy|cổ|gối|thoái\s*hóa|bong\s*gân|bắp\s*tay|cánh\s*tay|ngón\s*tay|cổ\s*tay)/i.test(lower)) {
+      specialtyKeyword = 'Cơ xương khớp';
+      symptomName = 'đau nhức cơ xương khớp / đau tay';
+    } else if (/(đầu|mất\s*ngủ|chóng\s*mặt|tiền\s*đình|thần\s*kinh|co\s*giật|liệt|trí\s*nhớ)/i.test(lower)) {
+      specialtyKeyword = 'Thần kinh';
+      symptomName = 'đau đầu, thần kinh';
+    } else if (/(tim|ngực|huyết\s*áp|hồi\s*hộp|khó\s*thở|đánh\s*trống\s*ngực)/i.test(lower)) {
+      specialtyKeyword = 'Tim mạch';
+      symptomName = 'tim mạch, huyết áp';
+    } else if (/(họng|tai|mũi|xoang|amidan|ù\s*tai|nghẹt\s*mũi|khản\s*tiếng)/i.test(lower)) {
+      specialtyKeyword = 'Tai Mũi Họng';
+      symptomName = 'tai mũi họng';
+    } else if (/(da|ngứa|mụn|mề\s*đay|dị\s*ứng|mẩn\s*đỏ|nấm\s*da)/i.test(lower)) {
+      specialtyKeyword = 'Da liễu';
+      symptomName = 'da liễu, mẩn ngứa';
+    } else if (/(bụng|dạ\s*dày|tiêu\s*hóa|trào\s*ngược|đại\s*tràng|buồn\s*nôn|tiêu\s*chảy|táo\s*bón)/i.test(lower)) {
+      specialtyKeyword = 'Tiêu hóa';
+      symptomName = 'tiêu hóa, dạ dày';
+    } else if (/(mắt|mờ|cận|đỏ\s*mắt|nhức\s*mắt|chảy\s*nước\s*mắt)/i.test(lower)) {
+      specialtyKeyword = 'Mắt';
+      symptomName = 'vấn đề về mắt';
+    } else if (/(răng|nướu|lợi|tủy|nhổ\s*răng|sâu\s*răng)/i.test(lower)) {
+      specialtyKeyword = 'Răng Hàm Mặt';
+      symptomName = 'răng hàm mặt';
+    } else if (/(thai|kinh\s*nguyệt|phụ\s*khoa|khí\s*hư)/i.test(lower)) {
+      specialtyKeyword = 'Sản phụ khoa';
+      symptomName = 'sản phụ khoa';
+    } else if (/(trẻ|em\s*bé|sơ\s*sinh|nhi)/i.test(lower)) {
+      specialtyKeyword = 'Nhi khoa';
+      symptomName = 'nhi khoa';
+    }
+
+    toolName = 'universalSystemSearch';
+    toolArgs = { query: specialtyKeyword };
+
+    text = `Tôi đã ghi nhận tình trạng **${symptomName}** của bạn.\n\n⚠️ **Khuyến nghị ban đầu:**\n- Hãy để vùng bị đau được nghỉ ngơi, tránh vận động mạnh hoặc mang vác vật nặng.\n- Có thể chườm lạnh nhẹ nhàng nếu vùng đau bị sưng hoặc mới chấn thương trong vòng 24–48 giờ.\n- Nếu cơn đau dữ dội, kéo dài, sưng tấy nóng đỏ, tê bì ngón tay hoặc hạn chế cử động, bạn nên đến cơ sở y tế để được kiểm tra trực tiếp.\n\n🏥 **Chuyên khoa đề xuất:** **${specialtyKeyword}**.\nDưới đây là danh sách các bác sĩ chuyên khoa **${specialtyKeyword}** giỏi tại BookingCare. Bạn có thể chọn bác sĩ bên dưới để xem khung giờ trống và đặt lịch khám ngay:`;
   } else if (intent === INTENTS.SPECIALTY_QUERY || /chuyên khoa/i.test(lower)) {
     toolName = 'universalSystemSearch';
     toolArgs = { query: cleanMessage || 'chuyên khoa' };
@@ -1133,9 +1178,24 @@ async function streamChat(req, res) {
             aiLogger.warn(requestId, 'AI_VISION_STREAM_RETRY', { streamRetry, error: streamErr.message });
             await new Promise((r) => setTimeout(r, streamRetry * 1500));
           } else {
-            throw streamErr;
+            aiLogger.warn(requestId, 'AI_HEALTH_ASSESSMENT_FALLBACK_TRIGGERED', { error: streamErr?.message });
+            break;
           }
         }
+      }
+
+      if (!streamResult) {
+        aiLogger.info(requestId, 'AI_HEALTH_ASSESSMENT_ENGAGING_FALLBACK', { cleanMessage });
+        await handleDeterministicFallback({
+          intentResult,
+          cleanMessage,
+          userId,
+          signal,
+          toolContext,
+          res,
+          isClientConnected,
+        });
+        return;
       }
 
       let fullResponseText = '';
@@ -1667,9 +1727,21 @@ async function streamChat(req, res) {
       if (!res.writableEnded) {
         res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Dạ, hệ thống gặp trục trặc khi xử lý định dạng. Vui lòng thử lại nhé.' })}\n\n`);
       }
-    } else if (status === 403 || errMsg.includes('API_KEY_INVALID')) {
+    } else if (status === 403 || errMsg.includes('API_KEY_INVALID') || errMsg.includes('leaked')) {
       if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, code: 'AI_PROVIDER_ERROR', text: 'Dịch vụ AI đang bảo trì. Vui lòng quay lại sau.' })}\n\n`);
+        try {
+          await handleDeterministicFallback({
+            intentResult,
+            cleanMessage,
+            userId,
+            signal,
+            toolContext,
+            res,
+            isClientConnected,
+          });
+        } catch (fallbackErr) {
+          res.write(`data: ${JSON.stringify({ text: 'Dạ, BookingCare luôn sẵn sàng hỗ trợ bạn tìm bác sĩ, chuyên khoa và đặt lịch khám. Bạn vui lòng cho mình biết nhu cầu cụ thể nhé!' })}\n\n`);
+        }
       }
     } else if (status === 503 || errMsg.includes('503') || errMsg.includes('Service Unavailable') || errMsg.includes('high demand')) {
       if (!res.writableEnded) {
