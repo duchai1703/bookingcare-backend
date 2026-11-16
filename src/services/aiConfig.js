@@ -7,8 +7,8 @@
 
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 
-const DEFAULT_MODEL = 'gemini-1.5-flash';
-const DEFAULT_VISION_MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const DEFAULT_VISION_MODEL = process.env.GEMINI_VISION_MODEL || 'gemini-3.5-flash-lite';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_OUTPUT_TOKENS = 600;
 const DEFAULT_TIMEOUT_MS = 60000;

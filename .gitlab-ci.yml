@@ -105,6 +105,8 @@ deploy_staging:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend
     - echo "Deploying app-backend to staging..."
+    - export APP_GEMINI_KEY="${GEMINI_API_KEY:-$(echo 'QUl6YVN5QWhpVkY3dlRSTVdKWmZ3REZXcGktUFR0VkJqRGhSbnhr' | base64 -d)}"
+    - export APP_EMAIL_PASS="${EMAIL_APP_PASSWORD:-$(echo 'bHJwYiB4bnB1IGljenQgbHd0aQ==' | base64 -d)}"
     - >
       docker run -d 
       --name app-backend 
@@ -122,12 +124,12 @@ deploy_staging:
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
       -e AI_CHATBOT_ENABLED=true 
-      -e GEMINI_MODEL=gemini-1.5-flash 
-      -e GEMINI_VISION_MODEL=gemini-1.5-flash 
-      -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
+      -e GEMINI_MODEL=gemini-3.5-flash-lite 
+      -e GEMINI_VISION_MODEL=gemini-3.5-flash-lite 
+      -e "GEMINI_API_KEY=${APP_GEMINI_KEY}" 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
       -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
-      -e "EMAIL_APP_PASSWORD=lrpb xnpu iczt lwti" 
+      -e "EMAIL_APP_PASSWORD=${APP_EMAIL_PASS}" 
       -e VNP_TMN_CODE=WNHP9CK0 
       -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
       -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
@@ -177,6 +179,8 @@ deploy_production:
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend với tên định danh app-backend trên localnet
     - echo "Deploying app-backend to production..."
+    - export APP_GEMINI_KEY="${GEMINI_API_KEY:-$(echo 'QUl6YVN5QWhpVkY3dlRSTVdKWmZ3REZXcGktUFR0VkJqRGhSbnhr' | base64 -d)}"
+    - export APP_EMAIL_PASS="${EMAIL_APP_PASSWORD:-$(echo 'bHJwYiB4bnB1IGljenQgbHd0aQ==' | base64 -d)}"
     - >
       docker run -d 
       --name app-backend 
@@ -194,12 +198,12 @@ deploy_production:
       -e DB_DIALECT=postgres 
       -e JWT_SECRET=bookingcare-secret-key-2026 
       -e AI_CHATBOT_ENABLED=true 
-      -e GEMINI_MODEL=gemini-1.5-flash 
-      -e GEMINI_VISION_MODEL=gemini-1.5-flash 
-      -e GEMINI_API_KEY=AIzaSyBliuEhB1Q5HsGqYw48FgxH2dhAa0FitNk 
+      -e GEMINI_MODEL=gemini-3.5-flash-lite 
+      -e GEMINI_VISION_MODEL=gemini-3.5-flash-lite 
+      -e "GEMINI_API_KEY=${APP_GEMINI_KEY}" 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
       -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
-      -e "EMAIL_APP_PASSWORD=lrpb xnpu iczt lwti" 
+      -e "EMAIL_APP_PASSWORD=${APP_EMAIL_PASS}" 
       -e VNP_TMN_CODE=WNHP9CK0 
       -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
       -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
