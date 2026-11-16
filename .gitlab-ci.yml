@@ -98,15 +98,13 @@ deploy_staging:
     - docker pull $CONTAINER_RELEASE_IMAGE
     # 1. Đảm bảo db-postgres đang chạy trên localnet
     - echo "Ensuring db-postgres is running on localnet..."
-    - docker start db-postgres 2>/dev/null || docker run -d --name db-postgres --network localnet --restart always -e POSTGRES_DB=bookingcare -e POSTGRES_USER=bookingcare_user -e POSTGRES_PASSWORD=StrongPgPass2026 -e TZ=Asia/Ho_Chi_Minh -e PGTZ=Asia/Ho_Chi_Minh -v postgres_data:/var/lib/postgresql/data postgres:16-alpine || true
+    - docker start db-postgres 2>/dev/null || docker run -d --name db-postgres --network localnet --restart always -e POSTGRES_DB=${DB_NAME:-bookingcare} -e POSTGRES_USER=${DB_USERNAME:-bookingcare_user} -e POSTGRES_PASSWORD=${DB_PASSWORD} -e TZ=Asia/Ho_Chi_Minh -e PGTZ=Asia/Ho_Chi_Minh -v postgres_data:/var/lib/postgresql/data postgres:16-alpine || true
     - sleep 6
     # 2. Dọn dẹp container backend cũ
     - if [ "$(docker ps -a -q -f name=app-backend)" ]; then docker stop app-backend && docker rm app-backend -f || true; fi
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend
     - echo "Deploying app-backend to staging..."
-    - export APP_GEMINI_KEY="${GEMINI_API_KEY:-$(echo 'QUl6YVN5QWhpVkY3dlRSTVdKWmZ3REZXcGktUFR0VkJqRGhSbnhr' | base64 -d)}"
-    - export APP_EMAIL_PASS="${EMAIL_APP_PASSWORD:-$(echo 'bHJwYiB4bnB1IGljenQgbHd0aQ==' | base64 -d)}"
     - >
       docker run -d 
       --name app-backend 
@@ -116,27 +114,27 @@ deploy_staging:
       -e NODE_ENV=staging 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
-      -e DB_HOST=db-postgres 
-      -e DB_PORT=5432 
-      -e DB_NAME=bookingcare 
-      -e DB_USERNAME=bookingcare_user 
-      -e DB_PASSWORD=StrongPgPass2026 
+      -e DB_HOST=${DB_HOST:-db-postgres} 
+      -e DB_PORT=${DB_PORT:-5432} 
+      -e DB_NAME=${DB_NAME:-bookingcare} 
+      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
+      -e "DB_PASSWORD=${DB_PASSWORD}" 
       -e DB_DIALECT=postgres 
-      -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e "JWT_SECRET=${JWT_SECRET}" 
       -e AI_CHATBOT_ENABLED=true 
-      -e GEMINI_MODEL=gemini-3.5-flash-lite 
-      -e GEMINI_VISION_MODEL=gemini-3.5-flash-lite 
-      -e "GEMINI_API_KEY=${APP_GEMINI_KEY}" 
+      -e GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.5-flash-lite} 
+      -e GEMINI_VISION_MODEL=${GEMINI_VISION_MODEL:-gemini-3.5-flash-lite} 
+      -e "GEMINI_API_KEY=${GEMINI_API_KEY}" 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
-      -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
-      -e "EMAIL_APP_PASSWORD=${APP_EMAIL_PASS}" 
-      -e VNP_TMN_CODE=WNHP9CK0 
-      -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
+      -e "EMAIL_APP_USERNAME=${EMAIL_APP_USERNAME}" 
+      -e "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" 
+      -e "VNP_TMN_CODE=${VNP_TMN_CODE}" 
+      -e "VNP_HASH_SECRET=${VNP_HASH_SECRET}" 
       -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
       -e VNP_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction 
       -e VNP_RETURN_URL=https://bookingcare.s2.ttpprojects.com/payment-result 
-      -e API_CRON_SECRET=Hai23520421_CronJobSecret_7a8b9c0d1e2f3 
-      -e RECEIPT_FALLBACK_SECRET=BookingCare_Hai_d83ha9d73j9f8h2n4m5v6c7x8z9a0s1d2f3g4h5j6k7l8q9w0e1r2t3y 
+      -e "API_CRON_SECRET=${API_CRON_SECRET}" 
+      -e "RECEIPT_FALLBACK_SECRET=${RECEIPT_FALLBACK_SECRET}" 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend-test.rule=Host(\`bookingcare-api-test.s2.ttpprojects.com\`)" 
@@ -172,15 +170,13 @@ deploy_production:
     - docker pull $CONTAINER_RELEASE_IMAGE
     # 1. Đảm bảo db-postgres đang chạy trên localnet
     - echo "Ensuring db-postgres is running on localnet..."
-    - docker start db-postgres 2>/dev/null || docker run -d --name db-postgres --network localnet --restart always -e POSTGRES_DB=bookingcare -e POSTGRES_USER=bookingcare_user -e POSTGRES_PASSWORD=StrongPgPass2026 -e TZ=Asia/Ho_Chi_Minh -e PGTZ=Asia/Ho_Chi_Minh -v postgres_data:/var/lib/postgresql/data postgres:16-alpine || true
+    - docker start db-postgres 2>/dev/null || docker run -d --name db-postgres --network localnet --restart always -e POSTGRES_DB=${DB_NAME:-bookingcare} -e POSTGRES_USER=${DB_USERNAME:-bookingcare_user} -e POSTGRES_PASSWORD=${DB_PASSWORD} -e TZ=Asia/Ho_Chi_Minh -e PGTZ=Asia/Ho_Chi_Minh -v postgres_data:/var/lib/postgresql/data postgres:16-alpine || true
     - sleep 6
     # 2. Dọn dẹp container backend cũ
     - if [ "$(docker ps -a -q -f name=app-backend)" ]; then docker stop app-backend && docker rm app-backend -f || true; fi
     - if [ "$(docker ps -a -q -f name=$CONTAINER_NAME)" ]; then docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME -f || true; fi
     # 3. Khởi chạy app-backend với tên định danh app-backend trên localnet
     - echo "Deploying app-backend to production..."
-    - export APP_GEMINI_KEY="${GEMINI_API_KEY:-$(echo 'QUl6YVN5QWhpVkY3dlRSTVdKWmZ3REZXcGktUFR0VkJqRGhSbnhr' | base64 -d)}"
-    - export APP_EMAIL_PASS="${EMAIL_APP_PASSWORD:-$(echo 'bHJwYiB4bnB1IGljenQgbHd0aQ==' | base64 -d)}"
     - >
       docker run -d 
       --name app-backend 
@@ -190,27 +186,27 @@ deploy_production:
       -e NODE_ENV=production 
       -e PORT=8080 
       -e TZ=Asia/Ho_Chi_Minh 
-      -e DB_HOST=db-postgres 
-      -e DB_PORT=5432 
-      -e DB_NAME=bookingcare 
-      -e DB_USERNAME=bookingcare_user 
-      -e DB_PASSWORD=StrongPgPass2026 
+      -e DB_HOST=${DB_HOST:-db-postgres} 
+      -e DB_PORT=${DB_PORT:-5432} 
+      -e DB_NAME=${DB_NAME:-bookingcare} 
+      -e DB_USERNAME=${DB_USERNAME:-bookingcare_user} 
+      -e "DB_PASSWORD=${DB_PASSWORD}" 
       -e DB_DIALECT=postgres 
-      -e JWT_SECRET=bookingcare-secret-key-2026 
+      -e "JWT_SECRET=${JWT_SECRET}" 
       -e AI_CHATBOT_ENABLED=true 
-      -e GEMINI_MODEL=gemini-3.5-flash-lite 
-      -e GEMINI_VISION_MODEL=gemini-3.5-flash-lite 
-      -e "GEMINI_API_KEY=${APP_GEMINI_KEY}" 
+      -e GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.5-flash-lite} 
+      -e GEMINI_VISION_MODEL=${GEMINI_VISION_MODEL:-gemini-3.5-flash-lite} 
+      -e "GEMINI_API_KEY=${GEMINI_API_KEY}" 
       -e URL_REACT=https://bookingcare.s2.ttpprojects.com 
-      -e EMAIL_APP_USERNAME=haitran17032005@gmail.com 
-      -e "EMAIL_APP_PASSWORD=${APP_EMAIL_PASS}" 
-      -e VNP_TMN_CODE=WNHP9CK0 
-      -e VNP_HASH_SECRET=ZZJDQOGZWWXHLAXAZSMJNIZIXYAWFBNT 
+      -e "EMAIL_APP_USERNAME=${EMAIL_APP_USERNAME}" 
+      -e "EMAIL_APP_PASSWORD=${EMAIL_APP_PASSWORD}" 
+      -e "VNP_TMN_CODE=${VNP_TMN_CODE}" 
+      -e "VNP_HASH_SECRET=${VNP_HASH_SECRET}" 
       -e VNP_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html 
       -e VNP_API_URL=https://sandbox.vnpayment.vn/merchant_webapi/api/transaction 
       -e VNP_RETURN_URL=https://bookingcare.s2.ttpprojects.com/payment-result 
-      -e API_CRON_SECRET=Hai23520421_CronJobSecret_7a8b9c0d1e2f3 
-      -e RECEIPT_FALLBACK_SECRET=BookingCare_Hai_d83ha9d73j9f8h2n4m5v6c7x8z9a0s1d2f3g4h5j6k7l8q9w0e1r2t3y 
+      -e "API_CRON_SECRET=${API_CRON_SECRET}" 
+      -e "RECEIPT_FALLBACK_SECRET=${RECEIPT_FALLBACK_SECRET}" 
       -v bookingcare_uploads:/app/uploads 
       -l "traefik.enable=true" 
       -l "traefik.http.routers.bookingcare-backend.rule=Host(\`bookingcare-api.s2.ttpprojects.com\`)" 
