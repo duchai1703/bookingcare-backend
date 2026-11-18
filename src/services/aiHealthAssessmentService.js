@@ -962,7 +962,7 @@ function validateAndSanitizeAssessment(rawData = {}, context = {}) {
       needsMedicalAttention,
       imageQuality,
       basedOn: {
-        image: Boolean(context.hasImage),
+        image: Boolean(context.hasImage || context.historicalVision),
         symptoms: context.symptoms.length > 0,
         conversationContext: Boolean(context.isFollowUp || context.historicalVision),
       },

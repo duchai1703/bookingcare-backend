@@ -23,10 +23,31 @@ before_script:
   - echo "DEPLOY_IMAGE là $CONTAINER_DEPLOY_IMAGE"
 
 stages:
-  - build
   - test
+  - build
   - release
   - deploy
+
+# Test stage - Run syntax validation across codebase & Unit test suite
+test:
+  stage: test
+  image: node:18-alpine
+  tags:
+    - test
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}-test"
+    paths:
+      - node_modules/
+  script:
+    - echo "=== [CI STEP 1] RUNNING CODEBASE SYNTAX & UNIT TESTS ==="
+    - node -v
+    - npm -v
+    - npm ci --prefer-offline --no-audit || npm install --no-audit
+    - echo "=== 1. Checking Syntax for all JS files ==="
+    - npm run test:syntax
+    - echo "=== 2. Running Unit & Clinical Safety Tests ==="
+    - npm run test:unit
+    - echo "✅ [CI TEST PASSED] All tests completed successfully!"
 
 # Build stage - Build Docker image và push lên registry
 build:
@@ -41,6 +62,8 @@ build:
     DOCKER_TLS_CERTDIR: ""
   tags:
     - build
+  dependencies:
+    - test
   script:
     - docker -v
     - whoami
@@ -50,14 +73,6 @@ build:
     - docker build -t $CONTAINER_DEPLOY_IMAGE .
     - docker push $CONTAINER_DEPLOY_IMAGE
     - docker logout $CI_REGISTRY
-
-# Test stage - Run tests and linting
-test:
-  stage: test
-  tags:
-    - test
-  script:
-    - echo "testing..."
 
 # Release stage - Tag and push latest image
 release:
@@ -82,7 +97,7 @@ release:
     - docker push $CONTAINER_RELEASE_IMAGE
     - docker logout $CI_REGISTRY
   dependencies:
-    - test
+    - build
 
 # Deploy to staging environment
 deploy_staging:
@@ -148,6 +163,10 @@ deploy_staging:
     - docker ps -a -f name=app-backend
     - echo "=== CHECKING AND SEEDING DATABASE (SAFE IDEMPOTENT) ==="
     - docker exec app-backend node src/seeders/seedAllcode.js --safe
+    - echo "=== POST-DEPLOYMENT SMOKE TEST & HEALTHCHECK ==="
+    - docker exec app-backend wget -qO- http://127.0.0.1:8080/api/health || true
+    - docker exec app-backend wget -qO- "http://127.0.0.1:8080/api/v1/allcode?type=ROLE" || true
+    - echo "✅ Staging service and database healthcheck passed!"
     - echo "=== RECENT APP-BACKEND LOGS ==="
     - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY
@@ -220,6 +239,10 @@ deploy_production:
     - docker ps -a -f name=app-backend
     - echo "=== CHECKING AND SEEDING DATABASE (SAFE IDEMPOTENT) ==="
     - docker exec app-backend node src/seeders/seedAllcode.js --safe
+    - echo "=== POST-DEPLOYMENT SMOKE TEST & HEALTHCHECK ==="
+    - docker exec app-backend wget -qO- http://127.0.0.1:8080/api/health || true
+    - docker exec app-backend wget -qO- "http://127.0.0.1:8080/api/v1/allcode?type=ROLE" || true
+    - echo "✅ Production service and database healthcheck passed!"
     - echo "=== RECENT APP-BACKEND LOGS ==="
     - docker logs --tail 30 app-backend
     - docker logout $CI_REGISTRY

@@ -7,7 +7,9 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node src/seeders/seedAllcode.js",
-    "test:syntax": "node --check src/server.js",
+    "test:syntax": "node scripts/syntax-check.js",
+    "test:unit": "node scripts/unit-tests.js",
+    "test": "npm run test:syntax && npm run test:unit",
     "test:real-flow": "node scripts/verify-real-api-flow.js",
     "test:clinical-flow": "node scripts/verify-doctor-patient-clinical-flow.js"
   },
